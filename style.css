@@ -1,0 +1,230 @@
+:root {
+  --bg: #000;
+  --display-fg: #fff;
+  --btn-fn: #a5a5a5;
+  --btn-fn-fg: #000;
+  --btn-op: #ff9f0a;
+  --btn-op-fg: #fff;
+  --btn-num: #333333;
+  --btn-num-fg: #fff;
+  --accent: #ff9f0a;
+  --panel-bg: #111318;
+  --panel-fg: #eaeaea;
+  --bubble-me: #2b6cff;
+  --bubble-them: #2a2d34;
+  --danger: #ff453a;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  background: var(--bg);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  -webkit-tap-highlight-color: transparent;
+  user-select: none;
+}
+
+.screen {
+  height: 100vh;
+  width: 100vw;
+  display: flex;
+  flex-direction: column;
+}
+
+.hidden { display: none !important; }
+
+/* Calculator */
+.calc-display {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  align-items: flex-end;
+  padding: 24px 20px;
+  color: var(--display-fg);
+}
+.calc-expression {
+  font-size: 22px;
+  opacity: 0.6;
+  min-height: 28px;
+  word-break: break-all;
+  text-align: right;
+}
+.calc-result {
+  font-size: 64px;
+  font-weight: 300;
+  word-break: break-all;
+  text-align: right;
+}
+
+.calc-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 10px;
+  padding: 10px;
+}
+
+.btn {
+  border: none;
+  border-radius: 50%;
+  aspect-ratio: 1;
+  font-size: 26px;
+  font-weight: 500;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.btn.fn { background: var(--btn-fn); color: var(--btn-fn-fg); }
+.btn.op { background: var(--btn-op); color: var(--btn-op-fg); }
+.btn.num { background: var(--btn-num); color: var(--btn-num-fg); }
+.btn.eq { background: var(--btn-op); color: var(--btn-op-fg); }
+.btn.zero {
+  grid-column: span 2;
+  aspect-ratio: auto;
+  border-radius: 40px;
+  justify-content: flex-start;
+  padding-left: 28px;
+}
+.btn:active { filter: brightness(1.3); }
+
+/* Vault */
+#vault-view { background: var(--panel-bg); color: var(--panel-fg); }
+.vault-panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  padding: 20px;
+  overflow: hidden;
+}
+.vault-panel.hidden { display: none; }
+
+#vault-lock h2 { margin-bottom: 4px; }
+#vault-lock p { color: #999; margin-top: 0; }
+#vault-lock input, .settings-body input, .modal-box input {
+  background: #1c1f26;
+  border: 1px solid #333;
+  color: #fff;
+  padding: 12px 14px;
+  border-radius: 8px;
+  font-size: 16px;
+  margin-bottom: 12px;
+}
+#vault-lock button, .settings-body button, .modal-box button {
+  padding: 12px 14px;
+  border-radius: 8px;
+  border: none;
+  background: var(--accent);
+  color: #111;
+  font-weight: 600;
+  font-size: 15px;
+  cursor: pointer;
+  margin-bottom: 10px;
+}
+button.ghost {
+  background: transparent;
+  color: var(--panel-fg);
+  border: 1px solid #444;
+  font-weight: 500;
+}
+button.danger { background: var(--danger); color: #fff; }
+.error { color: var(--danger); min-height: 20px; }
+
+#vault-app { flex: 1; display: flex; flex-direction: column; padding: 0; }
+#thread-list-panel, #thread-detail-panel, #settings-panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  padding: 16px;
+  overflow: hidden;
+}
+
+.vault-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+.vault-header h2 { margin: 0; font-size: 20px; flex: 1; text-align: center; }
+.header-actions { display: flex; gap: 8px; }
+.header-actions button, #thread-delete-btn, #thread-back-btn {
+  background: #1c1f26;
+  border: 1px solid #333;
+  color: var(--panel-fg);
+  border-radius: 8px;
+  padding: 8px 12px;
+  cursor: pointer;
+  font-size: 16px;
+}
+
+#thread-list { list-style: none; margin: 0; padding: 0; overflow-y: auto; flex: 1; }
+#thread-list li {
+  padding: 14px 12px;
+  border-bottom: 1px solid #22252c;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+#thread-list li:active { background: #1a1d24; }
+.thread-name { font-weight: 600; }
+.thread-preview { font-size: 13px; color: #888; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.empty-state { color: #666; text-align: center; margin-top: 40px; }
+
+#message-list { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; padding: 8px 4px; }
+.msg-bubble {
+  max-width: 75%;
+  padding: 10px 14px;
+  border-radius: 16px;
+  font-size: 15px;
+  line-height: 1.35;
+  word-break: break-word;
+}
+.msg-bubble.me { align-self: flex-end; background: var(--bubble-me); color: #fff; border-bottom-right-radius: 4px; }
+.msg-bubble.them { align-self: flex-start; background: var(--bubble-them); color: #eee; border-bottom-left-radius: 4px; }
+.msg-time { font-size: 10px; opacity: 0.6; margin-top: 4px; display: block; }
+
+.message-input-row { display: flex; gap: 8px; padding-top: 10px; }
+.message-input-row input {
+  flex: 1;
+  background: #1c1f26;
+  border: 1px solid #333;
+  color: #fff;
+  padding: 12px;
+  border-radius: 20px;
+}
+.message-input-row button {
+  background: var(--accent);
+  border: none;
+  color: #111;
+  font-weight: 600;
+  border-radius: 20px;
+  padding: 0 18px;
+  cursor: pointer;
+}
+
+.settings-body { display: flex; flex-direction: column; overflow-y: auto; }
+.settings-body hr { border-color: #2a2d34; width: 100%; margin: 16px 0; }
+
+.modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10;
+}
+.modal-box {
+  background: var(--panel-bg);
+  border-radius: 12px;
+  padding: 20px;
+  width: 80%;
+  max-width: 320px;
+  display: flex;
+  flex-direction: column;
+}
+.modal-actions { display: flex; gap: 10px; }
+.modal-actions button { flex: 1; }
