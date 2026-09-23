@@ -546,11 +546,12 @@
   const settingsPanel = document.getElementById("settings-panel");
   const threadListEl = document.getElementById("thread-list");
 
-  let conversations = new Map(); // convId -> {id, otherUid, otherNickname, lastText, updatedAt}
+  let conversations = new Map(); // convId -> {id, otherUid, otherNickname, updatedAt, unread, lastPreview, lastTs}
   let conversationsUnsub = null;
   let activeConvId = null;
   let activeOtherUid = null;
   let messagesUnsub = null;
+  const lastMessageUnsubs = new Map(); // convId -> unsub
 
   function convIdFor(uidA, uidB) {
     return [uidA, uidB].sort().join("_");
@@ -571,31 +572,89 @@
     renderThreadList();
   }
 
+  function stopAllMessengerListeners() {
+    if (conversationsUnsub) { conversationsUnsub(); conversationsUnsub = null; }
+    if (messagesUnsub) { messagesUnsub(); messagesUnsub = null; }
+    lastMessageUnsubs.forEach(unsub => unsub());
+    lastMessageUnsubs.clear();
+    conversations.clear();
+  }
+
+  function subscribeLastMessage(convId, attempt) {
+    attempt = attempt || 0;
+    if (lastMessageUnsubs.has(convId)) return;
+    const unsub = fbDb.collection("conversations").doc(convId).collection("messages")
+      .orderBy("ts", "desc").limit(1)
+      .onSnapshot(async snap => {
+        if (snap.empty) return;
+        const d = snap.docs[0].data();
+        const preview = d.type === "image" ? "📷 Fotoğraf" : await decryptMessage(d).catch(() => "[çözülemedi]");
+        const conv = conversations.get(convId);
+        if (!conv) return;
+        conv.lastPreview = (d.from === myUid ? "Sen: " : "") + preview;
+        conv.lastTs = d.ts ? d.ts.toMillis() : Date.now();
+        if (!threadListPanel.classList.contains("hidden")) renderThreadList();
+      }, err => {
+        // Right after a conversation is created, the security rules' get() check
+        // can momentarily race the write reaching the server, causing a spurious
+        // permission-denied here. Retry a few times with backoff before giving up.
+        lastMessageUnsubs.delete(convId);
+        if (attempt < 5 && conversations.has(convId)) {
+          setTimeout(() => subscribeLastMessage(convId, attempt + 1), 400 * (attempt + 1));
+        } else {
+          console.error("last message listen error", err);
+        }
+      });
+    lastMessageUnsubs.set(convId, unsub);
+  }
+
   function listenToConversations() {
     if (conversationsUnsub) conversationsUnsub();
     conversationsUnsub = fbDb.collection("conversations")
       .where("participants", "array-contains", myUid)
       .onSnapshot(snap => {
-        conversations.clear();
-        snap.docs.forEach(doc => {
-          const d = doc.data();
+        snap.docChanges().forEach(change => {
+          if (change.type === "removed") {
+            conversations.delete(change.doc.id);
+            if (lastMessageUnsubs.has(change.doc.id)) {
+              lastMessageUnsubs.get(change.doc.id)();
+              lastMessageUnsubs.delete(change.doc.id);
+            }
+            return;
+          }
+          const d = change.doc.data();
           const otherUid = d.participants.find(u => u !== myUid);
           const otherNickname = (d.participantNicknames && d.participantNicknames[otherUid]) || "?";
-          conversations.set(doc.id, {
-            id: doc.id,
+          const unread = (d.unreadCount && d.unreadCount[myUid]) || 0;
+          const existing = conversations.get(change.doc.id) || {};
+          conversations.set(change.doc.id, {
+            id: change.doc.id,
             otherUid,
             otherNickname,
             updatedAt: d.updatedAt ? d.updatedAt.toMillis() : 0,
+            unread,
+            lastPreview: existing.lastPreview || "",
+            lastTs: existing.lastTs || 0,
           });
+          subscribeLastMessage(change.doc.id);
         });
         if (!threadDetailPanel.classList.contains("hidden")) return;
         renderThreadList();
       }, err => console.error("conversations listen error", err));
   }
 
+  function formatThreadTime(ts) {
+    if (!ts) return "";
+    const d = new Date(ts);
+    const now = new Date();
+    const sameDay = d.toDateString() === now.toDateString();
+    if (sameDay) return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    return d.toLocaleDateString([], { day: "2-digit", month: "2-digit" });
+  }
+
   function renderThreadList() {
     threadListEl.innerHTML = "";
-    const list = Array.from(conversations.values()).sort((a, b) => b.updatedAt - a.updatedAt);
+    const list = Array.from(conversations.values()).sort((a, b) => (b.lastTs || b.updatedAt) - (a.lastTs || a.updatedAt));
     if (!list.length) {
       const li = document.createElement("li");
       li.className = "empty-state";
@@ -606,8 +665,24 @@
     }
     list.forEach(conv => {
       const li = document.createElement("li");
-      li.innerHTML = `<span class="thread-name"></span><span class="thread-preview">Aç ve sohbet et</span>`;
+      if (conv.unread > 0) li.classList.add("unread");
+      li.innerHTML = `
+        <div class="thread-row">
+          <span class="thread-name"></span>
+          <span class="thread-time"></span>
+        </div>
+        <div class="thread-row">
+          <span class="thread-preview"></span>
+          <span class="thread-badge hidden">0</span>
+        </div>`;
       li.querySelector(".thread-name").textContent = "@" + conv.otherNickname;
+      li.querySelector(".thread-time").textContent = formatThreadTime(conv.lastTs || conv.updatedAt);
+      li.querySelector(".thread-preview").textContent = conv.lastPreview || "Aç ve sohbet et";
+      if (conv.unread > 0) {
+        const badge = li.querySelector(".thread-badge");
+        badge.textContent = conv.unread > 99 ? "99+" : String(conv.unread);
+        badge.classList.remove("hidden");
+      }
       li.addEventListener("click", () => openConversation(conv.id, conv.otherUid, conv.otherNickname));
       threadListEl.appendChild(li);
     });
@@ -640,6 +715,7 @@
       await fbDb.collection("conversations").doc(convId).set({
         participants: [myUid, otherUid],
         participantNicknames: { [myUid]: myNickname, [otherUid]: otherData.nickname },
+        unreadCount: { [myUid]: 0, [otherUid]: 0 },
         updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
       }, { merge: true });
       document.getElementById("new-thread-modal").classList.add("hidden");
@@ -650,8 +726,7 @@
   });
 
   document.getElementById("lock-btn").addEventListener("click", () => {
-    if (conversationsUnsub) { conversationsUnsub(); conversationsUnsub = null; }
-    if (messagesUnsub) { messagesUnsub(); messagesUnsub = null; }
+    stopAllMessengerListeners();
     myPrivateKey = null;
     myPublicKey = null;
     closeVaultToCalculator();
@@ -710,8 +785,7 @@
 
   document.getElementById("logout-btn").addEventListener("click", async () => {
     if (!confirm("Hesabından çıkış yapılsın mı?")) return;
-    if (conversationsUnsub) { conversationsUnsub(); conversationsUnsub = null; }
-    if (messagesUnsub) { messagesUnsub(); messagesUnsub = null; }
+    stopAllMessengerListeners();
     await fbAuth.signOut();
     myUid = null; myNickname = null; myPrivateKey = null; myPublicKey = null;
     closeVaultToCalculator();
@@ -739,6 +813,9 @@
     threadDetailPanel.classList.remove("hidden");
     settingsPanel.classList.add("hidden");
     document.getElementById("thread-title").textContent = "@" + otherNickname;
+    const conv = conversations.get(convId);
+    if (conv) conv.unread = 0;
+    fbDb.collection("conversations").doc(convId).update({ [`unreadCount.${myUid}`]: 0 }).catch(() => {});
     await getPublicKeyForUid(otherUid);
     listenToMessages(convId);
   }
@@ -749,6 +826,7 @@
     messagesUnsub = fbDb.collection("conversations").doc(convId).collection("messages")
       .orderBy("ts")
       .onSnapshot(async snap => {
+        fbDb.collection("conversations").doc(convId).update({ [`unreadCount.${myUid}`]: 0 }).catch(() => {});
         const rendered = [];
         for (const doc of snap.docs) {
           const d = doc.data();
@@ -807,8 +885,13 @@
   }
 
   async function sendEncrypted(payloadText, type) {
-    if (!activeConvId || !activeOtherUid) return;
-    const otherPublicKey = await getPublicKeyForUid(activeOtherUid);
+    // Capture these locally: the user may navigate away from the conversation
+    // (clearing activeConvId/activeOtherUid) while this async send is still
+    // in flight, and the write below must still target the right thread.
+    const convId = activeConvId;
+    const otherUid = activeOtherUid;
+    if (!convId || !otherUid) return;
+    const otherPublicKey = await getPublicKeyForUid(otherUid);
     if (!otherPublicKey) {
       alert("Alıcının açık anahtarı bulunamadı.");
       return;
@@ -822,17 +905,18 @@
     const myWrapped = await wrapAesKeyForPublicKey(rawAes, myPublicKey);
     const theirWrapped = await wrapAesKeyForPublicKey(rawAes, otherPublicKey);
 
-    await fbDb.collection("conversations").doc(activeConvId).collection("messages").add({
+    await fbDb.collection("conversations").doc(convId).collection("messages").add({
       from: myUid,
       type,
       iv: b64encode(iv.buffer),
       ciphertext: b64encode(ciphertext),
-      wrappedKeys: { [myUid]: myWrapped, [activeOtherUid]: theirWrapped },
+      wrappedKeys: { [myUid]: myWrapped, [otherUid]: theirWrapped },
       ts: firebase.firestore.FieldValue.serverTimestamp(),
     });
-    await fbDb.collection("conversations").doc(activeConvId).set({
+    await fbDb.collection("conversations").doc(convId).update({
       updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
-    }, { merge: true });
+      [`unreadCount.${otherUid}`]: firebase.firestore.FieldValue.increment(1),
+    });
   }
 
   document.getElementById("message-send-btn").addEventListener("click", sendMessage);

@@ -161,16 +161,35 @@ button.danger { background: var(--danger); color: #fff; }
 
 #thread-list { list-style: none; margin: 0; padding: 0; overflow-y: auto; flex: 1; }
 #thread-list li {
-  padding: 14px 12px;
+  padding: 12px;
   border-bottom: 1px solid #22252c;
   cursor: pointer;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 2px;
 }
 #thread-list li:active { background: #1a1d24; }
+.thread-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .thread-name { font-weight: 600; }
-.thread-preview { font-size: 13px; color: #888; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.thread-time { font-size: 12px; color: #888; flex-shrink: 0; }
+.thread-preview { font-size: 13px; color: #888; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; }
+#thread-list li.unread .thread-name { color: #fff; }
+#thread-list li.unread .thread-preview { color: #ddd; font-weight: 500; }
+#thread-list li.unread .thread-time { color: var(--accent); font-weight: 600; }
+.thread-badge {
+  background: var(--accent);
+  color: #111;
+  font-size: 11px;
+  font-weight: 700;
+  min-width: 18px;
+  height: 18px;
+  border-radius: 9px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 5px;
+  flex-shrink: 0;
+}
 .empty-state { color: #666; text-align: center; margin-top: 40px; }
 
 #message-list { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; padding: 8px 4px; }
