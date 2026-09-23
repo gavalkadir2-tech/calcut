@@ -363,11 +363,13 @@
 
   let myUid = null;
   let myEmail = null;
+  let myNickname = null;
   let myPrivateKey = null;
   let myPublicKey = null;
   const publicKeyCache = new Map(); // uid -> CryptoKey
 
   const authTitle = document.getElementById("auth-title");
+  const authNicknameInput = document.getElementById("auth-nickname-input");
   const authEmailInput = document.getElementById("auth-email-input");
   const authPasswordInput = document.getElementById("auth-password-input");
   const authSubmitBtn = document.getElementById("auth-submit-btn");
@@ -388,8 +390,13 @@
     authTitle.textContent = authMode === "login" ? "Giriş Yap" : "Hesap Oluştur";
     authSubmitBtn.textContent = authMode === "login" ? "Giriş Yap" : "Kayıt Ol";
     authToggleBtn.textContent = authMode === "login" ? "Hesabın yok mu? Kayıt ol" : "Zaten hesabın var mı? Giriş yap";
+    authNicknameInput.classList.toggle("hidden", authMode !== "signup");
     authError.textContent = "";
   });
+
+  function normalizeNickname(raw) {
+    return raw.trim().toLowerCase().replace(/[^a-z0-9_]/g, "");
+  }
 
   authBackBtn.addEventListener("click", closeVaultToCalculator);
 
@@ -401,9 +408,23 @@
     );
   }
 
-  async function signUp(email, password) {
+  async function signUp(email, password, nicknameRaw) {
+    const nickname = normalizeNickname(nicknameRaw);
+    if (nickname.length < 3) {
+      throw new Error("Kullanıcı adı en az 3 karakter olmalı (harf, rakam, alt çizgi).");
+    }
+
     const cred = await fbAuth.createUserWithEmailAndPassword(email, password);
     const uid = cred.user.uid;
+
+    // Uniqueness can only be checked once authenticated (Firestore rules require it),
+    // so roll the just-created account back if the nickname turns out to be taken.
+    const takenQ = await fbDb.collection("users").where("nickname", "==", nickname).limit(1).get();
+    if (!takenQ.empty) {
+      await cred.user.delete();
+      throw new Error("Bu kullanıcı adı zaten alınmış.");
+    }
+
     const keyPair = await generateKeyPair();
     const pubJwk = await crypto.subtle.exportKey("jwk", keyPair.publicKey);
     const privJwk = await crypto.subtle.exportKey("jwk", keyPair.privateKey);
@@ -419,6 +440,7 @@
 
     await fbDb.collection("users").doc(uid).set({
       email: email.toLowerCase(),
+      nickname,
       publicKeyJwk: pubJwk,
       pkSalt: b64encode(pkSalt.buffer),
       encPrivateKey: { iv: b64encode(iv.buffer), data: b64encode(encPriv) },
@@ -427,6 +449,7 @@
 
     myUid = uid;
     myEmail = email.toLowerCase();
+    myNickname = nickname;
     myPrivateKey = keyPair.privateKey;
     myPublicKey = keyPair.publicKey;
     publicKeyCache.set(uid, keyPair.publicKey);
@@ -462,6 +485,7 @@
 
     myUid = uid;
     myEmail = data.email;
+    myNickname = data.nickname || null;
     myPrivateKey = privateKey;
     myPublicKey = publicKey;
     publicKeyCache.set(uid, publicKey);
@@ -470,15 +494,20 @@
   authSubmitBtn.addEventListener("click", async () => {
     const email = authEmailInput.value.trim();
     const password = authPasswordInput.value;
+    const nickname = authNicknameInput.value;
     if (!email || password.length < 6) {
       authError.textContent = "Geçerli bir e-posta ve en az 6 karakterli parola gir.";
+      return;
+    }
+    if (authMode === "signup" && normalizeNickname(nickname).length < 3) {
+      authError.textContent = "Bir kullanıcı adı (rumuz) belirlemen gerekiyor (en az 3 karakter).";
       return;
     }
     authError.textContent = "";
     authSubmitBtn.disabled = true;
     try {
       if (authMode === "signup") {
-        await signUp(email, password);
+        await signUp(email, password, nickname);
       } else {
         await logIn(email, password);
       }
@@ -519,7 +548,7 @@
   const settingsPanel = document.getElementById("settings-panel");
   const threadListEl = document.getElementById("thread-list");
 
-  let conversations = new Map(); // convId -> {id, otherUid, otherEmail, lastText, updatedAt}
+  let conversations = new Map(); // convId -> {id, otherUid, otherNickname, lastText, updatedAt}
   let conversationsUnsub = null;
   let activeConvId = null;
   let activeOtherUid = null;
@@ -553,11 +582,11 @@
         snap.docs.forEach(doc => {
           const d = doc.data();
           const otherUid = d.participants.find(u => u !== myUid);
-          const otherEmail = (d.participantEmails && d.participantEmails[otherUid]) || "?";
+          const otherNickname = (d.participantNicknames && d.participantNicknames[otherUid]) || "?";
           conversations.set(doc.id, {
             id: doc.id,
             otherUid,
-            otherEmail,
+            otherNickname,
             updatedAt: d.updatedAt ? d.updatedAt.toMillis() : 0,
           });
         });
@@ -572,7 +601,7 @@
     if (!list.length) {
       const li = document.createElement("li");
       li.className = "empty-state";
-      li.textContent = "Henüz sohbet yok. '+' ile bir kişinin e-postasını ekle.";
+      li.textContent = "Henüz sohbet yok. '+' ile bir kişinin kullanıcı adını ekle.";
       li.style.cursor = "default";
       threadListEl.appendChild(li);
       return;
@@ -580,8 +609,8 @@
     list.forEach(conv => {
       const li = document.createElement("li");
       li.innerHTML = `<span class="thread-name"></span><span class="thread-preview">Aç ve sohbet et</span>`;
-      li.querySelector(".thread-name").textContent = conv.otherEmail;
-      li.addEventListener("click", () => openConversation(conv.id, conv.otherUid, conv.otherEmail));
+      li.querySelector(".thread-name").textContent = "@" + conv.otherNickname;
+      li.addEventListener("click", () => openConversation(conv.id, conv.otherUid, conv.otherNickname));
       threadListEl.appendChild(li);
     });
   }
@@ -594,16 +623,16 @@
     document.getElementById("new-thread-modal").classList.add("hidden");
   });
   document.getElementById("new-thread-create").addEventListener("click", async () => {
-    const email = document.getElementById("new-thread-name").value.trim().toLowerCase();
-    if (!email) return;
-    if (email === myEmail) {
-      alert("Kendi e-postanı ekleyemezsin.");
+    const nickname = normalizeNickname(document.getElementById("new-thread-name").value);
+    if (!nickname) return;
+    if (nickname === myNickname) {
+      alert("Kendi kullanıcı adını ekleyemezsin.");
       return;
     }
     try {
-      const q = await fbDb.collection("users").where("email", "==", email).limit(1).get();
+      const q = await fbDb.collection("users").where("nickname", "==", nickname).limit(1).get();
       if (q.empty) {
-        alert("Bu e-postayla kayıtlı bir kullanıcı bulunamadı.");
+        alert("Bu kullanıcı adıyla kayıtlı bir kullanıcı bulunamadı.");
         return;
       }
       const otherDoc = q.docs[0];
@@ -612,11 +641,11 @@
       const convId = convIdFor(myUid, otherUid);
       await fbDb.collection("conversations").doc(convId).set({
         participants: [myUid, otherUid],
-        participantEmails: { [myUid]: myEmail, [otherUid]: otherData.email },
+        participantNicknames: { [myUid]: myNickname, [otherUid]: otherData.nickname },
         updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
       }, { merge: true });
       document.getElementById("new-thread-modal").classList.add("hidden");
-      openConversation(convId, otherUid, otherData.email);
+      openConversation(convId, otherUid, otherData.nickname);
     } catch (e) {
       alert("Sohbet eklenemedi: " + e.message);
     }
@@ -666,8 +695,8 @@
           rp: { name: "Hesap Makinesi" },
           user: {
             id: crypto.getRandomValues(new Uint8Array(16)),
-            name: myEmail || "kullanici",
-            displayName: myEmail || "Kullanıcı",
+            name: myNickname || "kullanici",
+            displayName: myNickname || "Kullanıcı",
           },
           pubKeyCredParams: [{ type: "public-key", alg: -7 }, { type: "public-key", alg: -257 }],
           authenticatorSelection: { userVerification: "required" },
@@ -686,7 +715,7 @@
     if (conversationsUnsub) { conversationsUnsub(); conversationsUnsub = null; }
     if (messagesUnsub) { messagesUnsub(); messagesUnsub = null; }
     await fbAuth.signOut();
-    myUid = null; myEmail = null; myPrivateKey = null; myPublicKey = null;
+    myUid = null; myEmail = null; myNickname = null; myPrivateKey = null; myPublicKey = null;
     closeVaultToCalculator();
   });
 
@@ -705,13 +734,13 @@
   const attachPhotoBtn = document.getElementById("attach-photo-btn");
   const photoInput = document.getElementById("photo-input");
 
-  async function openConversation(convId, otherUid, otherEmail) {
+  async function openConversation(convId, otherUid, otherNickname) {
     activeConvId = convId;
     activeOtherUid = otherUid;
     threadListPanel.classList.add("hidden");
     threadDetailPanel.classList.remove("hidden");
     settingsPanel.classList.add("hidden");
-    document.getElementById("thread-title").textContent = otherEmail;
+    document.getElementById("thread-title").textContent = "@" + otherNickname;
     await getPublicKeyForUid(otherUid);
     listenToMessages(convId);
   }
