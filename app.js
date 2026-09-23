@@ -308,8 +308,18 @@
           openPendingPanel();
         }
         // Re-check the real status in the background in case it changed
-        // (e.g. got approved) while this device was locked.
-        fbDb.collection("users").doc(myUid).get().then(doc => {
+        // (e.g. got approved, or the referral got rejected) while this
+        // device was locked.
+        fbDb.collection("users").doc(myUid).get().then(async doc => {
+          if (!doc.exists) {
+            // The referral was rejected and the account no longer exists.
+            await fbAuth.signOut().catch(() => {});
+            await clearPersistedSession();
+            myUid = null; myNickname = null; myPrivateKey = null; myPublicKey = null; myStatus = null; myReferredByNickname = null;
+            openAuthPanel();
+            authError.textContent = "Referans başvurunuz reddedildi. Tekrar kayıt olabilirsiniz.";
+            return;
+          }
           const data = doc.data();
           if (!data) return;
           const freshStatus = data.status === undefined ? "approved" : data.status;
@@ -515,6 +525,8 @@
         await persistSession();
         pendingPanel.classList.add("hidden");
         enterMessenger();
+      } else if (!doc.exists) {
+        pendingMsg.textContent = "Referans başvurunuz reddedildi. Çıkış yapıp tekrar kayıt olabilirsiniz.";
       } else {
         pendingMsg.textContent = "Henüz onaylanmadı, tekrar dene.";
       }
@@ -1011,16 +1023,28 @@
       q.docs.forEach(doc => {
         const data = doc.data();
         const li = document.createElement("li");
-        li.innerHTML = `<span></span><button class="approve-btn">Onayla</button>`;
+        li.innerHTML = `<span></span><div class="referral-actions"><button class="approve-btn">Onayla</button><button class="reject-btn">Reddet</button></div>`;
         li.querySelector("span").textContent = "@" + data.nickname;
+        li.querySelectorAll("button").forEach(btn => btn.disabled = false);
         li.querySelector(".approve-btn").addEventListener("click", async (ev) => {
-          ev.target.disabled = true;
+          li.querySelectorAll("button").forEach(btn => btn.disabled = true);
           try {
             await fbDb.collection("users").doc(doc.id).update({ status: "approved" });
             li.remove();
           } catch (e) {
             alert("Onaylanamadı: " + e.message);
-            ev.target.disabled = false;
+            li.querySelectorAll("button").forEach(btn => btn.disabled = false);
+          }
+        });
+        li.querySelector(".reject-btn").addEventListener("click", async () => {
+          if (!confirm(`@${data.nickname} kullanıcısının referans başvurusu reddedilsin mi?`)) return;
+          li.querySelectorAll("button").forEach(btn => btn.disabled = true);
+          try {
+            await fbDb.collection("users").doc(doc.id).delete();
+            li.remove();
+          } catch (e) {
+            alert("Reddedilemedi: " + e.message);
+            li.querySelectorAll("button").forEach(btn => btn.disabled = false);
           }
         });
         listEl.appendChild(li);
