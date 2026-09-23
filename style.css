@@ -228,3 +228,34 @@ button.danger { background: var(--danger); color: #fff; }
 }
 .modal-actions { display: flex; gap: 10px; }
 .modal-actions button { flex: 1; }
+
+.forgot-link {
+  color: var(--accent);
+  text-align: center;
+  cursor: pointer;
+  font-size: 14px;
+  margin-top: 8px;
+}
+
+#attach-photo-btn {
+  background: #1c1f26;
+  border: 1px solid #333;
+  color: var(--panel-fg);
+  border-radius: 20px;
+  width: 40px;
+  height: 40px;
+  font-size: 16px;
+  cursor: pointer;
+}
+
+.msg-bubble img {
+  max-width: 100%;
+  border-radius: 10px;
+  display: block;
+}
+
+.settings-body label {
+  font-size: 13px;
+  color: #999;
+  margin-top: 4px;
+}

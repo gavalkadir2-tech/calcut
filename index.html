@@ -48,6 +48,18 @@
     <button id="vault-unlock-btn">Aç</button>
     <button id="vault-back-btn" class="ghost">Geri</button>
     <p id="vault-error" class="error"></p>
+    <p class="forgot-link" id="forgot-pin-link">PIN'i unuttum</p>
+  </div>
+
+  <div id="auth-panel" class="vault-panel hidden">
+    <h2 id="auth-title">Giriş Yap</h2>
+    <p>Gerçek mesajlaşma hesabınla giriş yap</p>
+    <input id="auth-email-input" type="email" placeholder="E-posta" autocomplete="username">
+    <input id="auth-password-input" type="password" placeholder="Parola" autocomplete="current-password">
+    <button id="auth-submit-btn">Giriş Yap</button>
+    <button id="auth-toggle-btn" class="ghost">Hesabın yok mu? Kayıt ol</button>
+    <button id="auth-back-btn" class="ghost">Geri</button>
+    <p id="auth-error" class="error"></p>
   </div>
 
   <div id="vault-app" class="vault-panel hidden">
@@ -71,6 +83,8 @@
       </div>
       <div id="message-list"></div>
       <div class="message-input-row">
+        <button id="attach-photo-btn" title="Fotoğraf ekle">📎</button>
+        <input id="photo-input" type="file" accept="image/*" class="hidden">
         <input id="message-input" type="text" placeholder="Mesaj yaz...">
         <button id="message-send-btn">Gönder</button>
       </div>
@@ -82,12 +96,17 @@
         <h2>Ayarlar</h2>
       </div>
       <div class="settings-body">
-        <label>Yeni PIN</label>
+        <label>Yeni PIN (bu cihaz için)</label>
         <input id="new-pin-input" type="password" inputmode="numeric" maxlength="12" placeholder="Yeni PIN">
         <button id="change-pin-btn">PIN'i Değiştir</button>
         <p id="settings-msg"></p>
         <hr>
-        <button id="wipe-vault-btn" class="danger">Tüm Verileri Sil</button>
+        <label>Ek güvenlik</label>
+        <button id="enable-biometric-btn">Biyometrik onay ekle</button>
+        <p id="biometric-msg"></p>
+        <hr>
+        <button id="logout-btn" class="ghost">Hesaptan Çıkış Yap</button>
+        <button id="wipe-vault-btn" class="danger">Tüm Yerel Verileri Sil</button>
       </div>
     </div>
   </div>
@@ -96,14 +115,18 @@
 <div id="new-thread-modal" class="modal hidden">
   <div class="modal-box">
     <h3>Yeni Sohbet</h3>
-    <input id="new-thread-name" type="text" placeholder="Kişi adı">
+    <input id="new-thread-name" type="email" placeholder="Kişinin e-postası">
     <div class="modal-actions">
       <button id="new-thread-cancel" class="ghost">İptal</button>
-      <button id="new-thread-create">Oluştur</button>
+      <button id="new-thread-create">Ekle</button>
     </div>
   </div>
 </div>
 
+<script src="https://www.gstatic.com/firebasejs/10.13.1/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.13.1/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.13.1/firebase-firestore-compat.js"></script>
+<script src="firebase-config.js"></script>
 <script src="app.js"></script>
 </body>
 </html>
