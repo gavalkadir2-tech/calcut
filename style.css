@@ -223,6 +223,35 @@ button.danger { background: var(--danger); color: #fff; }
 .msg-edited { font-size: 10px; opacity: 0.6; font-style: italic; }
 .msg-bubble.deleted .deleted-text { font-style: italic; opacity: 0.6; }
 
+.msg-reactions { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 2px; }
+.msg-reaction-badge {
+  background: rgba(255,255,255,0.12);
+  border-radius: 10px;
+  padding: 1px 6px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.msg-reaction-badge.mine { background: var(--accent); color: #111; }
+
+#reaction-picker {
+  position: fixed;
+  display: flex;
+  gap: 6px;
+  background: var(--panel-bg);
+  border: 1px solid #333;
+  border-radius: 20px;
+  padding: 6px 10px;
+  z-index: 50;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+}
+#reaction-picker .reaction-opt {
+  background: none;
+  border: none;
+  font-size: 20px;
+  cursor: pointer;
+  padding: 2px;
+}
+
 #thread-search-btn, #thread-block-btn, #thread-disappearing-btn, #thread-mute-btn {
   background: #1c1f26;
   border: 1px solid #333;
