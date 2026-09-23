@@ -854,7 +854,7 @@
       .onSnapshot(async snap => {
         if (snap.empty) return;
         const d = snap.docs[0].data();
-        const preview = d.type === "image" ? "📷 Fotoğraf" : await decryptMessage(d).catch(() => "[çözülemedi]");
+        const preview = d.type === "image" ? "📷 Fotoğraf" : d.type === "file" ? "📄 Dosya" : await decryptMessage(d).catch(() => "[çözülemedi]");
         const conv = conversations.get(convId);
         if (!conv) return;
         conv.lastPreview = (d.from === myUid ? "Sen: " : "") + preview;
@@ -918,6 +918,12 @@
         if (!threadDetailPanel.classList.contains("hidden")) return;
         renderThreadList();
       }, err => console.error("conversations listen error", err));
+  }
+
+  function formatFileSize(bytes) {
+    if (bytes < 1024) return bytes + " B";
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + " KB";
+    return (bytes / (1024 * 1024)).toFixed(1) + " MB";
   }
 
   function formatThreadTime(ts) {
@@ -1337,10 +1343,15 @@
           if (d.from !== myUid && !d.read) {
             doc.ref.update({ read: true }).catch(() => {});
           }
+          let file = null;
+          if (d.type === "file") {
+            try { file = JSON.parse(plain); } catch (e) { file = null; }
+          }
           rendered.push({
             from: d.from === myUid ? "me" : "them",
-            text: d.type === "image" ? null : plain,
+            text: (d.type === "image" || d.type === "file") ? null : plain,
             image: d.type === "image" ? plain : null,
+            file,
             ts: d.ts ? d.ts.toMillis() : Date.now(),
             read: !!d.read,
           });
@@ -1435,6 +1446,27 @@
         const img = document.createElement("img");
         img.src = m.image;
         div.appendChild(img);
+      } else if (m.file) {
+        const link = document.createElement("a");
+        link.className = "file-attachment";
+        link.href = m.file.dataUrl;
+        link.download = m.file.name || "dosya";
+        const icon = document.createElement("span");
+        icon.className = "file-icon";
+        icon.textContent = "📄";
+        const info = document.createElement("span");
+        info.className = "file-info";
+        const nameSpan = document.createElement("span");
+        nameSpan.className = "file-name";
+        nameSpan.textContent = m.file.name || "Dosya";
+        const sizeSpan = document.createElement("span");
+        sizeSpan.className = "file-size";
+        sizeSpan.textContent = m.file.size ? formatFileSize(m.file.size) : "";
+        info.appendChild(nameSpan);
+        info.appendChild(sizeSpan);
+        link.appendChild(icon);
+        link.appendChild(info);
+        div.appendChild(link);
       } else {
         const span = document.createElement("span");
         appendHighlightedText(span, m.text, query);
@@ -1525,16 +1557,26 @@
     const file = photoInput.files[0];
     photoInput.value = "";
     if (!file) return;
-    if (file.size > 3 * 1024 * 1024) {
-      alert("Fotoğraf çok büyük (maks 3MB).");
+    const isImage = file.type.startsWith("image/");
+    // Firestore caps a document at ~1MiB, and base64 + JSON wrapping + E2E
+    // encryption overhead all inflate the stored size well past the raw
+    // file size, so the caps here are much smaller than that limit.
+    const maxSize = isImage ? 3 * 1024 * 1024 : 500 * 1024;
+    if (file.size > maxSize) {
+      alert(isImage ? "Fotoğraf çok büyük (maks 3MB)." : "Dosya çok büyük (maks 500KB).");
       return;
     }
     const reader = new FileReader();
     reader.onload = async () => {
       try {
-        await sendEncrypted(reader.result, "image");
+        if (isImage) {
+          await sendEncrypted(reader.result, "image");
+        } else {
+          const payload = JSON.stringify({ name: file.name, mime: file.type, size: file.size, dataUrl: reader.result });
+          await sendEncrypted(payload, "file");
+        }
       } catch (e) {
-        alert("Fotoğraf gönderilemedi: " + e.message);
+        alert("Dosya gönderilemedi: " + e.message);
       }
     };
     reader.readAsDataURL(file);

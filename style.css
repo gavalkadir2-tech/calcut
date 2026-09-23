@@ -331,6 +331,26 @@ button.danger { background: var(--danger); color: #fff; }
   display: block;
 }
 
+.file-attachment {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  text-decoration: none;
+  color: inherit;
+  min-width: 160px;
+}
+.file-icon { font-size: 24px; }
+.file-info { display: flex; flex-direction: column; min-width: 0; }
+.file-name {
+  font-size: 14px;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 160px;
+}
+.file-size { font-size: 11px; opacity: 0.7; }
+
 .settings-body label {
   font-size: 13px;
   color: #999;
