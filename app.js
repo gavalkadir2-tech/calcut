@@ -741,6 +741,52 @@
   let activeOtherUid = null;
   let messagesUnsub = null;
   const lastMessageUnsubs = new Map(); // convId -> unsub
+  const previousUnread = new Map(); // convId -> last known unread count, for alarm-trigger edge detection
+
+  // ---- Alarm-style notification: disguised as a phone alarm going off,
+  // never mentions messages, senders or nicknames. Only fires while this
+  // tab/PWA is open (foreground or backgrounded) — there is no server-side
+  // push set up, so a fully closed app or locked phone won't ring.
+
+  function playAlarmSound() {
+    try {
+      const Ctx = window.AudioContext || window.webkitAudioContext;
+      if (!Ctx) return;
+      const ctx = new Ctx();
+      const now = ctx.currentTime;
+      const beeps = 4;
+      for (let i = 0; i < beeps; i++) {
+        const start = now + i * 0.5;
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = "sine";
+        osc.frequency.value = 880;
+        gain.gain.setValueAtTime(0.0001, start);
+        gain.gain.exponentialRampToValueAtTime(0.35, start + 0.05);
+        gain.gain.exponentialRampToValueAtTime(0.0001, start + 0.3);
+        osc.connect(gain).connect(ctx.destination);
+        osc.start(start);
+        osc.stop(start + 0.35);
+      }
+      setTimeout(() => ctx.close().catch(() => {}), (beeps * 0.5 + 1) * 1000);
+    } catch (e) {}
+  }
+
+  function showAlarmNotification() {
+    if (!("Notification" in window) || Notification.permission !== "granted") return;
+    const timeStr = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    try {
+      new Notification("Alarm", { body: timeStr, tag: "calcut-alarm", silent: true, requireInteraction: false });
+    } catch (e) {}
+  }
+
+  function triggerAlarmAlert() {
+    playAlarmSound();
+    showAlarmNotification();
+    if (navigator.vibrate) {
+      try { navigator.vibrate([300, 150, 300, 150, 300]); } catch (e) {}
+    }
+  }
 
   function convIdFor(uidA, uidB) {
     return [uidA, uidB].sort().join("_");
@@ -771,6 +817,7 @@
     lastMessageUnsubs.forEach(unsub => unsub());
     lastMessageUnsubs.clear();
     conversations.clear();
+    previousUnread.clear();
   }
 
   function subscribeLastMessage(convId, attempt) {
@@ -809,6 +856,7 @@
         snap.docChanges().forEach(change => {
           if (change.type === "removed") {
             conversations.delete(change.doc.id);
+            previousUnread.delete(change.doc.id);
             if (lastMessageUnsubs.has(change.doc.id)) {
               lastMessageUnsubs.get(change.doc.id)();
               lastMessageUnsubs.delete(change.doc.id);
@@ -830,6 +878,16 @@
             lastTs: existing.lastTs || 0,
           });
           subscribeLastMessage(change.doc.id);
+
+          // Fire the alarm-style notification for a new message: only once
+          // we've already seen this conversation before (skip the initial
+          // snapshot on login, which would otherwise fire for old unread
+          // messages) and only if it's not the conversation currently open.
+          const prev = previousUnread.get(change.doc.id);
+          if (prev !== undefined && unread > prev && change.doc.id !== activeConvId) {
+            triggerAlarmAlert();
+          }
+          previousUnread.set(change.doc.id, unread);
         });
         if (!threadDetailPanel.classList.contains("hidden")) return;
         renderThreadList();
@@ -932,6 +990,7 @@
     document.getElementById("new-pin-input").value = "";
     document.getElementById("settings-msg").textContent = "";
     document.getElementById("biometric-msg").textContent = "";
+    document.getElementById("alarm-msg").textContent = "";
     loadPendingReferrals();
   });
   document.getElementById("settings-back-btn").addEventListener("click", showThreadList);
@@ -1010,6 +1069,25 @@
       msgEl.textContent = "Biyometrik onay etkinleştirildi.";
     } catch (e) {
       msgEl.textContent = "Biyometrik kayıt başarısız: " + e.message;
+    }
+  });
+
+  document.getElementById("enable-alarm-btn").addEventListener("click", async () => {
+    const msgEl = document.getElementById("alarm-msg");
+    if (!("Notification" in window)) {
+      msgEl.textContent = "Bu tarayıcı bildirimleri desteklemiyor.";
+      return;
+    }
+    try {
+      const perm = await Notification.requestPermission();
+      if (perm === "granted") {
+        msgEl.textContent = "Bildirimler etkinleştirildi. Uygulama açıkken (arka planda dahi) yeni mesajda alarm çalacak.";
+        triggerAlarmAlert();
+      } else {
+        msgEl.textContent = "Bildirim izni verilmedi.";
+      }
+    } catch (e) {
+      msgEl.textContent = "Bildirimler etkinleştirilemedi: " + e.message;
     }
   });
 
