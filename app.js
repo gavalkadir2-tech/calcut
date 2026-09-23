@@ -268,6 +268,7 @@
     lockPanel.classList.remove("hidden");
     authPanel.classList.add("hidden");
     appPanel.classList.add("hidden");
+    document.getElementById("pending-panel").classList.add("hidden");
     clearAll();
     renderCalc();
   }
@@ -298,7 +299,11 @@
     }
     lockPanel.classList.add("hidden");
     if (fbAuth.currentUser && myPrivateKey) {
-      enterMessenger();
+      if (myStatus === "approved") {
+        enterMessenger();
+      } else {
+        openPendingPanel();
+      }
     } else {
       openAuthPanel();
     }
@@ -365,6 +370,8 @@
   let myNickname = null;
   let myPrivateKey = null;
   let myPublicKey = null;
+  let myStatus = null; // "pending" or "approved"
+  let myReferredByNickname = null;
   const publicKeyCache = new Map(); // uid -> CryptoKey
 
   // Firebase Auth's email/password provider is used purely as a mechanism —
@@ -378,22 +385,28 @@
 
   const authTitle = document.getElementById("auth-title");
   const authNicknameInput = document.getElementById("auth-nickname-input");
+  const authReferrerInput = document.getElementById("auth-referrer-input");
   const authPasswordInput = document.getElementById("auth-password-input");
   const authSubmitBtn = document.getElementById("auth-submit-btn");
   const authToggleBtn = document.getElementById("auth-toggle-btn");
   const authBackBtn = document.getElementById("auth-back-btn");
   const authError = document.getElementById("auth-error");
+  const pendingPanel = document.getElementById("pending-panel");
+  const pendingReferrerEl = document.getElementById("pending-referrer");
+  const pendingMsg = document.getElementById("pending-msg");
   let authMode = "login"; // or "signup"
 
   function openAuthPanel() {
     authPanel.classList.remove("hidden");
     appPanel.classList.add("hidden");
+    pendingPanel.classList.add("hidden");
     authError.textContent = "";
     authPasswordInput.value = "";
     authMode = "login";
     authTitle.textContent = "Giriş Yap";
     authSubmitBtn.textContent = "Giriş Yap";
     authToggleBtn.textContent = "Hesabın yok mu? Kayıt ol";
+    authReferrerInput.classList.add("hidden");
   }
 
   authToggleBtn.addEventListener("click", () => {
@@ -401,7 +414,40 @@
     authTitle.textContent = authMode === "login" ? "Giriş Yap" : "Hesap Oluştur";
     authSubmitBtn.textContent = authMode === "login" ? "Giriş Yap" : "Kayıt Ol";
     authToggleBtn.textContent = authMode === "login" ? "Hesabın yok mu? Kayıt ol" : "Zaten hesabın var mı? Giriş yap";
+    authReferrerInput.classList.toggle("hidden", authMode !== "signup");
     authError.textContent = "";
+  });
+
+  function openPendingPanel() {
+    authPanel.classList.add("hidden");
+    appPanel.classList.add("hidden");
+    pendingPanel.classList.remove("hidden");
+    pendingReferrerEl.textContent = myReferredByNickname ? "@" + myReferredByNickname : "referans kullanıcının";
+    pendingMsg.textContent = "";
+  }
+
+  document.getElementById("pending-refresh-btn").addEventListener("click", async () => {
+    pendingMsg.textContent = "Kontrol ediliyor...";
+    try {
+      const doc = await fbDb.collection("users").doc(myUid).get();
+      const data = doc.data();
+      if (data && data.status === "approved") {
+        myStatus = "approved";
+        pendingPanel.classList.add("hidden");
+        enterMessenger();
+      } else {
+        pendingMsg.textContent = "Henüz onaylanmadı, tekrar dene.";
+      }
+    } catch (e) {
+      pendingMsg.textContent = "Kontrol edilemedi: " + e.message;
+    }
+  });
+
+  document.getElementById("pending-logout-btn").addEventListener("click", async () => {
+    await fbAuth.signOut();
+    myUid = null; myNickname = null; myPrivateKey = null; myPublicKey = null; myStatus = null; myReferredByNickname = null;
+    pendingPanel.classList.add("hidden");
+    closeVaultToCalculator();
   });
 
   function normalizeNickname(raw) {
@@ -418,40 +464,92 @@
     );
   }
 
-  async function signUp(nicknameRaw, password) {
+  async function signUp(nicknameRaw, password, referrerNicknameRaw) {
     const nickname = normalizeNickname(nicknameRaw);
     if (nickname.length < 3) {
       throw new Error("Kullanıcı adı en az 3 karakter olmalı (harf, rakam, alt çizgi).");
     }
+    const referrerNickname = normalizeNickname(referrerNicknameRaw || "");
 
     const cred = await fbAuth.createUserWithEmailAndPassword(nicknameToSyntheticEmail(nickname), password);
     const uid = cred.user.uid;
-    const keyPair = await generateKeyPair();
-    const pubJwk = await crypto.subtle.exportKey("jwk", keyPair.publicKey);
-    const privJwk = await crypto.subtle.exportKey("jwk", keyPair.privateKey);
 
-    const pkSalt = crypto.getRandomValues(new Uint8Array(16));
-    const pkKey = await deriveKeyFromSecret(password, pkSalt);
-    const iv = crypto.getRandomValues(new Uint8Array(12));
-    const encPriv = await crypto.subtle.encrypt(
-      { name: "AES-GCM", iv },
-      pkKey,
-      new TextEncoder().encode(JSON.stringify(privJwk))
-    );
+    try {
+      let status = "pending";
+      let referredBy = null;
+      let referredByNickname = null;
 
-    await fbDb.collection("users").doc(uid).set({
-      nickname,
-      publicKeyJwk: pubJwk,
-      pkSalt: b64encode(pkSalt.buffer),
-      encPrivateKey: { iv: b64encode(iv.buffer), data: b64encode(encPriv) },
-      createdAt: firebase.firestore.FieldValue.serverTimestamp(),
-    });
+      if (referrerNickname) {
+        const refQ = await fbDb.collection("users").where("nickname", "==", referrerNickname).limit(1).get();
+        if (refQ.empty) {
+          throw new Error("Referans kullanıcı bulunamadı.");
+        }
+        const refData = refQ.docs[0].data();
+        // Accounts predating this feature have no status field — treat them
+        // as approved client-side too, for an accurate error message (the
+        // Firestore rules require the field to actually be set, though).
+        const refStatus = refData.status === undefined ? "approved" : refData.status;
+        if (refStatus !== "approved") {
+          throw new Error("Referans kullanıcı henüz onaylı değil.");
+        }
+        referredBy = refQ.docs[0].id;
+        referredByNickname = refData.nickname;
+      } else {
+        // No referrer given: only acceptable if this is the very first account
+        // in the system (bootstrap), which is auto-approved.
+        const bootstrapDoc = await fbDb.collection("meta").doc("bootstrap").get();
+        if (bootstrapDoc.exists) {
+          throw new Error("Kayıt olmak için onaylı bir kullanıcının referans kullanıcı adı gerekli.");
+        }
+        status = "approved";
+      }
 
-    myUid = uid;
-    myNickname = nickname;
-    myPrivateKey = keyPair.privateKey;
-    myPublicKey = keyPair.publicKey;
-    publicKeyCache.set(uid, keyPair.publicKey);
+      const keyPair = await generateKeyPair();
+      const pubJwk = await crypto.subtle.exportKey("jwk", keyPair.publicKey);
+      const privJwk = await crypto.subtle.exportKey("jwk", keyPair.privateKey);
+
+      const pkSalt = crypto.getRandomValues(new Uint8Array(16));
+      const pkKey = await deriveKeyFromSecret(password, pkSalt);
+      const iv = crypto.getRandomValues(new Uint8Array(12));
+      const encPriv = await crypto.subtle.encrypt(
+        { name: "AES-GCM", iv },
+        pkKey,
+        new TextEncoder().encode(JSON.stringify(privJwk))
+      );
+
+      const batch = fbDb.batch();
+      batch.set(fbDb.collection("users").doc(uid), {
+        nickname,
+        publicKeyJwk: pubJwk,
+        pkSalt: b64encode(pkSalt.buffer),
+        encPrivateKey: { iv: b64encode(iv.buffer), data: b64encode(encPriv) },
+        status,
+        referredBy,
+        referredByNickname,
+        createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+      });
+      if (status === "approved") {
+        // Closes the bootstrap gate: the security rules only allow a
+        // referrer-less, pre-approved signup while this doc doesn't exist yet,
+        // so only the very first account can ever take this path.
+        batch.set(fbDb.collection("meta").doc("bootstrap"), {
+          uid,
+          createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+        });
+      }
+      await batch.commit();
+
+      myUid = uid;
+      myNickname = nickname;
+      myPrivateKey = keyPair.privateKey;
+      myPublicKey = keyPair.publicKey;
+      myStatus = status;
+      myReferredByNickname = referredByNickname;
+      publicKeyCache.set(uid, keyPair.publicKey);
+    } catch (e) {
+      await cred.user.delete().catch(() => {});
+      throw e;
+    }
   }
 
   async function logIn(nicknameRaw, password) {
@@ -487,12 +585,17 @@
     myNickname = data.nickname || nickname;
     myPrivateKey = privateKey;
     myPublicKey = publicKey;
+    // Accounts created before this feature existed have no status field at
+    // all — grandfather them in as approved rather than locking them out.
+    myStatus = data.status === undefined ? "approved" : data.status;
+    myReferredByNickname = data.referredByNickname || null;
     publicKeyCache.set(uid, publicKey);
   }
 
   authSubmitBtn.addEventListener("click", async () => {
     const nickname = authNicknameInput.value;
     const password = authPasswordInput.value;
+    const referrer = authReferrerInput.value;
     if (normalizeNickname(nickname).length < 3) {
       authError.textContent = "Kullanıcı adı en az 3 karakter olmalı (harf, rakam, alt çizgi).";
       return;
@@ -505,11 +608,15 @@
     authSubmitBtn.disabled = true;
     try {
       if (authMode === "signup") {
-        await signUp(nickname, password);
+        await signUp(nickname, password, referrer);
       } else {
         await logIn(nickname, password);
       }
-      enterMessenger();
+      if (myStatus === "approved") {
+        enterMessenger();
+      } else {
+        openPendingPanel();
+      }
     } catch (e) {
       authError.textContent = humanizeAuthError(e);
     } finally {
@@ -558,6 +665,10 @@
   }
 
   function enterMessenger() {
+    if (myStatus !== "approved") {
+      openPendingPanel();
+      return;
+    }
     lockPanel.classList.add("hidden");
     authPanel.classList.add("hidden");
     appPanel.classList.remove("hidden");
@@ -739,8 +850,44 @@
     document.getElementById("new-pin-input").value = "";
     document.getElementById("settings-msg").textContent = "";
     document.getElementById("biometric-msg").textContent = "";
+    loadPendingReferrals();
   });
   document.getElementById("settings-back-btn").addEventListener("click", showThreadList);
+
+  async function loadPendingReferrals() {
+    const listEl = document.getElementById("pending-referrals-list");
+    listEl.innerHTML = "<li class='empty-state'>Yükleniyor...</li>";
+    try {
+      const q = await fbDb.collection("users")
+        .where("referredBy", "==", myUid)
+        .where("status", "==", "pending")
+        .get();
+      listEl.innerHTML = "";
+      if (q.empty) {
+        listEl.innerHTML = "<li class='empty-state'>Bekleyen referans yok.</li>";
+        return;
+      }
+      q.docs.forEach(doc => {
+        const data = doc.data();
+        const li = document.createElement("li");
+        li.innerHTML = `<span></span><button class="approve-btn">Onayla</button>`;
+        li.querySelector("span").textContent = "@" + data.nickname;
+        li.querySelector(".approve-btn").addEventListener("click", async (ev) => {
+          ev.target.disabled = true;
+          try {
+            await fbDb.collection("users").doc(doc.id).update({ status: "approved" });
+            li.remove();
+          } catch (e) {
+            alert("Onaylanamadı: " + e.message);
+            ev.target.disabled = false;
+          }
+        });
+        listEl.appendChild(li);
+      });
+    } catch (e) {
+      listEl.innerHTML = "<li class='empty-state'>Yüklenemedi.</li>";
+    }
+  }
 
   document.getElementById("change-pin-btn").addEventListener("click", async () => {
     const newPin = document.getElementById("new-pin-input").value.trim();
@@ -787,7 +934,7 @@
     if (!confirm("Hesabından çıkış yapılsın mı?")) return;
     stopAllMessengerListeners();
     await fbAuth.signOut();
-    myUid = null; myNickname = null; myPrivateKey = null; myPublicKey = null;
+    myUid = null; myNickname = null; myPrivateKey = null; myPublicKey = null; myStatus = null; myReferredByNickname = null;
     closeVaultToCalculator();
   });
 

@@ -55,11 +55,20 @@
     <h2 id="auth-title">Giriş Yap</h2>
     <p>Gerçek mesajlaşma hesabınla giriş yap</p>
     <input id="auth-nickname-input" type="text" placeholder="Kullanıcı adı" autocomplete="username">
+    <input id="auth-referrer-input" type="text" placeholder="Referans kullanıcı adı" class="hidden">
     <input id="auth-password-input" type="password" placeholder="Parola" autocomplete="current-password">
     <button id="auth-submit-btn">Giriş Yap</button>
     <button id="auth-toggle-btn" class="ghost">Hesabın yok mu? Kayıt ol</button>
     <button id="auth-back-btn" class="ghost">Geri</button>
     <p id="auth-error" class="error"></p>
+  </div>
+
+  <div id="pending-panel" class="vault-panel hidden">
+    <h2>Onay Bekleniyor</h2>
+    <p>Hesabın <span id="pending-referrer"></span> tarafından onaylanana kadar mesajlaşma özelliklerini kullanamazsın.</p>
+    <button id="pending-refresh-btn">Durumu Kontrol Et</button>
+    <button id="pending-logout-btn" class="ghost">Çıkış Yap</button>
+    <p id="pending-msg"></p>
   </div>
 
   <div id="vault-app" class="vault-panel hidden">
@@ -104,6 +113,9 @@
         <label>Ek güvenlik</label>
         <button id="enable-biometric-btn">Biyometrik onay ekle</button>
         <p id="biometric-msg"></p>
+        <hr>
+        <label>Bekleyen Referanslar</label>
+        <ul id="pending-referrals-list"></ul>
         <hr>
         <button id="logout-btn" class="ghost">Hesaptan Çıkış Yap</button>
         <button id="wipe-vault-btn" class="danger">Tüm Yerel Verileri Sil</button>
