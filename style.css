@@ -211,6 +211,33 @@ button.danger { background: var(--danger); color: #fff; }
 .msg-tick { font-size: 11px; color: #b8c4d9; }
 .msg-tick.read { color: #4fc3f7; }
 
+#thread-search-btn {
+  background: #1c1f26;
+  border: 1px solid #333;
+  color: var(--panel-fg);
+  border-radius: 8px;
+  padding: 8px 12px;
+  cursor: pointer;
+  font-size: 16px;
+}
+#thread-search-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-bottom: 8px;
+}
+#thread-search-bar input {
+  flex: 1;
+  background: #1c1f26;
+  border: 1px solid #333;
+  color: #fff;
+  padding: 8px 12px;
+  border-radius: 8px;
+}
+#thread-search-count { font-size: 12px; color: #888; white-space: nowrap; }
+.msg-bubble.search-hidden { display: none; }
+.msg-bubble mark { background: var(--accent); color: #111; border-radius: 2px; }
+
 .message-input-row { display: flex; gap: 8px; padding-top: 10px; }
 .message-input-row input {
   flex: 1;
