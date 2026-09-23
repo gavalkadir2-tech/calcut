@@ -1385,7 +1385,11 @@
   const callActionsActive = document.getElementById("call-actions-active");
   const callActionsOutgoing = document.getElementById("call-actions-outgoing");
   const callMuteBtn = document.getElementById("call-mute-btn");
+  const callSpeakerBtn = document.getElementById("call-speaker-btn");
   const threadCallBtn = document.getElementById("thread-call-btn");
+  const SINK_ID_SUPPORTED = typeof HTMLMediaElement !== "undefined" && "setSinkId" in HTMLMediaElement.prototype;
+  let isSpeakerOn = false;
+  let speakerSinkId = null; // resolved lazily from enumerateDevices, once we have mic permission labels
 
   let activeCallId = null;
   let activeCallRole = null; // "caller" or "callee"
@@ -1482,6 +1486,7 @@
     isMuted = false;
     callMuteBtn.classList.remove("active");
     callMuteBtn.textContent = "Sessize Al";
+    resetAudioRouting();
     callStartedAt = Date.now();
     clearInterval(callTimerInterval);
     callTimerInterval = setInterval(() => {
@@ -1735,6 +1740,9 @@
     if (remoteAudioEl) { remoteAudioEl.srcObject = null; }
     if (callDocUnsub) { callDocUnsub(); callDocUnsub = null; }
     if (remoteCandidatesUnsub) { remoteCandidatesUnsub(); remoteCandidatesUnsub = null; }
+    isSpeakerOn = false;
+    callSpeakerBtn.classList.remove("active");
+    callSpeakerBtn.textContent = "Hoparlör";
 
     const role = activeCallRole;
     const durationSec = callWasConnected && callStartedAt ? Math.max(0, Math.round((Date.now() - callStartedAt) / 1000)) : 0;
@@ -1805,6 +1813,62 @@
     localStream.getAudioTracks().forEach(t => { t.enabled = !isMuted; });
     callMuteBtn.classList.toggle("active", isMuted);
     callMuteBtn.textContent = isMuted ? "Sesi Aç" : "Sessize Al";
+  });
+
+  /* ---------------- Speaker / earpiece output routing ----------------
+     A real web-platform limitation: there is no API to say "start this
+     call on the earpiece" the way native phone apps can — setSinkId() only
+     lets us pick among the audio OUTPUT devices the OS already exposes
+     (and iOS Safari doesn't support it at all). On phones that do expose a
+     distinct "Speakerphone" device, this lets people switch to it and back
+     to the default (which is normally the earpiece on a phone call) —
+     that's the most a web page can control. */
+
+  async function findSpeakerDeviceId() {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) return null;
+    try {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const speaker = devices.find(d => d.kind === "audiooutput" && /speaker/i.test(d.label));
+      return speaker ? speaker.deviceId : null;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  async function applySinkId(sinkId) {
+    if (!remoteAudioEl || !SINK_ID_SUPPORTED) return false;
+    try {
+      await remoteAudioEl.setSinkId(sinkId || "");
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  async function resetAudioRouting() {
+    isSpeakerOn = false;
+    callSpeakerBtn.classList.remove("active");
+    callSpeakerBtn.textContent = "Hoparlör";
+    callSpeakerBtn.classList.toggle("hidden", !SINK_ID_SUPPORTED);
+    if (SINK_ID_SUPPORTED) {
+      speakerSinkId = await findSpeakerDeviceId();
+      // Explicitly (re-)select the default output — on phones this is
+      // normally the earpiece — in case the OS had defaulted to speaker.
+      await applySinkId("");
+    }
+  }
+
+  callSpeakerBtn.addEventListener("click", async () => {
+    if (!SINK_ID_SUPPORTED) return;
+    isSpeakerOn = !isSpeakerOn;
+    const ok = await applySinkId(isSpeakerOn ? (speakerSinkId || "") : "");
+    if (!ok) {
+      isSpeakerOn = !isSpeakerOn; // revert, nothing actually changed
+      callErrorEl.textContent = "Ses çıkışı değiştirilemedi.";
+      return;
+    }
+    callSpeakerBtn.classList.toggle("active", isSpeakerOn);
+    callSpeakerBtn.textContent = isSpeakerOn ? "Kulaklık" : "Hoparlör";
   });
 
   /* ---------------- Typing indicator ---------------- */
