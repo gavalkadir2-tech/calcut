@@ -919,7 +919,9 @@
         if (snap.empty) return;
         const d = snap.docs[0].data();
         let preview;
-        if (d.type === "image") {
+        if (d.deleted) {
+          preview = "Bu mesaj silindi";
+        } else if (d.type === "image") {
           preview = "📷 Fotoğraf";
         } else if (d.type === "file") {
           preview = "📄 Dosya";
@@ -2146,6 +2148,14 @@
           const d = doc.data();
           const expiresAtMillis = d.expiresAt ? d.expiresAt.toMillis() : null;
           if (expiresAtMillis && expiresAtMillis <= now) continue; // already expired: hide, will be purged shortly
+          if (d.deleted) {
+            rendered.push({
+              id: doc.id, type: d.type, from: d.from === myUid ? "me" : "them",
+              deleted: true, text: null, image: null, file: null, call: null,
+              ts: d.ts ? d.ts.toMillis() : Date.now(), read: !!d.read, expiresAtMillis,
+            });
+            continue;
+          }
           const plain = await decryptMessage(d).catch(() => "[çözülemedi]");
           // The conversation is open right now, so any message from the other
           // person is by definition being read as it arrives.
@@ -2161,6 +2171,8 @@
             try { call = JSON.parse(plain); } catch (e) { call = null; }
           }
           rendered.push({
+            id: doc.id,
+            type: d.type,
             from: d.from === myUid ? "me" : "them",
             text: (d.type === "image" || d.type === "file" || d.type === "call") ? null : plain,
             image: d.type === "image" ? plain : null,
@@ -2169,6 +2181,8 @@
             ts: d.ts ? d.ts.toMillis() : Date.now(),
             read: !!d.read,
             expiresAtMillis,
+            deleted: false,
+            edited: !!d.edited,
           });
         }
         currentMessages = rendered;
@@ -2261,13 +2275,27 @@
     msgs.forEach(m => {
       if (m.expiresAtMillis && m.expiresAtMillis <= Date.now()) return;
       if (query) {
-        // Images and call log entries aren't searchable (no text to match),
-        // so hide them while filtering; only text messages containing the
-        // query are shown.
-        if (m.image || !m.text || !m.text.toLowerCase().includes(query.toLowerCase())) return;
+        // Images, call log entries and deleted messages aren't searchable
+        // (no text to match), so hide them while filtering; only text
+        // messages containing the query are shown.
+        if (m.deleted || m.image || !m.text || !m.text.toLowerCase().includes(query.toLowerCase())) return;
         matchCount++;
       }
       const time = new Date(m.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+      if (m.deleted) {
+        const div = document.createElement("div");
+        div.className = "msg-bubble " + m.from + " deleted";
+        const span = document.createElement("span");
+        span.className = "deleted-text";
+        span.textContent = "Bu mesaj silindi";
+        div.appendChild(span);
+        const timeSpan = document.createElement("span");
+        timeSpan.className = "msg-time";
+        timeSpan.textContent = time;
+        div.appendChild(timeSpan);
+        messageListEl.appendChild(div);
+        return;
+      }
       if (m.call) {
         const callDiv = document.createElement("div");
         const missedOrRejected = m.call.outcome === "missed" || m.call.outcome === "rejected";
@@ -2284,6 +2312,7 @@
       }
       const div = document.createElement("div");
       div.className = "msg-bubble " + m.from;
+      div.dataset.msgId = m.id;
       if (m.image) {
         const img = document.createElement("img");
         img.src = m.image;
@@ -2316,6 +2345,12 @@
       }
       const metaRow = document.createElement("span");
       metaRow.className = "msg-meta";
+      if (m.edited) {
+        const editedSpan = document.createElement("span");
+        editedSpan.className = "msg-edited";
+        editedSpan.textContent = "düzenlendi";
+        metaRow.appendChild(editedSpan);
+      }
       const timeSpan = document.createElement("span");
       timeSpan.className = "msg-time";
       timeSpan.textContent = time;
@@ -2325,6 +2360,18 @@
         tick.className = "msg-tick" + (m.read ? " read" : "");
         tick.textContent = "✓✓";
         metaRow.appendChild(tick);
+        if (m.type === "text") {
+          const editBtn = document.createElement("button");
+          editBtn.className = "msg-action msg-edit-btn";
+          editBtn.textContent = "✎";
+          editBtn.dataset.msgId = m.id;
+          metaRow.appendChild(editBtn);
+        }
+        const delBtn = document.createElement("button");
+        delBtn.className = "msg-action msg-delete-btn";
+        delBtn.textContent = "🗑";
+        delBtn.dataset.msgId = m.id;
+        metaRow.appendChild(delBtn);
       }
       div.appendChild(metaRow);
       messageListEl.appendChild(div);
@@ -2333,6 +2380,59 @@
     if (query) {
       threadSearchCount.textContent = matchCount === 0 ? "Sonuç yok" : matchCount + " sonuç";
     }
+  }
+
+  /* ---------------- Message delete / edit (sender only) ---------------- */
+
+  messageListEl.addEventListener("click", async (e) => {
+    const delBtn = e.target.closest(".msg-delete-btn");
+    if (delBtn) {
+      if (!confirm("Bu mesaj silinsin mi? (Herkes için)")) return;
+      try {
+        await fbDb.collection("conversations").doc(activeConvId).collection("messages")
+          .doc(delBtn.dataset.msgId).update({ deleted: true, deletedAt: firebase.firestore.FieldValue.serverTimestamp() });
+      } catch (e2) {
+        alert("Silinemedi: " + e2.message);
+      }
+      return;
+    }
+    const editBtn = e.target.closest(".msg-edit-btn");
+    if (editBtn) {
+      const msg = currentMessages.find(m => m.id === editBtn.dataset.msgId);
+      if (!msg) return;
+      const newText = prompt("Mesajı düzenle:", msg.text || "");
+      if (newText === null) return;
+      const trimmed = newText.trim();
+      if (!trimmed || trimmed === msg.text) return;
+      try {
+        await editMessage(activeConvId, activeOtherUid, editBtn.dataset.msgId, trimmed);
+      } catch (e2) {
+        alert("Düzenlenemedi: " + e2.message);
+      }
+    }
+  });
+
+  async function editMessage(convId, otherUid, msgId, newText) {
+    const otherPublicKey = await getPublicKeyForUid(otherUid);
+    if (!otherPublicKey) {
+      alert("Alıcının açık anahtarı bulunamadı.");
+      return;
+    }
+    const aesKey = await crypto.subtle.generateKey({ name: "AES-GCM", length: 256 }, true, ["encrypt", "decrypt"]);
+    const rawAes = await crypto.subtle.exportKey("raw", aesKey);
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const ciphertext = await crypto.subtle.encrypt(
+      { name: "AES-GCM", iv }, aesKey, new TextEncoder().encode(newText)
+    );
+    const myWrapped = await wrapAesKeyForPublicKey(rawAes, myPublicKey);
+    const theirWrapped = await wrapAesKeyForPublicKey(rawAes, otherPublicKey);
+    await fbDb.collection("conversations").doc(convId).collection("messages").doc(msgId).update({
+      iv: b64encode(iv.buffer),
+      ciphertext: b64encode(ciphertext),
+      wrappedKeys: { [myUid]: myWrapped, [otherUid]: theirWrapped },
+      edited: true,
+      editedAt: firebase.firestore.FieldValue.serverTimestamp(),
+    });
   }
 
   async function wrapAesKeyForPublicKey(rawAesKey, publicKey) {
