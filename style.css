@@ -206,6 +206,7 @@ button.danger { background: var(--danger); color: #fff; }
 }
 .msg-bubble.me { align-self: flex-end; background: var(--bubble-me); color: #fff; border-bottom-right-radius: 4px; }
 .msg-bubble.them { align-self: flex-start; background: var(--bubble-them); color: #eee; border-bottom-left-radius: 4px; }
+.msg-sender { display: block; font-size: 11px; font-weight: 600; color: var(--accent); margin-bottom: 2px; }
 .msg-meta { display: flex; align-items: center; gap: 4px; margin-top: 4px; }
 .msg-time { font-size: 10px; opacity: 0.6; }
 .msg-tick { font-size: 11px; color: #b8c4d9; }
@@ -377,6 +378,8 @@ button.danger { background: var(--danger); color: #fff; }
 }
 #forward-thread-list li:active { background: #1a1d24; }
 #forward-thread-list li.empty-state { cursor: default; }
+#new-group-members { display: flex; flex-direction: column; gap: 8px; margin-bottom: 8px; }
+#new-group-add-member { width: 100%; margin-bottom: 12px; }
 
 .backup-viewer-box { width: 92%; max-height: 80vh; display: flex; flex-direction: column; }
 #backup-viewer-content { text-align: left; overflow-y: auto; flex: 1; font-size: 13px; margin: 8px 0; }
