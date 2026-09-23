@@ -54,6 +54,7 @@
   <div id="auth-panel" class="vault-panel hidden">
     <h2 id="auth-title">Giriş Yap</h2>
     <p>Gerçek mesajlaşma hesabınla giriş yap</p>
+    <input id="auth-nickname-input" type="text" placeholder="Kullanıcı adı (rumuz)" autocomplete="nickname" class="hidden">
     <input id="auth-email-input" type="email" placeholder="E-posta" autocomplete="username">
     <input id="auth-password-input" type="password" placeholder="Parola" autocomplete="current-password">
     <button id="auth-submit-btn">Giriş Yap</button>
@@ -115,7 +116,7 @@
 <div id="new-thread-modal" class="modal hidden">
   <div class="modal-box">
     <h3>Yeni Sohbet</h3>
-    <input id="new-thread-name" type="email" placeholder="Kişinin e-postası">
+    <input id="new-thread-name" type="text" placeholder="Kişinin kullanıcı adı (rumuz)">
     <div class="modal-actions">
       <button id="new-thread-cancel" class="ghost">İptal</button>
       <button id="new-thread-create">Ekle</button>
