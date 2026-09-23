@@ -108,6 +108,7 @@
         </div>
         <button id="thread-call-btn" title="Sesli ara">📞</button>
         <button id="thread-search-btn" title="Sohbette ara">🔍</button>
+        <button id="thread-disappearing-btn" title="Kaybolan mesajlar">⏳</button>
         <button id="thread-block-btn" title="Kullanıcıyı engelle">🚫</button>
         <button id="thread-delete-btn" title="Sohbeti sil">🗑</button>
       </div>
@@ -187,6 +188,23 @@
   </div>
   <div id="call-actions-outgoing" class="hidden">
     <button id="call-cancel-btn" class="call-btn reject">İptal</button>
+  </div>
+</div>
+
+<div id="disappearing-modal" class="modal hidden">
+  <div class="modal-box">
+    <h3>Kaybolan Mesajlar</h3>
+    <p class="hint">Yeni gönderilecek mesajlar seçilen süre sonunda otomatik silinir. Bu sohbet açıkken cihazda silme işlemi tetiklenir.</p>
+    <div class="modal-actions disappearing-options">
+      <button class="disappearing-opt" data-seconds="0">Kapalı</button>
+      <button class="disappearing-opt" data-seconds="60">1 dakika</button>
+      <button class="disappearing-opt" data-seconds="3600">1 saat</button>
+      <button class="disappearing-opt" data-seconds="86400">1 gün</button>
+      <button class="disappearing-opt" data-seconds="604800">1 hafta</button>
+    </div>
+    <div class="modal-actions">
+      <button id="disappearing-cancel" class="ghost">Kapat</button>
+    </div>
   </div>
 </div>
 

@@ -319,6 +319,8 @@ button.danger { background: var(--danger); color: #fff; }
 }
 .modal-actions { display: flex; gap: 10px; }
 .modal-actions button { flex: 1; }
+.disappearing-options { flex-direction: column; margin-bottom: 12px; }
+.disappearing-options button.active { background: var(--accent-dark, #444); box-shadow: inset 0 0 0 2px var(--accent); }
 
 .forgot-link {
   color: var(--accent);
