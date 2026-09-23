@@ -1187,6 +1187,7 @@
   const photoInput = document.getElementById("photo-input");
 
   async function openConversation(convId, otherUid, otherNickname) {
+    closeThreadSearch();
     activeConvId = convId;
     activeOtherUid = otherUid;
     threadListPanel.classList.add("hidden");
@@ -1272,8 +1273,63 @@
             read: !!d.read,
           });
         }
+        currentMessages = rendered;
         renderMessages(rendered);
       }, err => console.error("messages listen error", err));
+  }
+
+  /* ---------------- In-conversation search ---------------- */
+
+  const threadSearchBtn = document.getElementById("thread-search-btn");
+  const threadSearchBar = document.getElementById("thread-search-bar");
+  const threadSearchInput = document.getElementById("thread-search-input");
+  const threadSearchCount = document.getElementById("thread-search-count");
+  let currentMessages = [];
+  let searchQuery = "";
+
+  function closeThreadSearch() {
+    threadSearchBar.classList.add("hidden");
+    threadSearchInput.value = "";
+    searchQuery = "";
+    threadSearchCount.textContent = "";
+  }
+
+  threadSearchBtn.addEventListener("click", () => {
+    if (threadSearchBar.classList.contains("hidden")) {
+      threadSearchBar.classList.remove("hidden");
+      threadSearchInput.focus();
+    } else {
+      closeThreadSearch();
+      renderMessages(currentMessages);
+    }
+  });
+  threadSearchInput.addEventListener("input", () => {
+    searchQuery = threadSearchInput.value;
+    renderMessages(currentMessages);
+  });
+
+  function appendHighlightedText(container, text, query) {
+    if (!query) {
+      container.textContent = text;
+      return;
+    }
+    const lowerText = text.toLowerCase();
+    const lowerQuery = query.toLowerCase();
+    let cursor = 0;
+    let idx = lowerText.indexOf(lowerQuery, cursor);
+    if (idx === -1) {
+      container.textContent = text;
+      return;
+    }
+    while (idx !== -1) {
+      container.appendChild(document.createTextNode(text.slice(cursor, idx)));
+      const mark = document.createElement("mark");
+      mark.textContent = text.slice(idx, idx + query.length);
+      container.appendChild(mark);
+      cursor = idx + query.length;
+      idx = lowerText.indexOf(lowerQuery, cursor);
+    }
+    container.appendChild(document.createTextNode(text.slice(cursor)));
   }
 
   async function decryptMessage(d) {
@@ -1291,7 +1347,15 @@
 
   function renderMessages(msgs) {
     messageListEl.innerHTML = "";
+    const query = searchQuery.trim();
+    let matchCount = 0;
     msgs.forEach(m => {
+      if (query) {
+        // Images aren't searchable (no text to match), so hide them while
+        // filtering; only text messages containing the query are shown.
+        if (m.image || !m.text || !m.text.toLowerCase().includes(query.toLowerCase())) return;
+        matchCount++;
+      }
       const div = document.createElement("div");
       div.className = "msg-bubble " + m.from;
       const time = new Date(m.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
@@ -1301,7 +1365,7 @@
         div.appendChild(img);
       } else {
         const span = document.createElement("span");
-        span.textContent = m.text;
+        appendHighlightedText(span, m.text, query);
         div.appendChild(span);
       }
       const metaRow = document.createElement("span");
@@ -1320,6 +1384,9 @@
       messageListEl.appendChild(div);
     });
     messageListEl.scrollTop = messageListEl.scrollHeight;
+    if (query) {
+      threadSearchCount.textContent = matchCount === 0 ? "Sonuç yok" : matchCount + " sonuç";
+    }
   }
 
   async function wrapAesKeyForPublicKey(rawAesKey, publicKey) {
@@ -1403,6 +1470,8 @@
   document.getElementById("thread-back-btn").addEventListener("click", () => {
     if (messagesUnsub) { messagesUnsub(); messagesUnsub = null; }
     stopTypingListener();
+    closeThreadSearch();
+    currentMessages = [];
     activeConvId = null;
     activeOtherUid = null;
     showThreadList();
