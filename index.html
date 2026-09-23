@@ -107,6 +107,7 @@
           <p id="thread-typing" class="hidden">yazıyor...</p>
         </div>
         <button id="thread-call-btn" title="Sesli ara">📞</button>
+        <button id="thread-video-call-btn" title="Görüntülü ara">📹</button>
         <button id="thread-search-btn" title="Sohbette ara">🔍</button>
         <button id="thread-disappearing-btn" title="Kaybolan mesajlar">⏳</button>
         <button id="thread-mute-btn" title="Sohbeti sessize al">🔔</button>
@@ -173,6 +174,8 @@
 </div>
 
 <div id="call-screen" class="screen hidden">
+  <video id="call-remote-video" class="hidden" autoplay playsinline></video>
+  <video id="call-local-video" class="hidden" autoplay playsinline muted></video>
   <div id="call-avatar">📞</div>
   <h2 id="call-nickname">@kullanıcı</h2>
   <p id="call-status">Aranıyor...</p>
@@ -185,6 +188,7 @@
   <div id="call-actions-active" class="hidden">
     <button id="call-mute-btn" class="call-btn mute">Sessize Al</button>
     <button id="call-speaker-btn" class="call-btn mute hidden">Hoparlör</button>
+    <button id="call-camera-btn" class="call-btn mute hidden">Kamerayı Kapat</button>
     <button id="call-hangup-btn" class="call-btn reject">Kapat</button>
   </div>
   <div id="call-actions-outgoing" class="hidden">

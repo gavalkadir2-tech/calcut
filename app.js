@@ -929,7 +929,7 @@
           const raw = await decryptMessage(d).catch(() => null);
           try {
             const cd = raw ? JSON.parse(raw) : null;
-            preview = cd ? callLogText(d.from === myUid, cd.outcome, cd.duration || 0) : "📞 Arama";
+            preview = cd ? callLogText(d.from === myUid, cd.outcome, cd.duration || 0, cd.media) : "📞 Arama";
           } catch (e) {
             preview = "📞 Arama";
           }
@@ -1019,13 +1019,14 @@
     return mm + ":" + String(ss).padStart(2, "0");
   }
 
-  function callLogText(fromMe, outcome, duration) {
+  function callLogText(fromMe, outcome, duration, media) {
     const dirWord = fromMe ? "Giden" : "Gelen";
-    if (outcome === "completed") return `📞 ${dirWord} arama · ${formatCallDuration(duration)}`;
+    const icon = media === "video" ? "📹" : "📞";
+    if (outcome === "completed") return `${icon} ${dirWord} arama · ${formatCallDuration(duration)}`;
     if (outcome === "missed") return "📵 Cevapsız arama";
     if (outcome === "rejected") return fromMe ? "📵 Arama reddedildi" : "📵 Aramayı reddettiniz";
     if (outcome === "canceled") return "📵 Arama iptal edildi";
-    return "📞 Arama";
+    return `${icon} Arama`;
   }
 
   function formatThreadTime(ts) {
@@ -1436,6 +1437,7 @@
     document.getElementById("message-send-btn").disabled = isBlocked;
     attachPhotoBtn.disabled = isBlocked;
     document.getElementById("thread-call-btn").disabled = isBlocked;
+    document.getElementById("thread-video-call-btn").disabled = isBlocked;
   }
 
   async function setBlocked(otherUid, blocked) {
@@ -1586,7 +1588,14 @@
   const callActionsOutgoing = document.getElementById("call-actions-outgoing");
   const callMuteBtn = document.getElementById("call-mute-btn");
   const callSpeakerBtn = document.getElementById("call-speaker-btn");
+  const callCameraBtn = document.getElementById("call-camera-btn");
+  const callAvatarEl = document.getElementById("call-avatar");
+  const callRemoteVideo = document.getElementById("call-remote-video");
+  const callLocalVideo = document.getElementById("call-local-video");
   const threadCallBtn = document.getElementById("thread-call-btn");
+  const threadVideoCallBtn = document.getElementById("thread-video-call-btn");
+  let isVideoCall = false;
+  let isCameraOff = false;
   const SINK_ID_SUPPORTED = typeof HTMLMediaElement !== "undefined" && "setSinkId" in HTMLMediaElement.prototype;
   let isSpeakerOn = false;
   let speakerSinkId = null; // resolved lazily from enumerateDevices, once we have mic permission labels
@@ -1617,9 +1626,9 @@
   let callLogOtherNickname = null;
   let callWasConnected = false;
 
-  async function logCallToConversation(convId, otherUid, outcome, durationSec) {
+  async function logCallToConversation(convId, otherUid, outcome, durationSec, media) {
     try {
-      await sendEncryptedTo(convId, otherUid, JSON.stringify({ outcome, duration: durationSec }), "call");
+      await sendEncryptedTo(convId, otherUid, JSON.stringify({ outcome, duration: durationSec, media }), "call");
     } catch (e) {}
   }
 
@@ -1641,11 +1650,24 @@
     callErrorEl.textContent = "";
   }
 
+  function applyCallVideoUi() {
+    callScreen.classList.toggle("video-active", isVideoCall);
+    callAvatarEl.classList.toggle("hidden", isVideoCall);
+    callRemoteVideo.classList.toggle("hidden", !isVideoCall);
+    callLocalVideo.classList.toggle("hidden", !isVideoCall);
+    callCameraBtn.classList.toggle("hidden", !isVideoCall);
+    if (isVideoCall && localStream) {
+      callLocalVideo.srcObject = localStream;
+    }
+  }
+
   function showIncomingCallUi(data, callId) {
+    isVideoCall = data.media === "video";
+    applyCallVideoUi();
     callScreen.classList.remove("hidden");
     resetCallUi();
     callNicknameEl.textContent = "@" + (data.fromNickname || "?");
-    callStatusEl.textContent = "Gelen arama...";
+    callStatusEl.textContent = isVideoCall ? "Gelen görüntülü arama..." : "Gelen arama...";
     callActionsIncoming.classList.remove("hidden");
     playRingtone();
     if (navigator.vibrate) {
@@ -1669,14 +1691,16 @@
   }
 
   function showOutgoingCallUi(nickname) {
+    applyCallVideoUi();
     callScreen.classList.remove("hidden");
     resetCallUi();
     callNicknameEl.textContent = "@" + nickname;
-    callStatusEl.textContent = "Aranıyor...";
+    callStatusEl.textContent = isVideoCall ? "Görüntülü arıyor..." : "Aranıyor...";
     callActionsOutgoing.classList.remove("hidden");
   }
 
   function showActiveCallUi(nickname) {
+    applyCallVideoUi();
     resetCallUi();
     callWasConnected = true;
     callNicknameEl.textContent = "@" + nickname;
@@ -1687,7 +1711,14 @@
     isMuted = false;
     callMuteBtn.classList.remove("active");
     callMuteBtn.textContent = "Sessize Al";
-    resetAudioRouting();
+    isCameraOff = false;
+    callCameraBtn.classList.remove("active");
+    callCameraBtn.textContent = "Kamerayı Kapat";
+    if (isVideoCall) {
+      callSpeakerBtn.classList.add("hidden");
+    } else {
+      resetAudioRouting();
+    }
     callStartedAt = Date.now();
     clearInterval(callTimerInterval);
     callTimerInterval = setInterval(() => {
@@ -1734,11 +1765,16 @@
     if (ringToneCtx) { ringToneCtx.close().catch(() => {}); ringToneCtx = null; }
   }
 
-  async function getMic() {
+  async function getMic(withVideo) {
     try {
-      return await navigator.mediaDevices.getUserMedia({ audio: true });
+      return await navigator.mediaDevices.getUserMedia({
+        audio: true,
+        video: withVideo ? { facingMode: "user" } : false,
+      });
     } catch (e) {
-      throw new Error("Mikrofon erişimi reddedildi veya kullanılamıyor.");
+      throw new Error(withVideo
+        ? "Kamera/mikrofon erişimi reddedildi veya kullanılamıyor."
+        : "Mikrofon erişimi reddedildi veya kullanılamıyor.");
     }
   }
 
@@ -1764,12 +1800,16 @@
       }
     };
     pc.ontrack = (event) => {
-      if (!remoteAudioEl) {
-        remoteAudioEl = document.createElement("audio");
-        remoteAudioEl.autoplay = true;
-        document.body.appendChild(remoteAudioEl);
+      if (isVideoCall) {
+        callRemoteVideo.srcObject = event.streams[0];
+      } else {
+        if (!remoteAudioEl) {
+          remoteAudioEl = document.createElement("audio");
+          remoteAudioEl.autoplay = true;
+          document.body.appendChild(remoteAudioEl);
+        }
+        remoteAudioEl.srcObject = event.streams[0];
       }
-      remoteAudioEl.srcObject = event.streams[0];
     };
     pc.onconnectionstatechange = () => {
       if (pc === peerConnection && (pc.connectionState === "failed" || pc.connectionState === "disconnected")) {
@@ -1818,12 +1858,13 @@
       }, () => {});
   }
 
-  async function startCall(otherUid, otherNickname) {
+  async function startCall(otherUid, otherNickname, withVideo) {
     if (!otherUid || activeCallId) return;
     if (myBlocked[otherUid]) { alert("Bu kullanıcıyı engellediniz."); return; }
-    if (!("mediaDevices" in navigator)) { alert("Bu tarayıcı sesli aramayı desteklemiyor."); return; }
+    if (!("mediaDevices" in navigator)) { alert("Bu tarayıcı aramayı desteklemiyor."); return; }
+    isVideoCall = !!withVideo;
     try {
-      localStream = await getMic();
+      localStream = await getMic(isVideoCall);
     } catch (e) {
       alert(e.message);
       return;
@@ -1850,6 +1891,7 @@
         to: otherUid,
         toNickname: otherNickname,
         status: "ringing",
+        media: isVideoCall ? "video" : "audio",
         offer: { type: offer.type, sdp: offer.sdp },
         createdAt: firebase.firestore.FieldValue.serverTimestamp(),
       });
@@ -1876,8 +1918,9 @@
     if (incomingCallDocUnsub) { incomingCallDocUnsub(); incomingCallDocUnsub = null; }
     const { id, data } = currentIncomingCall;
     currentIncomingCall = null;
+    isVideoCall = data.media === "video";
     try {
-      localStream = await getMic();
+      localStream = await getMic(isVideoCall);
     } catch (e) {
       callErrorEl.textContent = e.message;
       fbDb.collection("calls").doc(id).update({ status: "rejected" }).catch(() => {});
@@ -1939,6 +1982,8 @@
     if (peerConnection) { peerConnection.close(); peerConnection = null; }
     if (localStream) { localStream.getTracks().forEach(t => t.stop()); localStream = null; }
     if (remoteAudioEl) { remoteAudioEl.srcObject = null; }
+    callRemoteVideo.srcObject = null;
+    callLocalVideo.srcObject = null;
     if (callDocUnsub) { callDocUnsub(); callDocUnsub = null; }
     if (remoteCandidatesUnsub) { remoteCandidatesUnsub(); remoteCandidatesUnsub = null; }
     isSpeakerOn = false;
@@ -1946,6 +1991,7 @@
     callSpeakerBtn.textContent = "Hoparlör";
 
     const role = activeCallRole;
+    const wasVideo = isVideoCall;
     const durationSec = callWasConnected && callStartedAt ? Math.max(0, Math.round((Date.now() - callStartedAt) / 1000)) : 0;
     if (role === "caller" && callLogConvId && callLogOtherUid) {
       let outcome = null;
@@ -1954,7 +2000,7 @@
       else if (code === "TIMEOUT") outcome = "missed";
       else if (code === "CANCELED") outcome = "canceled";
       if (outcome) {
-        logCallToConversation(callLogConvId, callLogOtherUid, outcome, durationSec).catch(() => {});
+        logCallToConversation(callLogConvId, callLogOtherUid, outcome, durationSec, wasVideo ? "video" : "audio").catch(() => {});
       }
     }
 
@@ -1965,6 +2011,13 @@
     callLogOtherNickname = null;
     callWasConnected = false;
     isMuted = false;
+    isVideoCall = false;
+    isCameraOff = false;
+    callScreen.classList.remove("video-active");
+    callAvatarEl.classList.remove("hidden");
+    callRemoteVideo.classList.add("hidden");
+    callLocalVideo.classList.add("hidden");
+    callCameraBtn.classList.add("hidden");
     if (code && CALL_END_MESSAGES[code]) {
       resetCallUi();
       callStatusEl.textContent = CALL_END_MESSAGES[code];
@@ -2002,7 +2055,12 @@
   threadCallBtn.addEventListener("click", () => {
     if (!activeOtherUid || !activeConvId) return;
     const conv = conversations.get(activeConvId);
-    startCall(activeOtherUid, conv ? conv.otherNickname : "?");
+    startCall(activeOtherUid, conv ? conv.otherNickname : "?", false);
+  });
+  threadVideoCallBtn.addEventListener("click", () => {
+    if (!activeOtherUid || !activeConvId) return;
+    const conv = conversations.get(activeConvId);
+    startCall(activeOtherUid, conv ? conv.otherNickname : "?", true);
   });
   document.getElementById("call-accept-btn").addEventListener("click", acceptIncomingCall);
   document.getElementById("call-reject-btn").addEventListener("click", rejectIncomingCall);
@@ -2014,6 +2072,15 @@
     localStream.getAudioTracks().forEach(t => { t.enabled = !isMuted; });
     callMuteBtn.classList.toggle("active", isMuted);
     callMuteBtn.textContent = isMuted ? "Sesi Aç" : "Sessize Al";
+  });
+  callCameraBtn.addEventListener("click", () => {
+    if (!localStream) return;
+    const videoTracks = localStream.getVideoTracks();
+    if (!videoTracks.length) return;
+    isCameraOff = !isCameraOff;
+    videoTracks.forEach(t => { t.enabled = !isCameraOff; });
+    callCameraBtn.classList.toggle("active", isCameraOff);
+    callCameraBtn.textContent = isCameraOff ? "Kamerayı Aç" : "Kamerayı Kapat";
   });
 
   /* ---------------- Speaker / earpiece output routing ----------------
@@ -2302,7 +2369,7 @@
         const missedOrRejected = m.call.outcome === "missed" || m.call.outcome === "rejected";
         callDiv.className = "msg-bubble call-log" + (missedOrRejected ? " call-missed" : "");
         const span = document.createElement("span");
-        span.textContent = callLogText(m.from === "me", m.call.outcome, m.call.duration || 0);
+        span.textContent = callLogText(m.from === "me", m.call.outcome, m.call.duration || 0, m.call.media);
         callDiv.appendChild(span);
         const timeSpan = document.createElement("span");
         timeSpan.className = "msg-time";
