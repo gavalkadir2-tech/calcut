@@ -183,13 +183,15 @@
   const STORAGE_SALT = "calcut_vault_salt";
   const STORAGE_BLOB = "calcut_vault_blob";
   const STORAGE_BIOMETRIC = "calcut_biometric_cred_id";
+  const DURESS_SALT = "calcut_duress_salt";
+  const DURESS_BLOB = "calcut_duress_blob";
 
-  function getOrCreateSalt() {
-    let salt = localStorage.getItem(STORAGE_SALT);
+  function getOrCreateSalt(saltKey = STORAGE_SALT) {
+    let salt = localStorage.getItem(saltKey);
     if (!salt) {
       const bytes = crypto.getRandomValues(new Uint8Array(16));
       salt = b64encode(bytes.buffer);
-      localStorage.setItem(STORAGE_SALT, salt);
+      localStorage.setItem(saltKey, salt);
     }
     return b64decode(salt);
   }
@@ -208,27 +210,27 @@
     );
   }
 
-  function deriveLocalKey(pin) {
-    return deriveKeyFromSecret(pin, getOrCreateSalt());
+  function deriveLocalKey(pin, saltKey = STORAGE_SALT) {
+    return deriveKeyFromSecret(pin, getOrCreateSalt(saltKey));
   }
 
   function vaultExists() {
     return !!localStorage.getItem(STORAGE_BLOB);
   }
 
-  async function saveLocalBlob(key, dataObj) {
+  async function saveLocalBlob(key, dataObj, blobKey = STORAGE_BLOB) {
     const iv = crypto.getRandomValues(new Uint8Array(12));
     const enc = new TextEncoder();
     const plaintext = enc.encode(JSON.stringify(dataObj));
     const ciphertext = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, plaintext);
-    localStorage.setItem(STORAGE_BLOB, JSON.stringify({
+    localStorage.setItem(blobKey, JSON.stringify({
       iv: b64encode(iv.buffer),
       data: b64encode(ciphertext),
     }));
   }
 
-  async function loadLocalBlob(key) {
-    const raw = localStorage.getItem(STORAGE_BLOB);
+  async function loadLocalBlob(key, blobKey = STORAGE_BLOB) {
+    const raw = localStorage.getItem(blobKey);
     if (!raw) return null;
     const { iv, data } = JSON.parse(raw);
     const plaintext = await crypto.subtle.decrypt(
@@ -237,6 +239,38 @@
       b64decode(data)
     );
     return JSON.parse(new TextDecoder().decode(plaintext));
+  }
+
+  /* ---------------- Duress (decoy) PIN ---------------- */
+  // A second, optional PIN that opens a harmless, entirely fake empty inbox
+  // instead of the real vault. It never touches the real account, Firestore,
+  // or any real message data — it is a separate, self-contained localStorage
+  // blob with its own salt, so there is zero risk of it ever leaking real
+  // content even if implemented imperfectly.
+
+  function duressPinExists() {
+    return !!localStorage.getItem(DURESS_BLOB);
+  }
+
+  async function setDuressPin(pin) {
+    const key = await deriveLocalKey(pin, DURESS_SALT);
+    await saveLocalBlob(key, { duress: true }, DURESS_BLOB);
+  }
+
+  async function tryDuressPin(pin) {
+    if (!duressPinExists()) return false;
+    const key = await deriveLocalKey(pin, DURESS_SALT);
+    try {
+      const data = await loadLocalBlob(key, DURESS_BLOB);
+      return !!(data && data.duress);
+    } catch (e) {
+      return false;
+    }
+  }
+
+  function clearDuressPin() {
+    localStorage.removeItem(DURESS_BLOB);
+    localStorage.removeItem(DURESS_SALT);
   }
 
   const lockPanel = document.getElementById("vault-lock");
@@ -275,6 +309,7 @@
     authPanel.classList.add("hidden");
     appPanel.classList.add("hidden");
     document.getElementById("pending-panel").classList.add("hidden");
+    document.getElementById("duress-panel").classList.add("hidden");
     clearAll();
     renderCalc();
   }
@@ -396,35 +431,50 @@
     }
   }
 
-  async function unlockWithPin(pin) {
+  // Returns "real" | "duress" | "fail". The real vault is always tried
+  // first; only on a real-PIN mismatch do we check the duress PIN, so a
+  // duress PIN can never accidentally shadow the real one.
+  async function attemptUnlock(pin) {
     const key = await deriveLocalKey(pin);
     if (!vaultExists()) {
       await saveLocalBlob(key, {});
       currentLocalKey = key;
       localSessionData = {};
-      return true;
+      return "real";
     }
     try {
       localSessionData = await loadLocalBlob(key);
       currentLocalKey = key;
-      return true;
+      return "real";
     } catch (e) {
-      return false;
+      if (await tryDuressPin(pin)) return "duress";
+      return "fail";
     }
   }
 
+  function openDuressScreen() {
+    lockPanel.classList.add("hidden");
+    authPanel.classList.add("hidden");
+    appPanel.classList.add("hidden");
+    document.getElementById("pending-panel").classList.add("hidden");
+    document.getElementById("duress-panel").classList.remove("hidden");
+  }
+
+  async function unlockWithPin(pin) {
+    return (await attemptUnlock(pin)) !== "fail";
+  }
+
   async function tryAutoUnlock(pin) {
-    if (!vaultExists()) return false; // require explicit setup via triple-tap gesture first
-    const key = await deriveLocalKey(pin);
-    try {
-      localSessionData = await loadLocalBlob(key);
-      currentLocalKey = key;
-    } catch (e) {
-      return false;
-    }
+    if (!vaultExists() && !duressPinExists()) return false; // require explicit setup via triple-tap gesture first
+    const mode = await attemptUnlock(pin);
+    if (mode === "fail") return false;
     calcView.classList.add("hidden");
     vaultView.classList.remove("hidden");
-    await afterLocalUnlock();
+    if (mode === "duress") {
+      openDuressScreen();
+    } else {
+      await afterLocalUnlock();
+    }
     return true;
   }
 
@@ -434,10 +484,13 @@
       errorEl.textContent = "PIN en az 4 karakter olmalı.";
       return;
     }
-    const ok = await unlockWithPin(pin);
-    if (ok) {
+    const mode = await attemptUnlock(pin);
+    if (mode === "real") {
       errorEl.textContent = "";
       await afterLocalUnlock();
+    } else if (mode === "duress") {
+      errorEl.textContent = "";
+      openDuressScreen();
     } else {
       errorEl.textContent = "Yanlış PIN.";
     }
@@ -452,6 +505,7 @@
     localStorage.removeItem(STORAGE_BLOB);
     localStorage.removeItem(STORAGE_SALT);
     localStorage.removeItem(STORAGE_BIOMETRIC);
+    clearDuressPin();
     openVaultLockScreen();
   });
 
@@ -1062,6 +1116,10 @@
   }
 
   document.getElementById("lock-btn").addEventListener("click", lockVault);
+  document.getElementById("duress-lock-btn").addEventListener("click", closeVaultToCalculator);
+  document.getElementById("duress-new-thread-btn").addEventListener("click", () => {
+    alert("Sohbet eklenemedi. Lütfen daha sonra tekrar deneyin.");
+  });
 
   /* ---------------- Auto-lock: backgrounding or inactivity ---------------- */
   // Locking here only hides the vault and drops the in-memory private key —
@@ -1115,6 +1173,8 @@
     document.getElementById("alarm-msg").textContent = "";
     document.getElementById("nickname-change-msg").textContent = "";
     document.getElementById("new-nickname-input").value = "";
+    document.getElementById("duress-pin-msg").textContent = "";
+    document.getElementById("duress-pin-input").value = "";
     loadPendingReferrals();
   });
   document.getElementById("settings-back-btn").addEventListener("click", showThreadList);
@@ -1225,6 +1285,45 @@
     document.getElementById("new-pin-input").value = "";
   });
 
+  document.getElementById("set-duress-pin-btn").addEventListener("click", async () => {
+    const msgEl = document.getElementById("duress-pin-msg");
+    const pin = document.getElementById("duress-pin-input").value.trim();
+    if (pin.length < 4) {
+      msgEl.textContent = "Yanılgı PIN'i en az 4 karakter olmalı.";
+      return;
+    }
+    if (pin === pinInput.value.trim()) {
+      msgEl.textContent = "Yanılgı PIN'i gerçek PIN'in ile aynı olamaz.";
+      return;
+    }
+    try {
+      const realKeyCheck = await deriveLocalKey(pin);
+      // Guard against picking a duress PIN that happens to equal the real
+      // vault PIN, which would make the real vault permanently unreachable
+      // with that value (real PIN is always tried first, so this alone
+      // isn't unsafe, but a matching value would make the decoy pointless).
+      if (vaultExists()) {
+        try {
+          await loadLocalBlob(realKeyCheck);
+          msgEl.textContent = "Bu değer gerçek PIN'in ile çakışıyor, başka bir PIN seç.";
+          return;
+        } catch (e) { /* good: it doesn't match the real PIN */ }
+      }
+      await setDuressPin(pin);
+      msgEl.textContent = "Yanılgı PIN'i belirlendi.";
+      document.getElementById("duress-pin-input").value = "";
+    } catch (e) {
+      msgEl.textContent = "Belirlenemedi: " + e.message;
+    }
+  });
+
+  document.getElementById("clear-duress-pin-btn").addEventListener("click", () => {
+    const msgEl = document.getElementById("duress-pin-msg");
+    clearDuressPin();
+    msgEl.textContent = "Yanılgı PIN'i kaldırıldı.";
+    document.getElementById("duress-pin-input").value = "";
+  });
+
   document.getElementById("enable-biometric-btn").addEventListener("click", async () => {
     const msgEl = document.getElementById("biometric-msg");
     if (!window.PublicKeyCredential) {
@@ -1286,6 +1385,7 @@
     localStorage.removeItem(STORAGE_BLOB);
     localStorage.removeItem(STORAGE_SALT);
     localStorage.removeItem(STORAGE_BIOMETRIC);
+    clearDuressPin();
     closeVaultToCalculator();
   });
 
