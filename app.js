@@ -493,8 +493,8 @@
       } else {
         // No referrer given: only acceptable if this is the very first account
         // in the system (bootstrap), which is auto-approved.
-        const anyUsers = await fbDb.collection("users").limit(1).get();
-        if (!anyUsers.empty) {
+        const bootstrapDoc = await fbDb.collection("meta").doc("bootstrap").get();
+        if (bootstrapDoc.exists) {
           throw new Error("Kayıt olmak için onaylı bir kullanıcının referans kullanıcı adı gerekli.");
         }
         status = "approved";
@@ -513,7 +513,8 @@
         new TextEncoder().encode(JSON.stringify(privJwk))
       );
 
-      await fbDb.collection("users").doc(uid).set({
+      const batch = fbDb.batch();
+      batch.set(fbDb.collection("users").doc(uid), {
         nickname,
         publicKeyJwk: pubJwk,
         pkSalt: b64encode(pkSalt.buffer),
@@ -523,6 +524,16 @@
         referredByNickname,
         createdAt: firebase.firestore.FieldValue.serverTimestamp(),
       });
+      if (status === "approved") {
+        // Closes the bootstrap gate: the security rules only allow a
+        // referrer-less, pre-approved signup while this doc doesn't exist yet,
+        // so only the very first account can ever take this path.
+        batch.set(fbDb.collection("meta").doc("bootstrap"), {
+          uid,
+          createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+        });
+      }
+      await batch.commit();
 
       myUid = uid;
       myNickname = nickname;
