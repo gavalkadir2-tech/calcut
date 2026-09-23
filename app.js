@@ -1072,6 +1072,8 @@
     document.getElementById("settings-msg").textContent = "";
     document.getElementById("biometric-msg").textContent = "";
     document.getElementById("alarm-msg").textContent = "";
+    document.getElementById("nickname-change-msg").textContent = "";
+    document.getElementById("new-nickname-input").value = "";
     loadPendingReferrals();
   });
   document.getElementById("settings-back-btn").addEventListener("click", showThreadList);
@@ -1122,6 +1124,51 @@
       listEl.innerHTML = "<li class='empty-state'>Yüklenemedi.</li>";
     }
   }
+
+  document.getElementById("change-nickname-btn").addEventListener("click", async () => {
+    const msgEl = document.getElementById("nickname-change-msg");
+    const newNicknameRaw = document.getElementById("new-nickname-input").value;
+    const newNickname = normalizeNickname(newNicknameRaw);
+    if (newNickname.length < 3) {
+      msgEl.textContent = "Kullanıcı adı en az 3 karakter olmalı (harf, rakam, alt çizgi).";
+      return;
+    }
+    if (newNickname === myNickname) {
+      msgEl.textContent = "Bu zaten mevcut kullanıcı adın.";
+      return;
+    }
+    msgEl.textContent = "Değiştiriliyor...";
+    try {
+      // Renaming only changes the display/lookup nickname, never the login
+      // credential: Firebase Auth now requires verifying a new email before
+      // it takes effect, which our synthetic @calcut.local addresses can
+      // never do. So unlike at signup, uniqueness has to be checked here by
+      // hand instead of relying on Firebase Auth's email-collision check.
+      const existing = await fbDb.collection("users").where("nickname", "==", newNickname).limit(1).get();
+      if (!existing.empty) {
+        msgEl.textContent = "Bu kullanıcı adı zaten alınmış.";
+        return;
+      }
+      await fbDb.collection("users").doc(myUid).update({ nickname: newNickname });
+
+      // Propagate the new nickname into every conversation this account is
+      // part of, so the other side's thread list stays accurate.
+      const convs = await fbDb.collection("conversations").where("participants", "array-contains", myUid).get();
+      const batch = fbDb.batch();
+      convs.docs.forEach(doc => {
+        batch.update(doc.ref, { [`participantNicknames.${myUid}`]: newNickname });
+      });
+      if (!convs.empty) await batch.commit();
+
+      myNickname = newNickname;
+      await persistSession();
+      renderThreadList();
+      msgEl.textContent = "Görünen adın @" + newNickname + " oldu. Girişte hâlâ eski kullanıcı adını kullanmalısın.";
+      document.getElementById("new-nickname-input").value = "";
+    } catch (e) {
+      msgEl.textContent = "Değiştirilemedi: " + e.message;
+    }
+  });
 
   document.getElementById("change-pin-btn").addEventListener("click", async () => {
     const newPin = document.getElementById("new-pin-input").value.trim();
