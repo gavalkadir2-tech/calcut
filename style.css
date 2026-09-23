@@ -211,7 +211,7 @@ button.danger { background: var(--danger); color: #fff; }
 .msg-tick { font-size: 11px; color: #b8c4d9; }
 .msg-tick.read { color: #4fc3f7; }
 
-#thread-search-btn {
+#thread-search-btn, #thread-block-btn {
   background: #1c1f26;
   border: 1px solid #333;
   color: var(--panel-fg);
@@ -220,6 +220,31 @@ button.danger { background: var(--danger); color: #fff; }
   cursor: pointer;
   font-size: 16px;
 }
+#thread-block-btn.active { border-color: var(--danger); color: var(--danger); }
+#thread-blocked-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  background: rgba(255, 69, 58, 0.12);
+  border: 1px solid var(--danger);
+  color: #ffb3ae;
+  border-radius: 8px;
+  padding: 8px 12px;
+  margin-bottom: 8px;
+  font-size: 13px;
+}
+#thread-unblock-btn {
+  background: transparent;
+  border: 1px solid var(--danger);
+  color: var(--danger);
+  border-radius: 8px;
+  padding: 4px 10px;
+  cursor: pointer;
+  font-weight: 600;
+  white-space: nowrap;
+}
+#thread-list li.blocked .thread-preview { color: #ff8a80; }
 #thread-search-bar {
   display: flex;
   align-items: center;

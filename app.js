@@ -359,6 +359,7 @@
       myPublicKey = publicKey;
       myStatus = session.status || "pending";
       myReferredByNickname = session.referredByNickname || null;
+      myBlocked = session.blocked || {};
       publicKeyCache.set(myUid, publicKey);
       return true;
     } catch (e) {
@@ -375,6 +376,7 @@
       nickname: myNickname,
       status: myStatus,
       referredByNickname: myReferredByNickname,
+      blocked: myBlocked,
       privateKeyJwk,
       publicKeyJwk,
     };
@@ -455,6 +457,7 @@
   let myPublicKey = null;
   let myStatus = null; // "pending" or "approved"
   let myReferredByNickname = null;
+  let myBlocked = {}; // uid -> true, people I've blocked
   const publicKeyCache = new Map(); // uid -> CryptoKey
 
   // The PIN-derived key and decrypted local blob from the most recent vault
@@ -620,6 +623,7 @@
         status,
         referredBy,
         referredByNickname,
+        blocked: {},
         createdAt: firebase.firestore.FieldValue.serverTimestamp(),
       });
       if (status === "approved") {
@@ -639,6 +643,7 @@
       myPublicKey = keyPair.publicKey;
       myStatus = status;
       myReferredByNickname = referredByNickname;
+      myBlocked = {};
       publicKeyCache.set(uid, keyPair.publicKey);
     } catch (e) {
       await cred.user.delete().catch(() => {});
@@ -683,6 +688,7 @@
     // all — grandfather them in as approved rather than locking them out.
     myStatus = data.status === undefined ? "approved" : data.status;
     myReferredByNickname = data.referredByNickname || null;
+    myBlocked = data.blocked || {};
     publicKeyCache.set(uid, publicKey);
   }
 
@@ -816,6 +822,11 @@
     showThreadList();
     listenToConversations();
     resetInactivityTimer();
+    // Refresh the blocked list in case it changed on another device.
+    fbDb.collection("users").doc(myUid).get().then(doc => {
+      const data = doc.data();
+      if (data) { myBlocked = data.blocked || {}; renderThreadList(); }
+    }).catch(() => {});
   }
 
   function showThreadList() {
@@ -899,7 +910,7 @@
           // snapshot on login, which would otherwise fire for old unread
           // messages) and only if it's not the conversation currently open.
           const prev = previousUnread.get(change.doc.id);
-          if (prev !== undefined && unread > prev && change.doc.id !== activeConvId) {
+          if (prev !== undefined && unread > prev && change.doc.id !== activeConvId && !myBlocked[otherUid]) {
             triggerAlarmAlert();
           }
           previousUnread.set(change.doc.id, unread);
@@ -943,7 +954,12 @@
         </div>`;
       li.querySelector(".thread-name").textContent = "@" + conv.otherNickname;
       li.querySelector(".thread-time").textContent = formatThreadTime(conv.lastTs || conv.updatedAt);
-      li.querySelector(".thread-preview").textContent = conv.lastPreview || "Aç ve sohbet et";
+      if (myBlocked[conv.otherUid]) {
+        li.classList.add("blocked");
+        li.querySelector(".thread-preview").textContent = "🚫 Engellendi";
+      } else {
+        li.querySelector(".thread-preview").textContent = conv.lastPreview || "Aç ve sohbet et";
+      }
       if (conv.unread > 0) {
         const badge = li.querySelector(".thread-badge");
         badge.textContent = conv.unread > 99 ? "99+" : String(conv.unread);
@@ -1200,7 +1216,63 @@
     await getPublicKeyForUid(otherUid);
     listenToMessages(convId);
     listenToTyping(convId, otherUid);
+    updateBlockUi();
   }
+
+  /* ---------------- Block / unblock a contact ---------------- */
+
+  const threadBlockBtn = document.getElementById("thread-block-btn");
+  const threadBlockedBanner = document.getElementById("thread-blocked-banner");
+
+  function updateBlockUi() {
+    const isBlocked = !!myBlocked[activeOtherUid];
+    threadBlockBtn.classList.toggle("active", isBlocked);
+    threadBlockBtn.title = isBlocked ? "Engeli kaldır" : "Kullanıcıyı engelle";
+    threadBlockedBanner.classList.toggle("hidden", !isBlocked);
+    messageInput.disabled = isBlocked;
+    document.getElementById("message-send-btn").disabled = isBlocked;
+    attachPhotoBtn.disabled = isBlocked;
+  }
+
+  async function setBlocked(otherUid, blocked) {
+    const previous = myBlocked;
+    myBlocked = { ...myBlocked };
+    if (blocked) myBlocked[otherUid] = true;
+    else delete myBlocked[otherUid];
+    updateBlockUi();
+    renderThreadList();
+    try {
+      await fbDb.collection("users").doc(myUid).update({
+        [`blocked.${otherUid}`]: blocked ? true : firebase.firestore.FieldValue.delete(),
+      });
+      persistSession();
+    } catch (e) {
+      myBlocked = previous;
+      updateBlockUi();
+      renderThreadList();
+      throw e;
+    }
+  }
+
+  threadBlockBtn.addEventListener("click", async () => {
+    if (!activeOtherUid) return;
+    const isBlocked = !!myBlocked[activeOtherUid];
+    if (!isBlocked && !confirm("Bu kullanıcıyı engellemek istediğinize emin misiniz? Birbirinize mesaj gönderemeyeceksiniz.")) return;
+    try {
+      await setBlocked(activeOtherUid, !isBlocked);
+    } catch (e) {
+      alert("İşlem başarısız: " + e.message);
+    }
+  });
+
+  document.getElementById("thread-unblock-btn").addEventListener("click", async () => {
+    if (!activeOtherUid) return;
+    try {
+      await setBlocked(activeOtherUid, false);
+    } catch (e) {
+      alert("İşlem başarısız: " + e.message);
+    }
+  });
 
   /* ---------------- Typing indicator ---------------- */
 
@@ -1401,6 +1473,7 @@
     const convId = activeConvId;
     const otherUid = activeOtherUid;
     if (!convId || !otherUid) return;
+    if (myBlocked[otherUid]) return;
     const otherPublicKey = await getPublicKeyForUid(otherUid);
     if (!otherPublicKey) {
       alert("Alıcının açık anahtarı bulunamadı.");
