@@ -2183,6 +2183,7 @@
             expiresAtMillis,
             deleted: false,
             edited: !!d.edited,
+            reactions: d.reactions || {},
           });
         }
         currentMessages = rendered;
@@ -2373,7 +2374,29 @@
         delBtn.dataset.msgId = m.id;
         metaRow.appendChild(delBtn);
       }
+      const reactBtn = document.createElement("button");
+      reactBtn.className = "msg-action msg-react-btn";
+      reactBtn.textContent = "🙂";
+      reactBtn.dataset.msgId = m.id;
+      metaRow.appendChild(reactBtn);
       div.appendChild(metaRow);
+      const reactionEntries = Object.entries(m.reactions || {});
+      if (reactionEntries.length) {
+        const row = document.createElement("div");
+        row.className = "msg-reactions";
+        const counts = {};
+        reactionEntries.forEach(([, emoji]) => { counts[emoji] = (counts[emoji] || 0) + 1; });
+        Object.entries(counts).forEach(([emoji, count]) => {
+          const badge = document.createElement("span");
+          const mine = m.reactions[myUid] === emoji;
+          badge.className = "msg-reaction-badge" + (mine ? " mine" : "");
+          badge.textContent = emoji + (count > 1 ? " " + count : "");
+          badge.dataset.msgId = m.id;
+          badge.dataset.emoji = emoji;
+          row.appendChild(badge);
+        });
+        div.appendChild(row);
+      }
       messageListEl.appendChild(div);
     });
     messageListEl.scrollTop = messageListEl.scrollHeight;
@@ -2384,7 +2407,57 @@
 
   /* ---------------- Message delete / edit (sender only) ---------------- */
 
+  const reactionPicker = document.getElementById("reaction-picker");
+  let reactionTargetMsgId = null;
+
+  function hideReactionPicker() {
+    reactionPicker.classList.add("hidden");
+    reactionTargetMsgId = null;
+  }
+
+  async function setMyReaction(convId, msgId, emoji) {
+    const msg = currentMessages.find(m => m.id === msgId);
+    const current = msg && msg.reactions ? msg.reactions[myUid] : null;
+    const field = `reactions.${myUid}`;
+    try {
+      await fbDb.collection("conversations").doc(convId).collection("messages").doc(msgId).update({
+        [field]: current === emoji ? firebase.firestore.FieldValue.delete() : emoji,
+      });
+    } catch (e2) {
+      alert("Tepki eklenemedi: " + e2.message);
+    }
+  }
+
+  reactionPicker.querySelectorAll(".reaction-opt").forEach(btn => {
+    btn.addEventListener("click", () => {
+      if (reactionTargetMsgId) setMyReaction(activeConvId, reactionTargetMsgId, btn.dataset.emoji);
+      hideReactionPicker();
+    });
+  });
+  document.addEventListener("click", (e) => {
+    if (!reactionPicker.classList.contains("hidden") && !e.target.closest("#reaction-picker") && !e.target.closest(".msg-react-btn")) {
+      hideReactionPicker();
+    }
+  });
+
   messageListEl.addEventListener("click", async (e) => {
+    const reactBtn = e.target.closest(".msg-react-btn");
+    if (reactBtn) {
+      const rect = reactBtn.getBoundingClientRect();
+      reactionTargetMsgId = reactBtn.dataset.msgId;
+      reactionPicker.classList.remove("hidden");
+      const pickerRect = reactionPicker.getBoundingClientRect();
+      let left = rect.left - pickerRect.width / 2;
+      left = Math.max(8, Math.min(left, window.innerWidth - pickerRect.width - 8));
+      reactionPicker.style.left = left + "px";
+      reactionPicker.style.top = Math.max(8, rect.top - pickerRect.height - 8) + "px";
+      return;
+    }
+    const badge = e.target.closest(".msg-reaction-badge");
+    if (badge && badge.classList.contains("mine")) {
+      await setMyReaction(activeConvId, badge.dataset.msgId, badge.dataset.emoji);
+      return;
+    }
     const delBtn = e.target.closest(".msg-delete-btn");
     if (delBtn) {
       if (!confirm("Bu mesaj silinsin mi? (Herkes için)")) return;
