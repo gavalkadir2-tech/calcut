@@ -857,10 +857,27 @@
       .onSnapshot(async snap => {
         if (snap.empty) return;
         const d = snap.docs[0].data();
-        const preview = d.type === "image" ? "📷 Fotoğraf" : d.type === "file" ? "📄 Dosya" : await decryptMessage(d).catch(() => "[çözülemedi]");
+        let preview;
+        if (d.type === "image") {
+          preview = "📷 Fotoğraf";
+        } else if (d.type === "file") {
+          preview = "📄 Dosya";
+        } else if (d.type === "call") {
+          const raw = await decryptMessage(d).catch(() => null);
+          try {
+            const cd = raw ? JSON.parse(raw) : null;
+            preview = cd ? callLogText(d.from === myUid, cd.outcome, cd.duration || 0) : "📞 Arama";
+          } catch (e) {
+            preview = "📞 Arama";
+          }
+        } else {
+          preview = await decryptMessage(d).catch(() => "[çözülemedi]");
+        }
         const conv = conversations.get(convId);
         if (!conv) return;
-        conv.lastPreview = (d.from === myUid ? "Sen: " : "") + preview;
+        // Call log previews already read naturally regardless of who placed
+        // the call, so skip the usual "Sen: " prefix for that type.
+        conv.lastPreview = (d.from === myUid && d.type !== "call" ? "Sen: " : "") + preview;
         conv.lastTs = d.ts ? d.ts.toMillis() : Date.now();
         if (!threadListPanel.classList.contains("hidden")) renderThreadList();
       }, err => {
@@ -927,6 +944,21 @@
     if (bytes < 1024) return bytes + " B";
     if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + " KB";
     return (bytes / (1024 * 1024)).toFixed(1) + " MB";
+  }
+
+  function formatCallDuration(sec) {
+    const mm = Math.floor(sec / 60);
+    const ss = sec % 60;
+    return mm + ":" + String(ss).padStart(2, "0");
+  }
+
+  function callLogText(fromMe, outcome, duration) {
+    const dirWord = fromMe ? "Giden" : "Gelen";
+    if (outcome === "completed") return `📞 ${dirWord} arama · ${formatCallDuration(duration)}`;
+    if (outcome === "missed") return "📵 Cevapsız arama";
+    if (outcome === "rejected") return fromMe ? "📵 Arama reddedildi" : "📵 Aramayı reddettiniz";
+    if (outcome === "canceled") return "📵 Arama iptal edildi";
+    return "📞 Arama";
   }
 
   function formatThreadTime(ts) {
@@ -1364,12 +1396,37 @@
   let remoteCandidatesUnsub = null;
   let incomingCallsUnsub = null;
   let currentIncomingCall = null; // { id, data }
+  let incomingCallDocUnsub = null;
   let callTimerInterval = null;
   let callStartedAt = null;
   let isMuted = false;
   let ringToneTimer = null;
   let ringToneCtx = null;
   let callTimeoutTimer = null;
+  // Only the caller logs a call-history entry into the conversation (once,
+  // when the call reaches a terminal state), so these track what's needed
+  // to write it regardless of whether the user has navigated away from the
+  // conversation mid-call.
+  let callLogConvId = null;
+  let callLogOtherUid = null;
+  let callLogOtherNickname = null;
+  let callWasConnected = false;
+
+  async function logCallToConversation(convId, otherUid, outcome, durationSec) {
+    try {
+      await sendEncryptedTo(convId, otherUid, JSON.stringify({ outcome, duration: durationSec }), "call");
+    } catch (e) {}
+  }
+
+  const CALL_END_MESSAGES = {
+    REJECTED: "Arama reddedildi.",
+    TIMEOUT: "Yanıt yok.",
+    CANCELED: "İptal edildi.",
+    ENDED_BY_OTHER: "Karşı taraf kapattı.",
+    ENDED: "Arama sona erdi.",
+    DISCONNECTED: "Bağlantı kesildi.",
+    FAILED: "Bağlantı kurulamadı.",
+  };
 
   function resetCallUi() {
     callActionsIncoming.classList.add("hidden");
@@ -1379,13 +1436,31 @@
     callErrorEl.textContent = "";
   }
 
-  function showIncomingCallUi(data) {
+  function showIncomingCallUi(data, callId) {
     callScreen.classList.remove("hidden");
     resetCallUi();
     callNicknameEl.textContent = "@" + (data.fromNickname || "?");
     callStatusEl.textContent = "Gelen arama...";
     callActionsIncoming.classList.remove("hidden");
     playRingtone();
+    if (navigator.vibrate) {
+      try { navigator.vibrate([400, 200, 400, 200, 400]); } catch (e) {}
+    }
+    // The callee has no listener on this specific call doc yet (that only
+    // starts on accept), so without this, if the caller cancels or times out
+    // while it's still ringing, this screen would stay stuck forever.
+    if (incomingCallDocUnsub) incomingCallDocUnsub();
+    incomingCallDocUnsub = fbDb.collection("calls").doc(callId).onSnapshot(snap => {
+      const d = snap.data();
+      if (!d || !currentIncomingCall || currentIncomingCall.id !== callId) return;
+      if (d.status === "ended") {
+        stopRingtone();
+        currentIncomingCall = null;
+        resetCallUi();
+        callStatusEl.textContent = "Arayan aramayı sonlandırdı.";
+        setTimeout(hideCallScreen, 1500);
+      }
+    }, () => {});
   }
 
   function showOutgoingCallUi(nickname) {
@@ -1398,6 +1473,7 @@
 
   function showActiveCallUi(nickname) {
     resetCallUi();
+    callWasConnected = true;
     callNicknameEl.textContent = "@" + nickname;
     callStatusEl.textContent = "Görüşmede";
     callActionsActive.classList.remove("hidden");
@@ -1491,7 +1567,7 @@
     };
     pc.onconnectionstatechange = () => {
       if (pc === peerConnection && (pc.connectionState === "failed" || pc.connectionState === "disconnected")) {
-        endCall("Bağlantı kesildi.");
+        endCall("DISCONNECTED");
       }
     };
     return pc;
@@ -1509,14 +1585,17 @@
           await peerConnection.setRemoteDescription(new RTCSessionDescription(data.answer));
           showActiveCallUi(data.toNickname);
         } catch (e) {
-          endCall("Bağlantı kurulamadı.");
+          endCall("FAILED");
         }
       }
       if (data.status === "rejected" && activeCallRole === "caller") {
-        endCall("Arama reddedildi.");
+        endCall("REJECTED");
       }
       if (data.status === "ended") {
-        endCall(activeCallRole === "caller" ? "Arama sona erdi." : "Karşı taraf kapattı.");
+        // My own hangUpCall()/cancelOutgoingCall() already nulled
+        // activeCallId before this echoes back, so reaching here always
+        // means the OTHER side ended it.
+        endCall("ENDED_BY_OTHER");
       }
     }, () => {});
   }
@@ -1544,6 +1623,10 @@
       return;
     }
     activeCallRole = "caller";
+    callWasConnected = false;
+    callLogConvId = convIdFor(myUid, otherUid);
+    callLogOtherUid = otherUid;
+    callLogOtherNickname = otherNickname;
     showOutgoingCallUi(otherNickname);
     try {
       const callDocRef = fbDb.collection("calls").doc();
@@ -1572,18 +1655,19 @@
       callTimeoutTimer = setTimeout(() => {
         if (activeCallId === callDocRef.id && activeCallRole === "caller") {
           fbDb.collection("calls").doc(callDocRef.id).update({ status: "ended" }).catch(() => {});
-          endCall("Yanıt yok.");
+          endCall("TIMEOUT");
         }
       }, CALL_RING_TIMEOUT_MS);
     } catch (e) {
       callErrorEl.textContent = "Arama başlatılamadı: " + e.message;
-      endCall(null);
+      endCall("FAILED");
     }
   }
 
   async function acceptIncomingCall() {
     if (!currentIncomingCall) return;
     stopRingtone();
+    if (incomingCallDocUnsub) { incomingCallDocUnsub(); incomingCallDocUnsub = null; }
     const { id, data } = currentIncomingCall;
     currentIncomingCall = null;
     try {
@@ -1614,13 +1698,14 @@
       showActiveCallUi(data.fromNickname);
     } catch (e) {
       callErrorEl.textContent = "Bağlantı kurulamadı: " + e.message;
-      endCall(null);
+      endCall("FAILED");
     }
   }
 
   function rejectIncomingCall() {
     if (!currentIncomingCall) return;
     stopRingtone();
+    if (incomingCallDocUnsub) { incomingCallDocUnsub(); incomingCallDocUnsub = null; }
     fbDb.collection("calls").doc(currentIncomingCall.id).update({ status: "rejected" }).catch(() => {});
     currentIncomingCall = null;
     hideCallScreen();
@@ -1630,17 +1715,17 @@
     if (activeCallId && activeCallRole === "caller") {
       fbDb.collection("calls").doc(activeCallId).update({ status: "ended" }).catch(() => {});
     }
-    endCall(null);
+    endCall("CANCELED");
   }
 
   function hangUpCall() {
     if (activeCallId) {
       fbDb.collection("calls").doc(activeCallId).update({ status: "ended" }).catch(() => {});
     }
-    endCall(null);
+    endCall("ENDED");
   }
 
-  function endCall(reason) {
+  function endCall(code) {
     clearTimeout(callTimeoutTimer);
     clearInterval(callTimerInterval);
     callTimerInterval = null;
@@ -1650,12 +1735,30 @@
     if (remoteAudioEl) { remoteAudioEl.srcObject = null; }
     if (callDocUnsub) { callDocUnsub(); callDocUnsub = null; }
     if (remoteCandidatesUnsub) { remoteCandidatesUnsub(); remoteCandidatesUnsub = null; }
+
+    const role = activeCallRole;
+    const durationSec = callWasConnected && callStartedAt ? Math.max(0, Math.round((Date.now() - callStartedAt) / 1000)) : 0;
+    if (role === "caller" && callLogConvId && callLogOtherUid) {
+      let outcome = null;
+      if (callWasConnected) outcome = "completed";
+      else if (code === "REJECTED") outcome = "rejected";
+      else if (code === "TIMEOUT") outcome = "missed";
+      else if (code === "CANCELED") outcome = "canceled";
+      if (outcome) {
+        logCallToConversation(callLogConvId, callLogOtherUid, outcome, durationSec).catch(() => {});
+      }
+    }
+
     activeCallId = null;
     activeCallRole = null;
+    callLogConvId = null;
+    callLogOtherUid = null;
+    callLogOtherNickname = null;
+    callWasConnected = false;
     isMuted = false;
-    if (reason) {
+    if (code && CALL_END_MESSAGES[code]) {
       resetCallUi();
-      callStatusEl.textContent = reason;
+      callStatusEl.textContent = CALL_END_MESSAGES[code];
       setTimeout(hideCallScreen, 1500);
     } else {
       hideCallScreen();
@@ -1676,13 +1779,15 @@
           const createdMs = data.createdAt ? data.createdAt.toMillis() : Date.now();
           if (Date.now() - createdMs > CALL_RING_TIMEOUT_MS + 5000) return; // stale
           currentIncomingCall = { id: change.doc.id, data };
-          showIncomingCallUi(data);
+          showIncomingCallUi(data, change.doc.id);
         });
       }, () => {});
   }
 
   function stopListeningForIncomingCalls() {
     if (incomingCallsUnsub) { incomingCallsUnsub(); incomingCallsUnsub = null; }
+    if (incomingCallDocUnsub) { incomingCallDocUnsub(); incomingCallDocUnsub = null; }
+    currentIncomingCall = null;
   }
 
   threadCallBtn.addEventListener("click", () => {
@@ -1769,11 +1874,16 @@
           if (d.type === "file") {
             try { file = JSON.parse(plain); } catch (e) { file = null; }
           }
+          let call = null;
+          if (d.type === "call") {
+            try { call = JSON.parse(plain); } catch (e) { call = null; }
+          }
           rendered.push({
             from: d.from === myUid ? "me" : "them",
-            text: (d.type === "image" || d.type === "file") ? null : plain,
+            text: (d.type === "image" || d.type === "file" || d.type === "call") ? null : plain,
             image: d.type === "image" ? plain : null,
             file,
+            call,
             ts: d.ts ? d.ts.toMillis() : Date.now(),
             read: !!d.read,
           });
@@ -1856,14 +1966,29 @@
     let matchCount = 0;
     msgs.forEach(m => {
       if (query) {
-        // Images aren't searchable (no text to match), so hide them while
-        // filtering; only text messages containing the query are shown.
+        // Images and call log entries aren't searchable (no text to match),
+        // so hide them while filtering; only text messages containing the
+        // query are shown.
         if (m.image || !m.text || !m.text.toLowerCase().includes(query.toLowerCase())) return;
         matchCount++;
       }
+      const time = new Date(m.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+      if (m.call) {
+        const callDiv = document.createElement("div");
+        const missedOrRejected = m.call.outcome === "missed" || m.call.outcome === "rejected";
+        callDiv.className = "msg-bubble call-log" + (missedOrRejected ? " call-missed" : "");
+        const span = document.createElement("span");
+        span.textContent = callLogText(m.from === "me", m.call.outcome, m.call.duration || 0);
+        callDiv.appendChild(span);
+        const timeSpan = document.createElement("span");
+        timeSpan.className = "msg-time";
+        timeSpan.textContent = time;
+        callDiv.appendChild(timeSpan);
+        messageListEl.appendChild(callDiv);
+        return;
+      }
       const div = document.createElement("div");
       div.className = "msg-bubble " + m.from;
-      const time = new Date(m.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
       if (m.image) {
         const img = document.createElement("img");
         img.src = m.image;
@@ -1924,8 +2049,10 @@
     // Capture these locally: the user may navigate away from the conversation
     // (clearing activeConvId/activeOtherUid) while this async send is still
     // in flight, and the write below must still target the right thread.
-    const convId = activeConvId;
-    const otherUid = activeOtherUid;
+    return sendEncryptedTo(activeConvId, activeOtherUid, payloadText, type);
+  }
+
+  async function sendEncryptedTo(convId, otherUid, payloadText, type) {
     if (!convId || !otherUid) return;
     if (myBlocked[otherUid]) return;
     const otherPublicKey = await getPublicKeyForUid(otherUid);
