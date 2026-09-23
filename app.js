@@ -298,6 +298,31 @@
       return;
     }
     lockPanel.classList.add("hidden");
+
+    if (!myPrivateKey && localSessionData && localSessionData.uid && localSessionData.privateKeyJwk) {
+      const restored = await restoreSession(localSessionData);
+      if (restored) {
+        if (myStatus === "approved") {
+          enterMessenger();
+        } else {
+          openPendingPanel();
+        }
+        // Re-check the real status in the background in case it changed
+        // (e.g. got approved) while this device was locked.
+        fbDb.collection("users").doc(myUid).get().then(doc => {
+          const data = doc.data();
+          if (!data) return;
+          const freshStatus = data.status === undefined ? "approved" : data.status;
+          if (freshStatus !== myStatus) {
+            myStatus = freshStatus;
+            persistSession();
+            if (myStatus === "approved") enterMessenger();
+          }
+        }).catch(() => {});
+        return;
+      }
+    }
+
     if (fbAuth.currentUser && myPrivateKey) {
       if (myStatus === "approved") {
         enterMessenger();
@@ -309,14 +334,61 @@
     }
   }
 
+  async function restoreSession(session) {
+    if (!fbAuth.currentUser || fbAuth.currentUser.uid !== session.uid) return false;
+    try {
+      const privateKey = await crypto.subtle.importKey(
+        "jwk", session.privateKeyJwk, { name: "RSA-OAEP", hash: "SHA-256" }, true, ["decrypt"]
+      );
+      const publicKey = await crypto.subtle.importKey(
+        "jwk", session.publicKeyJwk, { name: "RSA-OAEP", hash: "SHA-256" }, true, ["encrypt"]
+      );
+      myUid = session.uid;
+      myNickname = session.nickname;
+      myPrivateKey = privateKey;
+      myPublicKey = publicKey;
+      myStatus = session.status || "pending";
+      myReferredByNickname = session.referredByNickname || null;
+      publicKeyCache.set(myUid, publicKey);
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  async function persistSession() {
+    if (!currentLocalKey || !myUid || !myPrivateKey) return;
+    const privateKeyJwk = await crypto.subtle.exportKey("jwk", myPrivateKey);
+    const publicKeyJwk = await crypto.subtle.exportKey("jwk", myPublicKey);
+    localSessionData = {
+      uid: myUid,
+      nickname: myNickname,
+      status: myStatus,
+      referredByNickname: myReferredByNickname,
+      privateKeyJwk,
+      publicKeyJwk,
+    };
+    await saveLocalBlob(currentLocalKey, localSessionData).catch(() => {});
+  }
+
+  async function clearPersistedSession() {
+    localSessionData = {};
+    if (currentLocalKey) {
+      await saveLocalBlob(currentLocalKey, {}).catch(() => {});
+    }
+  }
+
   async function unlockWithPin(pin) {
     const key = await deriveLocalKey(pin);
     if (!vaultExists()) {
       await saveLocalBlob(key, {});
+      currentLocalKey = key;
+      localSessionData = {};
       return true;
     }
     try {
-      await loadLocalBlob(key);
+      localSessionData = await loadLocalBlob(key);
+      currentLocalKey = key;
       return true;
     } catch (e) {
       return false;
@@ -327,7 +399,8 @@
     if (!vaultExists()) return false; // require explicit setup via triple-tap gesture first
     const key = await deriveLocalKey(pin);
     try {
-      await loadLocalBlob(key);
+      localSessionData = await loadLocalBlob(key);
+      currentLocalKey = key;
     } catch (e) {
       return false;
     }
@@ -373,6 +446,12 @@
   let myStatus = null; // "pending" or "approved"
   let myReferredByNickname = null;
   const publicKeyCache = new Map(); // uid -> CryptoKey
+
+  // The PIN-derived key and decrypted local blob from the most recent vault
+  // unlock, kept around so a successful login can save a restorable session
+  // into the same PIN-protected blob (see persistSession / restoreSession).
+  let currentLocalKey = null;
+  let localSessionData = null;
 
   // Firebase Auth's email/password provider is used purely as a mechanism —
   // nobody sees or types an email. Each nickname deterministically maps to a
@@ -433,6 +512,7 @@
       const data = doc.data();
       if (data && data.status === "approved") {
         myStatus = "approved";
+        await persistSession();
         pendingPanel.classList.add("hidden");
         enterMessenger();
       } else {
@@ -445,6 +525,7 @@
 
   document.getElementById("pending-logout-btn").addEventListener("click", async () => {
     await fbAuth.signOut();
+    await clearPersistedSession();
     myUid = null; myNickname = null; myPrivateKey = null; myPublicKey = null; myStatus = null; myReferredByNickname = null;
     pendingPanel.classList.add("hidden");
     closeVaultToCalculator();
@@ -612,6 +693,7 @@
       } else {
         await logIn(nickname, password);
       }
+      await persistSession();
       if (myStatus === "approved") {
         enterMessenger();
       } else {
@@ -897,7 +979,8 @@
       return;
     }
     const newKey = await deriveLocalKey(newPin);
-    await saveLocalBlob(newKey, {});
+    await saveLocalBlob(newKey, localSessionData || {});
+    currentLocalKey = newKey;
     msgEl.textContent = "PIN güncellendi.";
     document.getElementById("new-pin-input").value = "";
   });
@@ -934,6 +1017,7 @@
     if (!confirm("Hesabından çıkış yapılsın mı?")) return;
     stopAllMessengerListeners();
     await fbAuth.signOut();
+    await clearPersistedSession();
     myUid = null; myNickname = null; myPrivateKey = null; myPublicKey = null; myStatus = null; myReferredByNickname = null;
     closeVaultToCalculator();
   });
