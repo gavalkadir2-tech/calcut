@@ -1,6 +1,12 @@
 (() => {
   "use strict";
 
+  if ("serviceWorker" in navigator) {
+    window.addEventListener("load", () => {
+      navigator.serviceWorker.register("sw.js").catch(() => {});
+    });
+  }
+
   /* ---------------- Calculator logic ---------------- */
 
   const exprEl = document.getElementById("calc-expression");
