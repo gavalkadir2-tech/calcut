@@ -828,6 +828,7 @@
   function stopAllMessengerListeners() {
     if (conversationsUnsub) { conversationsUnsub(); conversationsUnsub = null; }
     if (messagesUnsub) { messagesUnsub(); messagesUnsub = null; }
+    stopTypingListener();
     lastMessageUnsubs.forEach(unsub => unsub());
     lastMessageUnsubs.clear();
     conversations.clear();
@@ -1197,6 +1198,54 @@
     fbDb.collection("conversations").doc(convId).update({ [`unreadCount.${myUid}`]: 0 }).catch(() => {});
     await getPublicKeyForUid(otherUid);
     listenToMessages(convId);
+    listenToTyping(convId, otherUid);
+  }
+
+  /* ---------------- Typing indicator ---------------- */
+
+  const threadTypingEl = document.getElementById("thread-typing");
+  const TYPING_STALE_MS = 4000; // how long since the other side's last keystroke before we hide "yazıyor..."
+  const TYPING_WRITE_THROTTLE_MS = 2000; // how often we write our own typing timestamp
+  let typingUnsub = null;
+  let typingCheckInterval = null;
+  let lastTypingWriteAt = 0;
+
+  function listenToTyping(convId, otherUid) {
+    if (typingUnsub) typingUnsub();
+    if (typingCheckInterval) clearInterval(typingCheckInterval);
+    threadTypingEl.classList.add("hidden");
+
+    function refreshFromSnapshot(snap) {
+      const d = snap.data();
+      const ts = d && d.typing && d.typing[otherUid];
+      const millis = ts && ts.toMillis ? ts.toMillis() : 0;
+      const isTyping = millis > 0 && (Date.now() - millis) < TYPING_STALE_MS;
+      threadTypingEl.classList.toggle("hidden", !isTyping);
+    }
+
+    typingUnsub = fbDb.collection("conversations").doc(convId)
+      .onSnapshot(refreshFromSnapshot, () => {});
+    // The timestamp doesn't push a new update once it goes stale, so also
+    // re-check locally on an interval to hide the indicator on time.
+    typingCheckInterval = setInterval(() => {
+      fbDb.collection("conversations").doc(convId).get().then(refreshFromSnapshot).catch(() => {});
+    }, 1500);
+  }
+
+  function stopTypingListener() {
+    if (typingUnsub) { typingUnsub(); typingUnsub = null; }
+    if (typingCheckInterval) { clearInterval(typingCheckInterval); typingCheckInterval = null; }
+    threadTypingEl.classList.add("hidden");
+  }
+
+  function notifyTyping() {
+    if (!activeConvId) return;
+    const now = Date.now();
+    if (now - lastTypingWriteAt < TYPING_WRITE_THROTTLE_MS) return;
+    lastTypingWriteAt = now;
+    fbDb.collection("conversations").doc(activeConvId).update({
+      [`typing.${myUid}`]: firebase.firestore.FieldValue.serverTimestamp(),
+    }).catch(() => {});
   }
 
   function listenToMessages(convId) {
@@ -1318,6 +1367,7 @@
   messageInput.addEventListener("keydown", (e) => {
     if (e.key === "Enter") sendMessage();
   });
+  messageInput.addEventListener("input", notifyTyping);
 
   async function sendMessage() {
     const text = messageInput.value.trim();
@@ -1352,6 +1402,7 @@
 
   document.getElementById("thread-back-btn").addEventListener("click", () => {
     if (messagesUnsub) { messagesUnsub(); messagesUnsub = null; }
+    stopTypingListener();
     activeConvId = null;
     activeOtherUid = null;
     showThreadList();
