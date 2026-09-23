@@ -406,3 +406,59 @@ button.danger { background: var(--danger); color: #fff; }
 
 #pending-panel h2 { margin-bottom: 4px; }
 #pending-panel p { color: #999; }
+
+/* Voice calls */
+#call-screen {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  background: #0d0f14;
+  color: #fff;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  text-align: center;
+  padding: 40px 20px;
+}
+#call-avatar {
+  width: 96px;
+  height: 96px;
+  border-radius: 50%;
+  background: #1c1f26;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 40px;
+  margin-bottom: 8px;
+}
+#call-nickname { margin: 0; font-size: 22px; }
+#call-status { color: #999; margin: 0; }
+#call-timer { color: var(--accent); font-size: 18px; margin: 0; }
+#call-actions-incoming, #call-actions-active, #call-actions-outgoing {
+  display: flex;
+  gap: 20px;
+  margin-top: 24px;
+}
+.call-btn {
+  border: none;
+  border-radius: 50%;
+  width: 64px;
+  height: 64px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  color: #fff;
+}
+.call-btn.accept { background: #34c759; }
+.call-btn.reject { background: var(--danger); }
+.call-btn.mute { background: #333; }
+.call-btn.mute.active { background: var(--accent); color: #111; }
+#thread-call-btn {
+  background: #1c1f26;
+  border: 1px solid #333;
+  color: var(--panel-fg);
+  border-radius: 8px;
+  padding: 8px 12px;
+  cursor: pointer;
+  font-size: 16px;
+}

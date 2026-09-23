@@ -821,6 +821,7 @@
     appPanel.classList.remove("hidden");
     showThreadList();
     listenToConversations();
+    listenForIncomingCalls();
     resetInactivityTimer();
     // Refresh the blocked list in case it changed on another device.
     fbDb.collection("users").doc(myUid).get().then(doc => {
@@ -840,6 +841,8 @@
     if (conversationsUnsub) { conversationsUnsub(); conversationsUnsub = null; }
     if (messagesUnsub) { messagesUnsub(); messagesUnsub = null; }
     stopTypingListener();
+    stopListeningForIncomingCalls();
+    endCall(null);
     lastMessageUnsubs.forEach(unsub => unsub());
     lastMessageUnsubs.clear();
     conversations.clear();
@@ -1285,6 +1288,7 @@
     messageInput.disabled = isBlocked;
     document.getElementById("message-send-btn").disabled = isBlocked;
     attachPhotoBtn.disabled = isBlocked;
+    document.getElementById("thread-call-btn").disabled = isBlocked;
   }
 
   async function setBlocked(otherUid, blocked) {
@@ -1325,6 +1329,377 @@
     } catch (e) {
       alert("İşlem başarısız: " + e.message);
     }
+  });
+
+  /* ---------------- Voice calls (WebRTC, signaled through Firestore) ----------------
+     No push/background support: this only works while the tab/PWA is open, same
+     tradeoff as the alarm notifications. Only STUN is configured (free public
+     servers) — there's no TURN relay, so calls between two very restrictive
+     NATs (e.g. some mobile carriers) may fail to connect; that would need a
+     paid TURN service to fix. */
+
+  const ICE_SERVERS = { iceServers: [
+    { urls: "stun:stun.l.google.com:19302" },
+    { urls: "stun:stun1.l.google.com:19302" },
+  ] };
+  const CALL_RING_TIMEOUT_MS = 30000;
+
+  const callScreen = document.getElementById("call-screen");
+  const callNicknameEl = document.getElementById("call-nickname");
+  const callStatusEl = document.getElementById("call-status");
+  const callTimerEl = document.getElementById("call-timer");
+  const callErrorEl = document.getElementById("call-error");
+  const callActionsIncoming = document.getElementById("call-actions-incoming");
+  const callActionsActive = document.getElementById("call-actions-active");
+  const callActionsOutgoing = document.getElementById("call-actions-outgoing");
+  const callMuteBtn = document.getElementById("call-mute-btn");
+  const threadCallBtn = document.getElementById("thread-call-btn");
+
+  let activeCallId = null;
+  let activeCallRole = null; // "caller" or "callee"
+  let peerConnection = null;
+  let localStream = null;
+  let remoteAudioEl = null;
+  let callDocUnsub = null;
+  let remoteCandidatesUnsub = null;
+  let incomingCallsUnsub = null;
+  let currentIncomingCall = null; // { id, data }
+  let callTimerInterval = null;
+  let callStartedAt = null;
+  let isMuted = false;
+  let ringToneTimer = null;
+  let ringToneCtx = null;
+  let callTimeoutTimer = null;
+
+  function resetCallUi() {
+    callActionsIncoming.classList.add("hidden");
+    callActionsActive.classList.add("hidden");
+    callActionsOutgoing.classList.add("hidden");
+    callTimerEl.classList.add("hidden");
+    callErrorEl.textContent = "";
+  }
+
+  function showIncomingCallUi(data) {
+    callScreen.classList.remove("hidden");
+    resetCallUi();
+    callNicknameEl.textContent = "@" + (data.fromNickname || "?");
+    callStatusEl.textContent = "Gelen arama...";
+    callActionsIncoming.classList.remove("hidden");
+    playRingtone();
+  }
+
+  function showOutgoingCallUi(nickname) {
+    callScreen.classList.remove("hidden");
+    resetCallUi();
+    callNicknameEl.textContent = "@" + nickname;
+    callStatusEl.textContent = "Aranıyor...";
+    callActionsOutgoing.classList.remove("hidden");
+  }
+
+  function showActiveCallUi(nickname) {
+    resetCallUi();
+    callNicknameEl.textContent = "@" + nickname;
+    callStatusEl.textContent = "Görüşmede";
+    callActionsActive.classList.remove("hidden");
+    callTimerEl.classList.remove("hidden");
+    callTimerEl.textContent = "00:00";
+    isMuted = false;
+    callMuteBtn.classList.remove("active");
+    callMuteBtn.textContent = "Sessize Al";
+    callStartedAt = Date.now();
+    clearInterval(callTimerInterval);
+    callTimerInterval = setInterval(() => {
+      const secs = Math.floor((Date.now() - callStartedAt) / 1000);
+      const mm = String(Math.floor(secs / 60)).padStart(2, "0");
+      const ss = String(secs % 60).padStart(2, "0");
+      callTimerEl.textContent = `${mm}:${ss}`;
+    }, 1000);
+  }
+
+  function hideCallScreen() {
+    callScreen.classList.add("hidden");
+  }
+
+  function playRingtone() {
+    stopRingtone();
+    try {
+      const Ctx = window.AudioContext || window.webkitAudioContext;
+      if (!Ctx) return;
+      ringToneCtx = new Ctx();
+      const ring = () => {
+        if (!ringToneCtx) return;
+        const now = ringToneCtx.currentTime;
+        [0, 0.3].forEach(offset => {
+          const osc = ringToneCtx.createOscillator();
+          const gain = ringToneCtx.createGain();
+          osc.type = "sine";
+          osc.frequency.value = 660;
+          gain.gain.setValueAtTime(0.0001, now + offset);
+          gain.gain.exponentialRampToValueAtTime(0.25, now + offset + 0.05);
+          gain.gain.exponentialRampToValueAtTime(0.0001, now + offset + 0.28);
+          osc.connect(gain).connect(ringToneCtx.destination);
+          osc.start(now + offset);
+          osc.stop(now + offset + 0.3);
+        });
+      };
+      ring();
+      ringToneTimer = setInterval(ring, 1600);
+    } catch (e) {}
+  }
+
+  function stopRingtone() {
+    if (ringToneTimer) { clearInterval(ringToneTimer); ringToneTimer = null; }
+    if (ringToneCtx) { ringToneCtx.close().catch(() => {}); ringToneCtx = null; }
+  }
+
+  async function getMic() {
+    try {
+      return await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch (e) {
+      throw new Error("Mikrofon erişimi reddedildi veya kullanılamıyor.");
+    }
+  }
+
+  function createPeerConnection(callId, role, docAlreadyExists) {
+    const pc = new RTCPeerConnection(ICE_SERVERS);
+    const candidatesCollection = role === "caller" ? "callerCandidates" : "calleeCandidates";
+    const pendingCandidates = [];
+    let docReady = !!docAlreadyExists;
+    pc._flushCandidates = () => {
+      docReady = true;
+      pendingCandidates.forEach(c => {
+        fbDb.collection("calls").doc(callId).collection(candidatesCollection).add(c).catch(() => {});
+      });
+      pendingCandidates.length = 0;
+    };
+    pc.onicecandidate = (event) => {
+      if (!event.candidate) return;
+      const c = event.candidate.toJSON();
+      if (docReady) {
+        fbDb.collection("calls").doc(callId).collection(candidatesCollection).add(c).catch(() => {});
+      } else {
+        pendingCandidates.push(c);
+      }
+    };
+    pc.ontrack = (event) => {
+      if (!remoteAudioEl) {
+        remoteAudioEl = document.createElement("audio");
+        remoteAudioEl.autoplay = true;
+        document.body.appendChild(remoteAudioEl);
+      }
+      remoteAudioEl.srcObject = event.streams[0];
+    };
+    pc.onconnectionstatechange = () => {
+      if (pc === peerConnection && (pc.connectionState === "failed" || pc.connectionState === "disconnected")) {
+        endCall("Bağlantı kesildi.");
+      }
+    };
+    return pc;
+  }
+
+  function listenToCallDoc(callId) {
+    if (callDocUnsub) callDocUnsub();
+    callDocUnsub = fbDb.collection("calls").doc(callId).onSnapshot(async snap => {
+      const data = snap.data();
+      if (!data || callId !== activeCallId) return;
+      if (activeCallRole === "caller" && data.status === "accepted" && data.answer &&
+          peerConnection && !peerConnection.currentRemoteDescription) {
+        clearTimeout(callTimeoutTimer);
+        try {
+          await peerConnection.setRemoteDescription(new RTCSessionDescription(data.answer));
+          showActiveCallUi(data.toNickname);
+        } catch (e) {
+          endCall("Bağlantı kurulamadı.");
+        }
+      }
+      if (data.status === "rejected" && activeCallRole === "caller") {
+        endCall("Arama reddedildi.");
+      }
+      if (data.status === "ended") {
+        endCall(activeCallRole === "caller" ? "Arama sona erdi." : "Karşı taraf kapattı.");
+      }
+    }, () => {});
+  }
+
+  function listenToRemoteCandidates(callId, collectionName) {
+    if (remoteCandidatesUnsub) remoteCandidatesUnsub();
+    remoteCandidatesUnsub = fbDb.collection("calls").doc(callId).collection(collectionName)
+      .onSnapshot(snap => {
+        snap.docChanges().forEach(change => {
+          if (change.type === "added" && peerConnection) {
+            peerConnection.addIceCandidate(new RTCIceCandidate(change.doc.data())).catch(() => {});
+          }
+        });
+      }, () => {});
+  }
+
+  async function startCall(otherUid, otherNickname) {
+    if (!otherUid || activeCallId) return;
+    if (myBlocked[otherUid]) { alert("Bu kullanıcıyı engellediniz."); return; }
+    if (!("mediaDevices" in navigator)) { alert("Bu tarayıcı sesli aramayı desteklemiyor."); return; }
+    try {
+      localStream = await getMic();
+    } catch (e) {
+      alert(e.message);
+      return;
+    }
+    activeCallRole = "caller";
+    showOutgoingCallUi(otherNickname);
+    try {
+      const callDocRef = fbDb.collection("calls").doc();
+      activeCallId = callDocRef.id;
+
+      peerConnection = createPeerConnection(activeCallId, "caller", false);
+      localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
+
+      const offer = await peerConnection.createOffer();
+      await peerConnection.setLocalDescription(offer);
+
+      await callDocRef.set({
+        from: myUid,
+        fromNickname: myNickname,
+        to: otherUid,
+        toNickname: otherNickname,
+        status: "ringing",
+        offer: { type: offer.type, sdp: offer.sdp },
+        createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+      });
+      peerConnection._flushCandidates();
+
+      listenToCallDoc(activeCallId);
+      listenToRemoteCandidates(activeCallId, "calleeCandidates");
+
+      callTimeoutTimer = setTimeout(() => {
+        if (activeCallId === callDocRef.id && activeCallRole === "caller") {
+          fbDb.collection("calls").doc(callDocRef.id).update({ status: "ended" }).catch(() => {});
+          endCall("Yanıt yok.");
+        }
+      }, CALL_RING_TIMEOUT_MS);
+    } catch (e) {
+      callErrorEl.textContent = "Arama başlatılamadı: " + e.message;
+      endCall(null);
+    }
+  }
+
+  async function acceptIncomingCall() {
+    if (!currentIncomingCall) return;
+    stopRingtone();
+    const { id, data } = currentIncomingCall;
+    currentIncomingCall = null;
+    try {
+      localStream = await getMic();
+    } catch (e) {
+      callErrorEl.textContent = e.message;
+      fbDb.collection("calls").doc(id).update({ status: "rejected" }).catch(() => {});
+      setTimeout(hideCallScreen, 1500);
+      return;
+    }
+    activeCallId = id;
+    activeCallRole = "callee";
+    try {
+      peerConnection = createPeerConnection(id, "callee", true);
+      localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
+
+      await peerConnection.setRemoteDescription(new RTCSessionDescription(data.offer));
+      const answer = await peerConnection.createAnswer();
+      await peerConnection.setLocalDescription(answer);
+
+      await fbDb.collection("calls").doc(id).update({
+        status: "accepted",
+        answer: { type: answer.type, sdp: answer.sdp },
+      });
+
+      listenToCallDoc(id);
+      listenToRemoteCandidates(id, "callerCandidates");
+      showActiveCallUi(data.fromNickname);
+    } catch (e) {
+      callErrorEl.textContent = "Bağlantı kurulamadı: " + e.message;
+      endCall(null);
+    }
+  }
+
+  function rejectIncomingCall() {
+    if (!currentIncomingCall) return;
+    stopRingtone();
+    fbDb.collection("calls").doc(currentIncomingCall.id).update({ status: "rejected" }).catch(() => {});
+    currentIncomingCall = null;
+    hideCallScreen();
+  }
+
+  function cancelOutgoingCall() {
+    if (activeCallId && activeCallRole === "caller") {
+      fbDb.collection("calls").doc(activeCallId).update({ status: "ended" }).catch(() => {});
+    }
+    endCall(null);
+  }
+
+  function hangUpCall() {
+    if (activeCallId) {
+      fbDb.collection("calls").doc(activeCallId).update({ status: "ended" }).catch(() => {});
+    }
+    endCall(null);
+  }
+
+  function endCall(reason) {
+    clearTimeout(callTimeoutTimer);
+    clearInterval(callTimerInterval);
+    callTimerInterval = null;
+    stopRingtone();
+    if (peerConnection) { peerConnection.close(); peerConnection = null; }
+    if (localStream) { localStream.getTracks().forEach(t => t.stop()); localStream = null; }
+    if (remoteAudioEl) { remoteAudioEl.srcObject = null; }
+    if (callDocUnsub) { callDocUnsub(); callDocUnsub = null; }
+    if (remoteCandidatesUnsub) { remoteCandidatesUnsub(); remoteCandidatesUnsub = null; }
+    activeCallId = null;
+    activeCallRole = null;
+    isMuted = false;
+    if (reason) {
+      resetCallUi();
+      callStatusEl.textContent = reason;
+      setTimeout(hideCallScreen, 1500);
+    } else {
+      hideCallScreen();
+    }
+  }
+
+  function listenForIncomingCalls() {
+    if (incomingCallsUnsub) incomingCallsUnsub();
+    incomingCallsUnsub = fbDb.collection("calls")
+      .where("to", "==", myUid)
+      .where("status", "==", "ringing")
+      .onSnapshot(snap => {
+        snap.docChanges().forEach(change => {
+          if (change.type !== "added") return;
+          const data = change.doc.data();
+          if (activeCallId || currentIncomingCall) return; // already busy
+          if (myBlocked[data.from]) return;
+          const createdMs = data.createdAt ? data.createdAt.toMillis() : Date.now();
+          if (Date.now() - createdMs > CALL_RING_TIMEOUT_MS + 5000) return; // stale
+          currentIncomingCall = { id: change.doc.id, data };
+          showIncomingCallUi(data);
+        });
+      }, () => {});
+  }
+
+  function stopListeningForIncomingCalls() {
+    if (incomingCallsUnsub) { incomingCallsUnsub(); incomingCallsUnsub = null; }
+  }
+
+  threadCallBtn.addEventListener("click", () => {
+    if (!activeOtherUid || !activeConvId) return;
+    const conv = conversations.get(activeConvId);
+    startCall(activeOtherUid, conv ? conv.otherNickname : "?");
+  });
+  document.getElementById("call-accept-btn").addEventListener("click", acceptIncomingCall);
+  document.getElementById("call-reject-btn").addEventListener("click", rejectIncomingCall);
+  document.getElementById("call-cancel-btn").addEventListener("click", cancelOutgoingCall);
+  document.getElementById("call-hangup-btn").addEventListener("click", hangUpCall);
+  callMuteBtn.addEventListener("click", () => {
+    if (!localStream) return;
+    isMuted = !isMuted;
+    localStream.getAudioTracks().forEach(t => { t.enabled = !isMuted; });
+    callMuteBtn.classList.toggle("active", isMuted);
+    callMuteBtn.textContent = isMuted ? "Sesi Aç" : "Sessize Al";
   });
 
   /* ---------------- Typing indicator ---------------- */
