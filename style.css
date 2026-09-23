@@ -203,7 +203,10 @@ button.danger { background: var(--danger); color: #fff; }
 }
 .msg-bubble.me { align-self: flex-end; background: var(--bubble-me); color: #fff; border-bottom-right-radius: 4px; }
 .msg-bubble.them { align-self: flex-start; background: var(--bubble-them); color: #eee; border-bottom-left-radius: 4px; }
-.msg-time { font-size: 10px; opacity: 0.6; margin-top: 4px; display: block; }
+.msg-meta { display: flex; align-items: center; gap: 4px; margin-top: 4px; }
+.msg-time { font-size: 10px; opacity: 0.6; }
+.msg-tick { font-size: 11px; color: #b8c4d9; }
+.msg-tick.read { color: #4fc3f7; }
 
 .message-input-row { display: flex; gap: 8px; padding-top: 10px; }
 .message-input-row input {
