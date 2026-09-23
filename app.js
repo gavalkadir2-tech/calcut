@@ -900,6 +900,7 @@
   function stopAllMessengerListeners() {
     if (conversationsUnsub) { conversationsUnsub(); conversationsUnsub = null; }
     if (messagesUnsub) { messagesUnsub(); messagesUnsub = null; }
+    if (disappearingCheckInterval) { clearInterval(disappearingCheckInterval); disappearingCheckInterval = null; }
     stopTypingListener();
     stopListeningForIncomingCalls();
     endCall(null);
@@ -982,7 +983,9 @@
             unread,
             lastPreview: existing.lastPreview || "",
             lastTs: existing.lastTs || 0,
+            disappearingSeconds: d.disappearingSeconds || 0,
           });
+          if (change.doc.id === activeConvId) updateDisappearingUi();
           subscribeLastMessage(change.doc.id);
 
           // Fire the alarm-style notification for a new message: only once
@@ -1411,6 +1414,7 @@
     listenToMessages(convId);
     listenToTyping(convId, otherUid);
     updateBlockUi();
+    updateDisappearingUi();
   }
 
   /* ---------------- Block / unblock a contact ---------------- */
@@ -1468,6 +1472,61 @@
       alert("İşlem başarısız: " + e.message);
     }
   });
+
+  /* ---------------- Disappearing messages (per-conversation timer) ---------------- */
+
+  const threadDisappearingBtn = document.getElementById("thread-disappearing-btn");
+  const disappearingModal = document.getElementById("disappearing-modal");
+
+  function updateDisappearingUi() {
+    const conv = activeConvId ? conversations.get(activeConvId) : null;
+    const seconds = conv ? (conv.disappearingSeconds || 0) : 0;
+    threadDisappearingBtn.classList.toggle("active", seconds > 0);
+    threadDisappearingBtn.title = seconds > 0 ? "Kaybolan mesajlar açık" : "Kaybolan mesajlar";
+  }
+
+  threadDisappearingBtn.addEventListener("click", () => {
+    if (!activeConvId) return;
+    const conv = conversations.get(activeConvId);
+    const current = conv ? (conv.disappearingSeconds || 0) : 0;
+    disappearingModal.querySelectorAll(".disappearing-opt").forEach(btn => {
+      btn.classList.toggle("active", Number(btn.dataset.seconds) === current);
+    });
+    disappearingModal.classList.remove("hidden");
+  });
+
+  document.getElementById("disappearing-cancel").addEventListener("click", () => {
+    disappearingModal.classList.add("hidden");
+  });
+
+  disappearingModal.querySelectorAll(".disappearing-opt").forEach(btn => {
+    btn.addEventListener("click", async () => {
+      if (!activeConvId) return;
+      const seconds = Number(btn.dataset.seconds);
+      const convId = activeConvId;
+      try {
+        await fbDb.collection("conversations").doc(convId).update({ disappearingSeconds: seconds });
+        const conv = conversations.get(convId);
+        if (conv) conv.disappearingSeconds = seconds;
+        updateDisappearingUi();
+      } catch (e) {
+        alert("Ayarlanamadı: " + e.message);
+      } finally {
+        disappearingModal.classList.add("hidden");
+      }
+    });
+  });
+
+  async function pruneExpiredMessages(convId) {
+    try {
+      const q = await fbDb.collection("conversations").doc(convId).collection("messages")
+        .where("expiresAt", "<=", firebase.firestore.Timestamp.now()).get();
+      if (q.empty) return;
+      const batch = fbDb.batch();
+      q.docs.forEach(d => batch.delete(d.ref));
+      await batch.commit();
+    } catch (e) {}
+  }
 
   /* ---------------- Voice calls (WebRTC, signaled through Firestore) ----------------
      No push/background support: this only works while the tab/PWA is open, same
@@ -2038,16 +2097,22 @@
     }).catch(() => {});
   }
 
+  let disappearingCheckInterval = null;
+
   function listenToMessages(convId) {
     if (messagesUnsub) messagesUnsub();
+    if (disappearingCheckInterval) { clearInterval(disappearingCheckInterval); disappearingCheckInterval = null; }
     messageListEl.innerHTML = "";
     messagesUnsub = fbDb.collection("conversations").doc(convId).collection("messages")
       .orderBy("ts")
       .onSnapshot(async snap => {
         fbDb.collection("conversations").doc(convId).update({ [`unreadCount.${myUid}`]: 0 }).catch(() => {});
         const rendered = [];
+        const now = Date.now();
         for (const doc of snap.docs) {
           const d = doc.data();
+          const expiresAtMillis = d.expiresAt ? d.expiresAt.toMillis() : null;
+          if (expiresAtMillis && expiresAtMillis <= now) continue; // already expired: hide, will be purged shortly
           const plain = await decryptMessage(d).catch(() => "[çözülemedi]");
           // The conversation is open right now, so any message from the other
           // person is by definition being read as it arrives.
@@ -2070,11 +2135,23 @@
             call,
             ts: d.ts ? d.ts.toMillis() : Date.now(),
             read: !!d.read,
+            expiresAtMillis,
           });
         }
         currentMessages = rendered;
         renderMessages(rendered);
       }, err => console.error("messages listen error", err));
+
+    pruneExpiredMessages(convId);
+    // Disappearing messages expire purely by wall-clock time, so a periodic
+    // check (rather than only re-running on Firestore snapshot changes) is
+    // needed to hide/purge them right on schedule while the thread is open.
+    disappearingCheckInterval = setInterval(() => {
+      if (currentMessages.some(m => m.expiresAtMillis && m.expiresAtMillis <= Date.now())) {
+        renderMessages(currentMessages);
+      }
+      pruneExpiredMessages(convId);
+    }, 3000);
   }
 
   /* ---------------- In-conversation search ---------------- */
@@ -2149,6 +2226,7 @@
     const query = searchQuery.trim();
     let matchCount = 0;
     msgs.forEach(m => {
+      if (m.expiresAtMillis && m.expiresAtMillis <= Date.now()) return;
       if (query) {
         // Images and call log entries aren't searchable (no text to match),
         // so hide them while filtering; only text messages containing the
@@ -2253,7 +2331,9 @@
     const myWrapped = await wrapAesKeyForPublicKey(rawAes, myPublicKey);
     const theirWrapped = await wrapAesKeyForPublicKey(rawAes, otherPublicKey);
 
-    await fbDb.collection("conversations").doc(convId).collection("messages").add({
+    const conv = conversations.get(convId);
+    const disappearingSeconds = conv ? (conv.disappearingSeconds || 0) : 0;
+    const msgData = {
       from: myUid,
       type,
       iv: b64encode(iv.buffer),
@@ -2261,7 +2341,11 @@
       wrappedKeys: { [myUid]: myWrapped, [otherUid]: theirWrapped },
       ts: firebase.firestore.FieldValue.serverTimestamp(),
       read: false,
-    });
+    };
+    if (disappearingSeconds > 0) {
+      msgData.expiresAt = firebase.firestore.Timestamp.fromMillis(Date.now() + disappearingSeconds * 1000);
+    }
+    await fbDb.collection("conversations").doc(convId).collection("messages").add(msgData);
     await fbDb.collection("conversations").doc(convId).update({
       updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
       [`unreadCount.${otherUid}`]: firebase.firestore.FieldValue.increment(1),
