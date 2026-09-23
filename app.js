@@ -485,7 +485,11 @@
           throw new Error("Referans kullanıcı bulunamadı.");
         }
         const refData = refQ.docs[0].data();
-        if (refData.status !== "approved") {
+        // Accounts predating this feature have no status field — treat them
+        // as approved client-side too, for an accurate error message (the
+        // Firestore rules require the field to actually be set, though).
+        const refStatus = refData.status === undefined ? "approved" : refData.status;
+        if (refStatus !== "approved") {
           throw new Error("Referans kullanıcı henüz onaylı değil.");
         }
         referredBy = refQ.docs[0].id;
@@ -581,7 +585,9 @@
     myNickname = data.nickname || nickname;
     myPrivateKey = privateKey;
     myPublicKey = publicKey;
-    myStatus = data.status || "pending";
+    // Accounts created before this feature existed have no status field at
+    // all — grandfather them in as approved rather than locking them out.
+    myStatus = data.status === undefined ? "approved" : data.status;
     myReferredByNickname = data.referredByNickname || null;
     publicKeyCache.set(uid, publicKey);
   }
