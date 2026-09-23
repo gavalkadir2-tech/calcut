@@ -362,6 +362,21 @@ button.danger { background: var(--danger); color: #fff; }
 .modal-actions { display: flex; gap: 10px; }
 .modal-actions button { flex: 1; }
 .disappearing-options { flex-direction: column; margin-bottom: 12px; }
+#forward-thread-list {
+  list-style: none;
+  margin: 0 0 12px;
+  padding: 0;
+  max-height: 40vh;
+  overflow-y: auto;
+  text-align: left;
+}
+#forward-thread-list li {
+  padding: 10px 8px;
+  border-bottom: 1px solid #2a2d34;
+  cursor: pointer;
+}
+#forward-thread-list li:active { background: #1a1d24; }
+#forward-thread-list li.empty-state { cursor: default; }
 .disappearing-options button.active { background: var(--accent-dark, #444); box-shadow: inset 0 0 0 2px var(--accent); }
 
 .forgot-link {

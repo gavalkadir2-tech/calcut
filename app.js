@@ -2446,6 +2446,13 @@
       reactBtn.textContent = "🙂";
       reactBtn.dataset.msgId = m.id;
       metaRow.appendChild(reactBtn);
+      if (m.type === "text" || m.type === "image" || m.type === "file") {
+        const fwdBtn = document.createElement("button");
+        fwdBtn.className = "msg-action msg-forward-btn";
+        fwdBtn.textContent = "➡️";
+        fwdBtn.dataset.msgId = m.id;
+        metaRow.appendChild(fwdBtn);
+      }
       div.appendChild(metaRow);
       const reactionEntries = Object.entries(m.reactions || {});
       if (reactionEntries.length) {
@@ -2525,6 +2532,11 @@
       await setMyReaction(activeConvId, badge.dataset.msgId, badge.dataset.emoji);
       return;
     }
+    const fwdBtn = e.target.closest(".msg-forward-btn");
+    if (fwdBtn) {
+      openForwardModal(fwdBtn.dataset.msgId);
+      return;
+    }
     const delBtn = e.target.closest(".msg-delete-btn");
     if (delBtn) {
       if (!confirm("Bu mesaj silinsin mi? (Herkes için)")) return;
@@ -2573,6 +2585,53 @@
       edited: true,
       editedAt: firebase.firestore.FieldValue.serverTimestamp(),
     });
+  }
+
+  /* ---------------- Message forwarding ---------------- */
+
+  const forwardModal = document.getElementById("forward-modal");
+  const forwardThreadList = document.getElementById("forward-thread-list");
+  let forwardingMsgId = null;
+
+  function openForwardModal(msgId) {
+    forwardingMsgId = msgId;
+    forwardThreadList.innerHTML = "";
+    const list = Array.from(conversations.values());
+    if (!list.length) {
+      forwardThreadList.innerHTML = "<li class='empty-state'>İletilecek başka sohbet yok.</li>";
+    } else {
+      list.forEach(conv => {
+        const li = document.createElement("li");
+        li.textContent = "@" + conv.otherNickname;
+        li.addEventListener("click", () => forwardMessageTo(conv.id, conv.otherUid));
+        forwardThreadList.appendChild(li);
+      });
+    }
+    forwardModal.classList.remove("hidden");
+  }
+
+  function closeForwardModal() {
+    forwardModal.classList.add("hidden");
+    forwardingMsgId = null;
+  }
+
+  document.getElementById("forward-cancel").addEventListener("click", closeForwardModal);
+
+  async function forwardMessageTo(targetConvId, targetOtherUid) {
+    const msg = currentMessages.find(m => m.id === forwardingMsgId);
+    closeForwardModal();
+    if (!msg) return;
+    try {
+      if (msg.type === "text") {
+        await sendEncryptedTo(targetConvId, targetOtherUid, msg.text, "text");
+      } else if (msg.type === "image") {
+        await sendEncryptedTo(targetConvId, targetOtherUid, msg.image, "image");
+      } else if (msg.type === "file") {
+        await sendEncryptedTo(targetConvId, targetOtherUid, JSON.stringify(msg.file), "file");
+      }
+    } catch (e) {
+      alert("İletilemedi: " + e.message);
+    }
   }
 
   async function wrapAesKeyForPublicKey(rawAesKey, publicKey) {
