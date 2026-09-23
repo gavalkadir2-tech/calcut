@@ -513,6 +513,7 @@
     pendingPanel.classList.remove("hidden");
     pendingReferrerEl.textContent = myReferredByNickname ? "@" + myReferredByNickname : "referans kullanıcının";
     pendingMsg.textContent = "";
+    resetInactivityTimer();
   }
 
   document.getElementById("pending-refresh-btn").addEventListener("click", async () => {
@@ -814,6 +815,7 @@
     appPanel.classList.remove("hidden");
     showThreadList();
     listenToConversations();
+    resetInactivityTimer();
   }
 
   function showThreadList() {
@@ -988,11 +990,55 @@
     }
   });
 
-  document.getElementById("lock-btn").addEventListener("click", () => {
+  function lockVault() {
     stopAllMessengerListeners();
     myPrivateKey = null;
     myPublicKey = null;
     closeVaultToCalculator();
+  }
+
+  document.getElementById("lock-btn").addEventListener("click", lockVault);
+
+  /* ---------------- Auto-lock: backgrounding or inactivity ---------------- */
+  // Locking here only hides the vault and drops the in-memory private key —
+  // it does NOT clear the persisted PIN-protected session, so re-entering the
+  // PIN immediately restores it (same as tapping the manual lock button).
+
+  const INACTIVITY_LOCK_MS = 5 * 60 * 1000; // 5 minutes with no interaction
+  const BACKGROUND_LOCK_MS = 30 * 1000; // 30 seconds fully backgrounded/hidden
+  let inactivityTimer = null;
+  let backgroundTimer = null;
+
+  function isVaultUnlockedView() {
+    return !vaultView.classList.contains("hidden") &&
+      lockPanel.classList.contains("hidden") &&
+      authPanel.classList.contains("hidden");
+  }
+
+  function autoLockNow() {
+    if (!isVaultUnlockedView()) return;
+    lockVault();
+  }
+
+  function resetInactivityTimer() {
+    clearTimeout(inactivityTimer);
+    if (!isVaultUnlockedView()) return;
+    inactivityTimer = setTimeout(autoLockNow, INACTIVITY_LOCK_MS);
+  }
+
+  ["click", "keydown", "touchstart", "mousemove"].forEach(evt => {
+    document.addEventListener(evt, resetInactivityTimer, { passive: true });
+  });
+
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) {
+      clearTimeout(backgroundTimer);
+      if (!isVaultUnlockedView()) return;
+      backgroundTimer = setTimeout(autoLockNow, BACKGROUND_LOCK_MS);
+    } else {
+      clearTimeout(backgroundTimer);
+      resetInactivityTimer();
+    }
   });
 
   document.getElementById("settings-btn").addEventListener("click", () => {
