@@ -75,6 +75,17 @@
     <p id="pending-msg"></p>
   </div>
 
+  <div id="duress-panel" class="vault-panel hidden">
+    <div class="vault-header">
+      <h2>Mesajlar</h2>
+      <div class="header-actions">
+        <button id="duress-new-thread-btn" title="Yeni sohbet">+</button>
+        <button id="duress-lock-btn" title="Kilitle">🔒</button>
+      </div>
+    </div>
+    <ul id="duress-thread-list"><li class="empty-state">Henüz sohbet yok.</li></ul>
+  </div>
+
   <div id="vault-app" class="vault-panel hidden">
     <div id="thread-list-panel">
       <div class="vault-header">
@@ -133,6 +144,13 @@
         <input id="new-pin-input" type="password" inputmode="numeric" maxlength="12" placeholder="Yeni PIN">
         <button id="change-pin-btn">PIN'i Değiştir</button>
         <p id="settings-msg"></p>
+        <hr>
+        <label>Yanılgı PIN'i (opsiyonel)</label>
+        <p class="hint">Bu PIN girildiğinde gerçek mesajların yerine boş, sahte bir ekran açılır. Zorla telefonun açtırılırsa bu PIN'i verebilirsin.</p>
+        <input id="duress-pin-input" type="password" inputmode="numeric" maxlength="12" placeholder="Yanılgı PIN'i belirle">
+        <button id="set-duress-pin-btn">Yanılgı PIN'i Belirle</button>
+        <button id="clear-duress-pin-btn" class="ghost">Yanılgı PIN'ini Kaldır</button>
+        <p id="duress-pin-msg"></p>
         <hr>
         <label>Ek güvenlik</label>
         <button id="enable-biometric-btn">Biyometrik onay ekle</button>
