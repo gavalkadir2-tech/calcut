@@ -210,6 +210,18 @@ button.danger { background: var(--danger); color: #fff; }
 .msg-time { font-size: 10px; opacity: 0.6; }
 .msg-tick { font-size: 11px; color: #b8c4d9; }
 .msg-tick.read { color: #4fc3f7; }
+.msg-action {
+  background: none;
+  border: none;
+  color: inherit;
+  opacity: 0.7;
+  cursor: pointer;
+  font-size: 12px;
+  padding: 0 2px;
+}
+.msg-action:hover { opacity: 1; }
+.msg-edited { font-size: 10px; opacity: 0.6; font-style: italic; }
+.msg-bubble.deleted .deleted-text { font-style: italic; opacity: 0.6; }
 
 #thread-search-btn, #thread-block-btn, #thread-disappearing-btn, #thread-mute-btn {
   background: #1c1f26;
