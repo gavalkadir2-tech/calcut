@@ -478,6 +478,30 @@ button.danger { background: var(--danger); color: #fff; }
   text-align: center;
   padding: 40px 20px;
 }
+#call-remote-video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  z-index: 0;
+}
+#call-local-video {
+  position: absolute;
+  top: env(safe-area-inset-top, 16px);
+  right: 16px;
+  width: 96px;
+  height: 128px;
+  object-fit: cover;
+  border-radius: 10px;
+  border: 1px solid #333;
+  z-index: 1;
+  transform: scaleX(-1);
+}
+#call-screen > *:not(#call-remote-video):not(#call-local-video) { position: relative; z-index: 1; }
+#call-screen.video-active { background: #000; }
+#call-screen.video-active #call-nickname,
+#call-screen.video-active #call-status { text-shadow: 0 1px 4px rgba(0,0,0,0.8); }
 #call-avatar {
   width: 96px;
   height: 96px;
@@ -511,7 +535,7 @@ button.danger { background: var(--danger); color: #fff; }
 .call-btn.reject { background: var(--danger); }
 .call-btn.mute { background: #333; }
 .call-btn.mute.active { background: var(--accent); color: #111; }
-#thread-call-btn {
+#thread-call-btn, #thread-video-call-btn {
   background: #1c1f26;
   border: 1px solid #333;
   color: var(--panel-fg);
