@@ -1183,6 +1183,7 @@
     document.getElementById("new-nickname-input").value = "";
     document.getElementById("duress-pin-msg").textContent = "";
     document.getElementById("duress-pin-input").value = "";
+    document.getElementById("backup-msg").textContent = "";
     loadPendingReferrals();
   });
   document.getElementById("settings-back-btn").addEventListener("click", showThreadList);
@@ -1395,6 +1396,139 @@
     localStorage.removeItem(STORAGE_BIOMETRIC);
     clearDuressPin();
     closeVaultToCalculator();
+  });
+
+  /* ---------------- Encrypted backup / export ---------------- */
+  // Client-side only: decrypts every conversation this account can already
+  // read and re-packages it into a single file, encrypted with a
+  // user-chosen backup password (independent of both the local PIN and the
+  // account password). Import only decrypts and displays it locally for
+  // reading — it never writes anything back to Firestore.
+
+  document.getElementById("export-backup-btn").addEventListener("click", async () => {
+    const msgEl = document.getElementById("backup-msg");
+    const password = prompt("Yedek dosyasını şifrelemek için bir parola belirle (bu parolayı unutma, yedeği açmak için gerekecek):");
+    if (!password) return;
+    msgEl.textContent = "Hazırlanıyor...";
+    try {
+      const convsSnap = await fbDb.collection("conversations").where("participants", "array-contains", myUid).get();
+      const exportedConvs = [];
+      for (const convDoc of convsSnap.docs) {
+        const cd = convDoc.data();
+        const otherUid = cd.participants.find(u => u !== myUid);
+        const otherNickname = (cd.participantNicknames && cd.participantNicknames[otherUid]) || "?";
+        const msgsSnap = await fbDb.collection("conversations").doc(convDoc.id).collection("messages").orderBy("ts").get();
+        const messages = [];
+        for (const msgDoc of msgsSnap.docs) {
+          const d = msgDoc.data();
+          if (d.deleted) continue;
+          let plain;
+          try { plain = await decryptMessage(d); } catch (e) { continue; }
+          messages.push({
+            from: d.from === myUid ? myNickname : otherNickname,
+            type: d.type,
+            content: plain,
+            ts: d.ts ? d.ts.toMillis() : null,
+            edited: !!d.edited,
+          });
+        }
+        exportedConvs.push({ otherNickname, messages });
+      }
+      const payload = { exportedAt: Date.now(), nickname: myNickname, conversations: exportedConvs };
+      const salt = crypto.getRandomValues(new Uint8Array(16));
+      const key = await deriveKeyFromSecret(password, salt);
+      const iv = crypto.getRandomValues(new Uint8Array(12));
+      const ciphertext = await crypto.subtle.encrypt(
+        { name: "AES-GCM", iv }, key, new TextEncoder().encode(JSON.stringify(payload))
+      );
+      const fileObj = {
+        calcutBackup: true,
+        version: 1,
+        salt: b64encode(salt.buffer),
+        iv: b64encode(iv.buffer),
+        data: b64encode(ciphertext),
+      };
+      const blob = new Blob([JSON.stringify(fileObj)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `calcut-yedek-${new Date().toISOString().slice(0, 10)}.json`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      msgEl.textContent = `Yedek indirildi (${exportedConvs.length} sohbet).`;
+    } catch (e) {
+      msgEl.textContent = "Yedek alınamadı: " + e.message;
+    }
+  });
+
+  const importBackupInput = document.getElementById("import-backup-input");
+  document.getElementById("import-backup-btn").addEventListener("click", () => importBackupInput.click());
+  importBackupInput.addEventListener("change", async () => {
+    const file = importBackupInput.files[0];
+    importBackupInput.value = "";
+    if (!file) return;
+    const msgEl = document.getElementById("backup-msg");
+    const password = prompt("Yedek dosyasının parolasını gir:");
+    if (!password) return;
+    try {
+      const text = await file.text();
+      const fileObj = JSON.parse(text);
+      if (!fileObj.calcutBackup) throw new Error("Bu bir calcut yedek dosyası değil.");
+      const salt = new Uint8Array(b64decode(fileObj.salt));
+      const key = await deriveKeyFromSecret(password, salt);
+      const plaintext = await crypto.subtle.decrypt(
+        { name: "AES-GCM", iv: new Uint8Array(b64decode(fileObj.iv)) },
+        key,
+        b64decode(fileObj.data)
+      );
+      const payload = JSON.parse(new TextDecoder().decode(plaintext));
+      showBackupViewer(payload);
+      msgEl.textContent = "";
+    } catch (e) {
+      msgEl.textContent = "Yedek açılamadı: yanlış parola veya bozuk dosya.";
+    }
+  });
+
+  function showBackupViewer(payload) {
+    const content = document.getElementById("backup-viewer-content");
+    content.innerHTML = "";
+    const header = document.createElement("p");
+    header.textContent = `@${payload.nickname} — ${new Date(payload.exportedAt).toLocaleString()} tarihli yedek`;
+    content.appendChild(header);
+    (payload.conversations || []).forEach(conv => {
+      const h4 = document.createElement("h4");
+      h4.textContent = "@" + conv.otherNickname;
+      content.appendChild(h4);
+      if (!conv.messages.length) {
+        const empty = document.createElement("p");
+        empty.className = "empty-state";
+        empty.textContent = "Mesaj yok.";
+        content.appendChild(empty);
+        return;
+      }
+      conv.messages.forEach(m => {
+        const line = document.createElement("div");
+        line.className = "backup-msg-line";
+        const from = document.createElement("span");
+        from.className = "backup-from";
+        from.textContent = "@" + m.from + ":";
+        line.appendChild(from);
+        let text;
+        if (m.type === "image") text = "📷 Fotoğraf";
+        else if (m.type === "file") text = "📄 Dosya";
+        else if (m.type === "call") text = "📞 Arama kaydı";
+        else text = m.content + (m.edited ? " (düzenlendi)" : "");
+        line.appendChild(document.createTextNode(text));
+        content.appendChild(line);
+      });
+    });
+    document.getElementById("backup-viewer-modal").classList.remove("hidden");
+  }
+
+  document.getElementById("backup-viewer-close").addEventListener("click", () => {
+    document.getElementById("backup-viewer-modal").classList.add("hidden");
   });
 
   /* ---------------- Conversation detail / E2E message send+receive ---------------- */

@@ -166,6 +166,13 @@
         <label>Bekleyen Referanslar</label>
         <ul id="pending-referrals-list"></ul>
         <hr>
+        <label>Yedekleme</label>
+        <p class="hint">Tüm sohbetlerini bir parolayla şifreli tek bir dosyaya kaydet, istediğin zaman aynı parolayla açıp görüntüleyebilirsin.</p>
+        <button id="export-backup-btn">Sohbetleri Yedekle (Şifreli)</button>
+        <input id="import-backup-input" type="file" accept="application/json" class="hidden">
+        <button id="import-backup-btn" class="ghost">Yedeği Görüntüle</button>
+        <p id="backup-msg"></p>
+        <hr>
         <button id="logout-btn" class="ghost">Hesaptan Çıkış Yap</button>
         <button id="wipe-vault-btn" class="danger">Tüm Yerel Verileri Sil</button>
       </div>
@@ -193,6 +200,16 @@
   </div>
   <div id="call-actions-outgoing" class="hidden">
     <button id="call-cancel-btn" class="call-btn reject">İptal</button>
+  </div>
+</div>
+
+<div id="backup-viewer-modal" class="modal hidden">
+  <div class="modal-box backup-viewer-box">
+    <h3>Yedek İçeriği</h3>
+    <div id="backup-viewer-content"></div>
+    <div class="modal-actions">
+      <button id="backup-viewer-close" class="ghost">Kapat</button>
+    </div>
   </div>
 </div>
 
