@@ -108,11 +108,27 @@
     currentInput = formatNumber(parseFloat(currentInput) / 100);
   }
 
+  // Secret gesture: pressing the keys 1,9,2,3,=,+ in that order opens the hidden
+  // vault lock screen directly, regardless of the account PIN.
+  const SECRET_SEQUENCE = "1923=+";
+  let secretBuffer = "";
+  let secretTimer = null;
+  function trackSecretKey(key) {
+    clearTimeout(secretTimer);
+    secretTimer = setTimeout(() => { secretBuffer = ""; }, 3000);
+    secretBuffer = (secretBuffer + key).slice(-SECRET_SEQUENCE.length);
+    if (secretBuffer === SECRET_SEQUENCE) {
+      secretBuffer = "";
+      clearTimeout(secretTimer);
+      openVaultLockScreen();
+    }
+  }
+
   document.querySelectorAll(".btn[data-num]").forEach(btn => {
-    btn.addEventListener("click", () => { inputNumber(btn.dataset.num); renderCalc(); });
+    btn.addEventListener("click", () => { inputNumber(btn.dataset.num); trackSecretKey(btn.dataset.num); renderCalc(); });
   });
   document.querySelectorAll(".btn[data-op]").forEach(btn => {
-    btn.addEventListener("click", () => { inputOp(btn.dataset.op); renderCalc(); });
+    btn.addEventListener("click", () => { inputOp(btn.dataset.op); trackSecretKey(btn.dataset.op); renderCalc(); });
   });
   document.querySelectorAll(".btn[data-action]").forEach(btn => {
     btn.addEventListener("click", () => {
@@ -120,7 +136,7 @@
       if (action === "clear") clearAll();
       else if (action === "sign") signToggle();
       else if (action === "percent") percent();
-      else if (action === "equals") { equals(); return; }
+      else if (action === "equals") { trackSecretKey("="); equals(); return; }
       renderCalc();
     });
   });
