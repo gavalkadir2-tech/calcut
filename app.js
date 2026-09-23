@@ -974,6 +974,7 @@
           const otherUid = d.participants.find(u => u !== myUid);
           const otherNickname = (d.participantNicknames && d.participantNicknames[otherUid]) || "?";
           const unread = (d.unreadCount && d.unreadCount[myUid]) || 0;
+          const muted = !!(d.muted && d.muted[myUid]);
           const existing = conversations.get(change.doc.id) || {};
           conversations.set(change.doc.id, {
             id: change.doc.id,
@@ -984,8 +985,9 @@
             lastPreview: existing.lastPreview || "",
             lastTs: existing.lastTs || 0,
             disappearingSeconds: d.disappearingSeconds || 0,
+            muted,
           });
-          if (change.doc.id === activeConvId) updateDisappearingUi();
+          if (change.doc.id === activeConvId) { updateDisappearingUi(); updateMuteUi(); }
           subscribeLastMessage(change.doc.id);
 
           // Fire the alarm-style notification for a new message: only once
@@ -993,7 +995,7 @@
           // snapshot on login, which would otherwise fire for old unread
           // messages) and only if it's not the conversation currently open.
           const prev = previousUnread.get(change.doc.id);
-          if (prev !== undefined && unread > prev && change.doc.id !== activeConvId && !myBlocked[otherUid]) {
+          if (prev !== undefined && unread > prev && change.doc.id !== activeConvId && !myBlocked[otherUid] && !muted) {
             triggerAlarmAlert();
           }
           previousUnread.set(change.doc.id, unread);
@@ -1056,7 +1058,7 @@
           <span class="thread-preview"></span>
           <span class="thread-badge hidden">0</span>
         </div>`;
-      li.querySelector(".thread-name").textContent = "@" + conv.otherNickname;
+      li.querySelector(".thread-name").textContent = "@" + conv.otherNickname + (conv.muted ? " 🔕" : "");
       li.querySelector(".thread-time").textContent = formatThreadTime(conv.lastTs || conv.updatedAt);
       if (myBlocked[conv.otherUid]) {
         li.classList.add("blocked");
@@ -1415,6 +1417,7 @@
     listenToTyping(convId, otherUid);
     updateBlockUi();
     updateDisappearingUi();
+    updateMuteUi();
   }
 
   /* ---------------- Block / unblock a contact ---------------- */
@@ -1468,6 +1471,36 @@
     if (!activeOtherUid) return;
     try {
       await setBlocked(activeOtherUid, false);
+    } catch (e) {
+      alert("İşlem başarısız: " + e.message);
+    }
+  });
+
+  /* ---------------- Per-conversation mute ---------------- */
+  // Muting is per-user (stored as muted.{myUid} on the conversation doc), so
+  // each side can mute independently. It only silences the alarm-style
+  // notification for new messages — the thread keeps working normally.
+
+  const threadMuteBtn = document.getElementById("thread-mute-btn");
+
+  function updateMuteUi() {
+    const conv = activeConvId ? conversations.get(activeConvId) : null;
+    const muted = conv ? !!conv.muted : false;
+    threadMuteBtn.classList.toggle("active", muted);
+    threadMuteBtn.textContent = muted ? "🔕" : "🔔";
+    threadMuteBtn.title = muted ? "Sesi aç" : "Sohbeti sessize al";
+  }
+
+  threadMuteBtn.addEventListener("click", async () => {
+    if (!activeConvId) return;
+    const convId = activeConvId;
+    const conv = conversations.get(convId);
+    const newMuted = !(conv && conv.muted);
+    try {
+      await fbDb.collection("conversations").doc(convId).update({ [`muted.${myUid}`]: newMuted });
+      if (conv) conv.muted = newMuted;
+      updateMuteUi();
+      renderThreadList();
     } catch (e) {
       alert("İşlem başarısız: " + e.message);
     }
