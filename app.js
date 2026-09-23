@@ -1396,6 +1396,7 @@
   const SINK_ID_SUPPORTED = typeof HTMLMediaElement !== "undefined" && "setSinkId" in HTMLMediaElement.prototype;
   let isSpeakerOn = false;
   let speakerSinkId = null; // resolved lazily from enumerateDevices, once we have mic permission labels
+  let earpieceSinkId = null;
 
   let activeCallId = null;
   let activeCallRole = null; // "caller" or "callee"
@@ -1830,14 +1831,20 @@
      to the default (which is normally the earpiece on a phone call) —
      that's the most a web page can control. */
 
-  async function findSpeakerDeviceId() {
-    if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) return null;
+  async function findAudioOutputRoutes() {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) {
+      return { speakerId: null, earpieceId: null };
+    }
     try {
       const devices = await navigator.mediaDevices.enumerateDevices();
-      const speaker = devices.find(d => d.kind === "audiooutput" && /speaker/i.test(d.label));
-      return speaker ? speaker.deviceId : null;
+      const outputs = devices.filter(d => d.kind === "audiooutput");
+      const speaker = outputs.find(d => /speaker/i.test(d.label));
+      // Naming varies by OEM/Chrome version: some devices expose a distinct
+      // earpiece output as "Earpiece", "Receiver", "Handset", or "Phone".
+      const earpiece = outputs.find(d => /earpiece|receiver|handset/i.test(d.label));
+      return { speakerId: speaker ? speaker.deviceId : null, earpieceId: earpiece ? earpiece.deviceId : null };
     } catch (e) {
-      return null;
+      return { speakerId: null, earpieceId: null };
     }
   }
 
@@ -1857,17 +1864,24 @@
     callSpeakerBtn.textContent = "Hoparlör";
     callSpeakerBtn.classList.toggle("hidden", !SINK_ID_SUPPORTED);
     if (SINK_ID_SUPPORTED) {
-      speakerSinkId = await findSpeakerDeviceId();
-      // Explicitly (re-)select the default output — on phones this is
-      // normally the earpiece — in case the OS had defaulted to speaker.
-      await applySinkId("");
+      const routes = await findAudioOutputRoutes();
+      speakerSinkId = routes.speakerId;
+      earpieceSinkId = routes.earpieceId;
+      // Prefer an explicit earpiece device if the OS exposes one as its own
+      // selectable output; otherwise fall back to the default output (on
+      // phones without a distinct earpiece entry, that's usually still the
+      // earpiece for a fresh audio session — but Android doesn't give web
+      // pages any way to request "phone call" audio mode, so if Chrome
+      // already decided to route new audio to the speaker, this can't
+      // force it back to the earpiece).
+      await applySinkId(earpieceSinkId || "");
     }
   }
 
   callSpeakerBtn.addEventListener("click", async () => {
     if (!SINK_ID_SUPPORTED) return;
     isSpeakerOn = !isSpeakerOn;
-    const ok = await applySinkId(isSpeakerOn ? (speakerSinkId || "") : "");
+    const ok = await applySinkId(isSpeakerOn ? (speakerSinkId || "") : (earpieceSinkId || ""));
     if (!ok) {
       isSpeakerOn = !isSpeakerOn; // revert, nothing actually changed
       callErrorEl.textContent = "Ses çıkışı değiştirilemedi.";
