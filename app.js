@@ -831,11 +831,17 @@
         for (const doc of snap.docs) {
           const d = doc.data();
           const plain = await decryptMessage(d).catch(() => "[çözülemedi]");
+          // The conversation is open right now, so any message from the other
+          // person is by definition being read as it arrives.
+          if (d.from !== myUid && !d.read) {
+            doc.ref.update({ read: true }).catch(() => {});
+          }
           rendered.push({
             from: d.from === myUid ? "me" : "them",
             text: d.type === "image" ? null : plain,
             image: d.type === "image" ? plain : null,
             ts: d.ts ? d.ts.toMillis() : Date.now(),
+            read: !!d.read,
           });
         }
         renderMessages(rendered);
@@ -870,10 +876,19 @@
         span.textContent = m.text;
         div.appendChild(span);
       }
+      const metaRow = document.createElement("span");
+      metaRow.className = "msg-meta";
       const timeSpan = document.createElement("span");
       timeSpan.className = "msg-time";
       timeSpan.textContent = time;
-      div.appendChild(timeSpan);
+      metaRow.appendChild(timeSpan);
+      if (m.from === "me") {
+        const tick = document.createElement("span");
+        tick.className = "msg-tick" + (m.read ? " read" : "");
+        tick.textContent = "✓✓";
+        metaRow.appendChild(tick);
+      }
+      div.appendChild(metaRow);
       messageListEl.appendChild(div);
     });
     messageListEl.scrollTop = messageListEl.scrollHeight;
@@ -912,6 +927,7 @@
       ciphertext: b64encode(ciphertext),
       wrappedKeys: { [myUid]: myWrapped, [otherUid]: theirWrapped },
       ts: firebase.firestore.FieldValue.serverTimestamp(),
+      read: false,
     });
     await fbDb.collection("conversations").doc(convId).update({
       updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
