@@ -362,15 +362,22 @@
   /* ---------------- Real account (Firebase Auth + E2E messaging) ---------------- */
 
   let myUid = null;
-  let myEmail = null;
   let myNickname = null;
   let myPrivateKey = null;
   let myPublicKey = null;
   const publicKeyCache = new Map(); // uid -> CryptoKey
 
+  // Firebase Auth's email/password provider is used purely as a mechanism —
+  // nobody sees or types an email. Each nickname deterministically maps to a
+  // synthetic address, and Firebase's own "email already in use" check is
+  // what actually enforces nickname uniqueness.
+  const SYNTHETIC_EMAIL_DOMAIN = "@calcut.local";
+  function nicknameToSyntheticEmail(nickname) {
+    return nickname + SYNTHETIC_EMAIL_DOMAIN;
+  }
+
   const authTitle = document.getElementById("auth-title");
   const authNicknameInput = document.getElementById("auth-nickname-input");
-  const authEmailInput = document.getElementById("auth-email-input");
   const authPasswordInput = document.getElementById("auth-password-input");
   const authSubmitBtn = document.getElementById("auth-submit-btn");
   const authToggleBtn = document.getElementById("auth-toggle-btn");
@@ -383,6 +390,10 @@
     appPanel.classList.add("hidden");
     authError.textContent = "";
     authPasswordInput.value = "";
+    authMode = "login";
+    authTitle.textContent = "Giriş Yap";
+    authSubmitBtn.textContent = "Giriş Yap";
+    authToggleBtn.textContent = "Hesabın yok mu? Kayıt ol";
   }
 
   authToggleBtn.addEventListener("click", () => {
@@ -390,7 +401,6 @@
     authTitle.textContent = authMode === "login" ? "Giriş Yap" : "Hesap Oluştur";
     authSubmitBtn.textContent = authMode === "login" ? "Giriş Yap" : "Kayıt Ol";
     authToggleBtn.textContent = authMode === "login" ? "Hesabın yok mu? Kayıt ol" : "Zaten hesabın var mı? Giriş yap";
-    authNicknameInput.classList.toggle("hidden", authMode !== "signup");
     authError.textContent = "";
   });
 
@@ -408,23 +418,14 @@
     );
   }
 
-  async function signUp(email, password, nicknameRaw) {
+  async function signUp(nicknameRaw, password) {
     const nickname = normalizeNickname(nicknameRaw);
     if (nickname.length < 3) {
       throw new Error("Kullanıcı adı en az 3 karakter olmalı (harf, rakam, alt çizgi).");
     }
 
-    const cred = await fbAuth.createUserWithEmailAndPassword(email, password);
+    const cred = await fbAuth.createUserWithEmailAndPassword(nicknameToSyntheticEmail(nickname), password);
     const uid = cred.user.uid;
-
-    // Uniqueness can only be checked once authenticated (Firestore rules require it),
-    // so roll the just-created account back if the nickname turns out to be taken.
-    const takenQ = await fbDb.collection("users").where("nickname", "==", nickname).limit(1).get();
-    if (!takenQ.empty) {
-      await cred.user.delete();
-      throw new Error("Bu kullanıcı adı zaten alınmış.");
-    }
-
     const keyPair = await generateKeyPair();
     const pubJwk = await crypto.subtle.exportKey("jwk", keyPair.publicKey);
     const privJwk = await crypto.subtle.exportKey("jwk", keyPair.privateKey);
@@ -439,7 +440,6 @@
     );
 
     await fbDb.collection("users").doc(uid).set({
-      email: email.toLowerCase(),
       nickname,
       publicKeyJwk: pubJwk,
       pkSalt: b64encode(pkSalt.buffer),
@@ -448,15 +448,15 @@
     });
 
     myUid = uid;
-    myEmail = email.toLowerCase();
     myNickname = nickname;
     myPrivateKey = keyPair.privateKey;
     myPublicKey = keyPair.publicKey;
     publicKeyCache.set(uid, keyPair.publicKey);
   }
 
-  async function logIn(email, password) {
-    const cred = await fbAuth.signInWithEmailAndPassword(email, password);
+  async function logIn(nicknameRaw, password) {
+    const nickname = normalizeNickname(nicknameRaw);
+    const cred = await fbAuth.signInWithEmailAndPassword(nicknameToSyntheticEmail(nickname), password);
     const uid = cred.user.uid;
     const doc = await fbDb.collection("users").doc(uid).get();
     const data = doc.data();
@@ -484,32 +484,30 @@
     );
 
     myUid = uid;
-    myEmail = data.email;
-    myNickname = data.nickname || null;
+    myNickname = data.nickname || nickname;
     myPrivateKey = privateKey;
     myPublicKey = publicKey;
     publicKeyCache.set(uid, publicKey);
   }
 
   authSubmitBtn.addEventListener("click", async () => {
-    const email = authEmailInput.value.trim();
-    const password = authPasswordInput.value;
     const nickname = authNicknameInput.value;
-    if (!email || password.length < 6) {
-      authError.textContent = "Geçerli bir e-posta ve en az 6 karakterli parola gir.";
+    const password = authPasswordInput.value;
+    if (normalizeNickname(nickname).length < 3) {
+      authError.textContent = "Kullanıcı adı en az 3 karakter olmalı (harf, rakam, alt çizgi).";
       return;
     }
-    if (authMode === "signup" && normalizeNickname(nickname).length < 3) {
-      authError.textContent = "Bir kullanıcı adı (rumuz) belirlemen gerekiyor (en az 3 karakter).";
+    if (password.length < 6) {
+      authError.textContent = "Parola en az 6 karakter olmalı.";
       return;
     }
     authError.textContent = "";
     authSubmitBtn.disabled = true;
     try {
       if (authMode === "signup") {
-        await signUp(email, password, nickname);
+        await signUp(nickname, password);
       } else {
-        await logIn(email, password);
+        await logIn(nickname, password);
       }
       enterMessenger();
     } catch (e) {
@@ -521,11 +519,11 @@
 
   function humanizeAuthError(e) {
     const code = e && e.code;
-    if (code === "auth/email-already-in-use") return "Bu e-posta zaten kayıtlı.";
-    if (code === "auth/invalid-email") return "Geçersiz e-posta.";
+    if (code === "auth/email-already-in-use") return "Bu kullanıcı adı zaten alınmış.";
+    if (code === "auth/invalid-email") return "Geçersiz kullanıcı adı.";
     if (code === "auth/weak-password") return "Parola çok zayıf (en az 6 karakter).";
-    if (code === "auth/wrong-password" || code === "auth/invalid-credential") return "E-posta veya parola yanlış.";
-    if (code === "auth/user-not-found") return "Bu e-postayla kayıtlı hesap yok.";
+    if (code === "auth/wrong-password" || code === "auth/invalid-credential") return "Kullanıcı adı veya parola yanlış.";
+    if (code === "auth/user-not-found") return "Bu kullanıcı adıyla kayıtlı hesap yok.";
     return (e && e.message) || "Bir hata oluştu.";
   }
 
@@ -715,7 +713,7 @@
     if (conversationsUnsub) { conversationsUnsub(); conversationsUnsub = null; }
     if (messagesUnsub) { messagesUnsub(); messagesUnsub = null; }
     await fbAuth.signOut();
-    myUid = null; myEmail = null; myNickname = null; myPrivateKey = null; myPublicKey = null;
+    myUid = null; myNickname = null; myPrivateKey = null; myPublicKey = null;
     closeVaultToCalculator();
   });
 
