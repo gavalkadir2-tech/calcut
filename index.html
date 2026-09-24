@@ -92,6 +92,7 @@
         <h2>Mesajlar</h2>
         <div class="header-actions">
           <button id="new-thread-btn" title="Yeni sohbet">+</button>
+          <button id="new-group-btn" title="Yeni grup">👥</button>
           <button id="settings-btn" title="Ayarlar">⚙</button>
           <button id="lock-btn" title="Kilitle">🔒</button>
         </div>
@@ -256,6 +257,22 @@
     <div class="modal-actions">
       <button id="new-thread-cancel" class="ghost">İptal</button>
       <button id="new-thread-create">Ekle</button>
+    </div>
+  </div>
+</div>
+
+<div id="new-group-modal" class="modal hidden">
+  <div class="modal-box">
+    <h3>Yeni Grup</h3>
+    <input id="new-group-name-input" type="text" placeholder="Grup adı">
+    <div id="new-group-members">
+      <input class="new-group-member-input" type="text" placeholder="Kişinin kullanıcı adı (rumuz)">
+      <input class="new-group-member-input" type="text" placeholder="Kişinin kullanıcı adı (rumuz)">
+    </div>
+    <button id="new-group-add-member" class="ghost">+ Kişi ekle</button>
+    <div class="modal-actions">
+      <button id="new-group-cancel" class="ghost">İptal</button>
+      <button id="new-group-create">Grup Oluştur</button>
     </div>
   </div>
 </div>

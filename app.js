@@ -818,6 +818,8 @@
   let conversationsUnsub = null;
   let activeConvId = null;
   let activeOtherUid = null;
+  let activeOtherUids = [];
+  let activeIsGroup = false;
   let messagesUnsub = null;
   const lastMessageUnsubs = new Map(); // convId -> unsub
   const previousUnread = new Map(); // convId -> last known unread count, for alarm-trigger edge detection
@@ -939,8 +941,13 @@
         const conv = conversations.get(convId);
         if (!conv) return;
         // Call log previews already read naturally regardless of who placed
-        // the call, so skip the usual "Sen: " prefix for that type.
-        conv.lastPreview = (d.from === myUid && d.type !== "call" ? "Sen: " : "") + preview;
+        // the call, so skip the usual "Sen: "/sender-name prefix for that type.
+        let prefix = "";
+        if (d.type !== "call") {
+          if (d.from === myUid) prefix = "Sen: ";
+          else if (conv.isGroup) prefix = (conv.participantNicknames[d.from] || "?") + ": ";
+        }
+        conv.lastPreview = prefix + preview;
         conv.lastTs = d.ts ? d.ts.toMillis() : Date.now();
         if (!threadListPanel.classList.contains("hidden")) renderThreadList();
       }, err => {
@@ -973,8 +980,10 @@
             return;
           }
           const d = change.doc.data();
-          const otherUid = d.participants.find(u => u !== myUid);
-          const otherNickname = (d.participantNicknames && d.participantNicknames[otherUid]) || "?";
+          const isGroup = !!d.isGroup;
+          const otherUid = isGroup ? null : d.participants.find(u => u !== myUid);
+          const otherNickname = isGroup ? null : ((d.participantNicknames && d.participantNicknames[otherUid]) || "?");
+          const otherUids = isGroup ? (d.participants || []).filter(u => u !== myUid) : [otherUid];
           const unread = (d.unreadCount && d.unreadCount[myUid]) || 0;
           const muted = !!(d.muted && d.muted[myUid]);
           const existing = conversations.get(change.doc.id) || {};
@@ -982,6 +991,11 @@
             id: change.doc.id,
             otherUid,
             otherNickname,
+            otherUids,
+            isGroup,
+            groupName: d.groupName || null,
+            participants: d.participants || [],
+            participantNicknames: d.participantNicknames || {},
             updatedAt: d.updatedAt ? d.updatedAt.toMillis() : 0,
             unread,
             lastPreview: existing.lastPreview || "",
@@ -997,7 +1011,7 @@
           // snapshot on login, which would otherwise fire for old unread
           // messages) and only if it's not the conversation currently open.
           const prev = previousUnread.get(change.doc.id);
-          if (prev !== undefined && unread > prev && change.doc.id !== activeConvId && !myBlocked[otherUid] && !muted) {
+          if (prev !== undefined && unread > prev && change.doc.id !== activeConvId && !(otherUid && myBlocked[otherUid]) && !muted) {
             triggerAlarmAlert();
           }
           previousUnread.set(change.doc.id, unread);
@@ -1061,9 +1075,10 @@
           <span class="thread-preview"></span>
           <span class="thread-badge hidden">0</span>
         </div>`;
-      li.querySelector(".thread-name").textContent = "@" + conv.otherNickname + (conv.muted ? " 🔕" : "");
+      const displayName = conv.isGroup ? `👥 ${conv.groupName} (${conv.participants.length})` : "@" + conv.otherNickname;
+      li.querySelector(".thread-name").textContent = displayName + (conv.muted ? " 🔕" : "");
       li.querySelector(".thread-time").textContent = formatThreadTime(conv.lastTs || conv.updatedAt);
-      if (myBlocked[conv.otherUid]) {
+      if (!conv.isGroup && myBlocked[conv.otherUid]) {
         li.classList.add("blocked");
         li.querySelector(".thread-preview").textContent = "🚫 Engellendi";
       } else {
@@ -1074,7 +1089,9 @@
         badge.textContent = conv.unread > 99 ? "99+" : String(conv.unread);
         badge.classList.remove("hidden");
       }
-      li.addEventListener("click", () => openConversation(conv.id, conv.otherUid, conv.otherNickname));
+      li.addEventListener("click", () => openConversation(conv.id, conv.otherUid, conv.otherNickname, {
+        isGroup: conv.isGroup, groupName: conv.groupName, participants: conv.participants,
+      }));
       threadListEl.appendChild(li);
     });
   }
@@ -1113,6 +1130,64 @@
       openConversation(convId, otherUid, otherData.nickname);
     } catch (e) {
       alert("Sohbet eklenemedi: " + e.message);
+    }
+  });
+
+  const MAX_GROUP_PARTICIPANTS = 20;
+
+  document.getElementById("new-group-btn").addEventListener("click", () => {
+    document.getElementById("new-group-name-input").value = "";
+    document.querySelectorAll(".new-group-member-input").forEach(i => i.value = "");
+    document.getElementById("new-group-modal").classList.remove("hidden");
+  });
+  document.getElementById("new-group-cancel").addEventListener("click", () => {
+    document.getElementById("new-group-modal").classList.add("hidden");
+  });
+  document.getElementById("new-group-add-member").addEventListener("click", () => {
+    const container = document.getElementById("new-group-members");
+    if (container.querySelectorAll(".new-group-member-input").length >= MAX_GROUP_PARTICIPANTS - 1) return;
+    const input = document.createElement("input");
+    input.className = "new-group-member-input";
+    input.type = "text";
+    input.placeholder = "Kişinin kullanıcı adı (rumuz)";
+    container.appendChild(input);
+  });
+  document.getElementById("new-group-create").addEventListener("click", async () => {
+    const groupName = document.getElementById("new-group-name-input").value.trim();
+    if (!groupName) { alert("Grup adı gerekli."); return; }
+    const nicknames = [...new Set(
+      Array.from(document.querySelectorAll(".new-group-member-input"))
+        .map(i => normalizeNickname(i.value))
+        .filter(Boolean)
+        .filter(n => n !== myNickname)
+    )];
+    if (nicknames.length < 2) { alert("Kendin hariç en az 2 kişi eklemelisin."); return; }
+    try {
+      const participants = [myUid];
+      const participantNicknames = { [myUid]: myNickname };
+      for (const nick of nicknames) {
+        const q = await fbDb.collection("users").where("nickname", "==", nick).limit(1).get();
+        if (q.empty) { alert(`Kullanıcı bulunamadı: @${nick}`); return; }
+        const doc = q.docs[0];
+        participants.push(doc.id);
+        participantNicknames[doc.id] = doc.data().nickname;
+      }
+      const unreadCount = {};
+      participants.forEach(u => { unreadCount[u] = 0; });
+      const convRef = fbDb.collection("conversations").doc();
+      await convRef.set({
+        participants,
+        participantNicknames,
+        unreadCount,
+        isGroup: true,
+        groupName,
+        createdBy: myUid,
+        updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+      });
+      document.getElementById("new-group-modal").classList.add("hidden");
+      openConversation(convRef.id, null, null, { isGroup: true, groupName, participants });
+    } catch (e) {
+      alert("Grup oluşturulamadı: " + e.message);
     }
   });
 
@@ -1538,21 +1613,39 @@
   const attachPhotoBtn = document.getElementById("attach-photo-btn");
   const photoInput = document.getElementById("photo-input");
 
-  async function openConversation(convId, otherUid, otherNickname) {
+  async function openConversation(convId, otherUid, otherNickname, extra) {
+    extra = extra || {};
     closeThreadSearch();
     activeConvId = convId;
-    activeOtherUid = otherUid;
+    activeIsGroup = !!extra.isGroup;
+    activeOtherUid = activeIsGroup ? null : otherUid;
+    activeOtherUids = activeIsGroup ? (extra.participants || []).filter(u => u !== myUid) : [otherUid];
     threadListPanel.classList.add("hidden");
     threadDetailPanel.classList.remove("hidden");
     settingsPanel.classList.add("hidden");
-    document.getElementById("thread-title").textContent = "@" + otherNickname;
+    document.getElementById("thread-title").textContent = activeIsGroup
+      ? `👥 ${extra.groupName} (${(extra.participants || []).length})`
+      : "@" + otherNickname;
+    document.getElementById("thread-call-btn").classList.toggle("hidden", activeIsGroup);
+    document.getElementById("thread-video-call-btn").classList.toggle("hidden", activeIsGroup);
+    document.getElementById("thread-block-btn").classList.toggle("hidden", activeIsGroup);
     const conv = conversations.get(convId);
     if (conv) conv.unread = 0;
     fbDb.collection("conversations").doc(convId).update({ [`unreadCount.${myUid}`]: 0 }).catch(() => {});
-    await getPublicKeyForUid(otherUid);
+    if (activeIsGroup) {
+      await Promise.all(activeOtherUids.map(u => getPublicKeyForUid(u)));
+      threadTypingEl.classList.add("hidden");
+      // Not gated by updateBlockUi() for a group, so reset explicitly.
+      messageInput.disabled = false;
+      document.getElementById("message-send-btn").disabled = false;
+      attachPhotoBtn.disabled = false;
+      threadBlockedBanner.classList.add("hidden");
+    } else {
+      await getPublicKeyForUid(otherUid);
+      listenToTyping(convId, otherUid);
+      updateBlockUi();
+    }
     listenToMessages(convId);
-    listenToTyping(convId, otherUid);
-    updateBlockUi();
     updateDisappearingUi();
     updateMuteUi();
   }
@@ -2324,7 +2417,7 @@
   }
 
   function notifyTyping() {
-    if (!activeConvId) return;
+    if (!activeConvId || activeIsGroup) return;
     const now = Date.now();
     if (now - lastTypingWriteAt < TYPING_WRITE_THROTTLE_MS) return;
     lastTypingWriteAt = now;
@@ -2343,24 +2436,28 @@
       .orderBy("ts")
       .onSnapshot(async snap => {
         fbDb.collection("conversations").doc(convId).update({ [`unreadCount.${myUid}`]: 0 }).catch(() => {});
+        const conv = conversations.get(convId);
         const rendered = [];
         const now = Date.now();
         for (const doc of snap.docs) {
           const d = doc.data();
           const expiresAtMillis = d.expiresAt ? d.expiresAt.toMillis() : null;
           if (expiresAtMillis && expiresAtMillis <= now) continue; // already expired: hide, will be purged shortly
+          const fromNickname = activeIsGroup && conv ? (conv.participantNicknames[d.from] || "?") : null;
           if (d.deleted) {
             rendered.push({
-              id: doc.id, type: d.type, from: d.from === myUid ? "me" : "them",
+              id: doc.id, type: d.type, from: d.from === myUid ? "me" : "them", fromNickname,
               deleted: true, text: null, image: null, file: null, call: null,
               ts: d.ts ? d.ts.toMillis() : Date.now(), read: !!d.read, expiresAtMillis,
             });
             continue;
           }
           const plain = await decryptMessage(d).catch(() => "[çözülemedi]");
-          // The conversation is open right now, so any message from the other
-          // person is by definition being read as it arrives.
-          if (d.from !== myUid && !d.read) {
+          // The conversation is open right now, so any message from someone
+          // else is by definition being read as it arrives. Group threads
+          // don't track per-member read receipts (see the tick rendering
+          // below), so only bother writing this for 1:1 threads.
+          if (!activeIsGroup && d.from !== myUid && !d.read) {
             doc.ref.update({ read: true }).catch(() => {});
           }
           let file = null;
@@ -2375,6 +2472,7 @@
             id: doc.id,
             type: d.type,
             from: d.from === myUid ? "me" : "them",
+            fromNickname,
             text: (d.type === "image" || d.type === "file" || d.type === "call") ? null : plain,
             image: d.type === "image" ? plain : null,
             file,
@@ -2515,6 +2613,12 @@
       const div = document.createElement("div");
       div.className = "msg-bubble " + m.from;
       div.dataset.msgId = m.id;
+      if (activeIsGroup && m.from === "them" && m.fromNickname) {
+        const senderLabel = document.createElement("span");
+        senderLabel.className = "msg-sender";
+        senderLabel.textContent = "@" + m.fromNickname;
+        div.appendChild(senderLabel);
+      }
       if (m.image) {
         const img = document.createElement("img");
         img.src = m.image;
@@ -2542,6 +2646,7 @@
         div.appendChild(link);
       } else {
         const span = document.createElement("span");
+        span.className = "msg-text";
         appendHighlightedText(span, m.text, query);
         div.appendChild(span);
       }
@@ -2558,10 +2663,12 @@
       timeSpan.textContent = time;
       metaRow.appendChild(timeSpan);
       if (m.from === "me") {
-        const tick = document.createElement("span");
-        tick.className = "msg-tick" + (m.read ? " read" : "");
-        tick.textContent = "✓✓";
-        metaRow.appendChild(tick);
+        if (!activeIsGroup) {
+          const tick = document.createElement("span");
+          tick.className = "msg-tick" + (m.read ? " read" : "");
+          tick.textContent = "✓✓";
+          metaRow.appendChild(tick);
+        }
         if (m.type === "text") {
           const editBtn = document.createElement("button");
           editBtn.className = "msg-action msg-edit-btn";
@@ -2691,17 +2798,17 @@
       const trimmed = newText.trim();
       if (!trimmed || trimmed === msg.text) return;
       try {
-        await editMessage(activeConvId, activeOtherUid, editBtn.dataset.msgId, trimmed);
+        await editMessage(activeConvId, activeOtherUids, editBtn.dataset.msgId, trimmed);
       } catch (e2) {
         alert("Düzenlenemedi: " + e2.message);
       }
     }
   });
 
-  async function editMessage(convId, otherUid, msgId, newText) {
-    const otherPublicKey = await getPublicKeyForUid(otherUid);
-    if (!otherPublicKey) {
-      alert("Alıcının açık anahtarı bulunamadı.");
+  async function editMessage(convId, otherUids, msgId, newText) {
+    const otherPublicKeys = await Promise.all(otherUids.map(u => getPublicKeyForUid(u)));
+    if (otherPublicKeys.some(k => !k)) {
+      alert("Bir alıcının açık anahtarı bulunamadı.");
       return;
     }
     const aesKey = await crypto.subtle.generateKey({ name: "AES-GCM", length: 256 }, true, ["encrypt", "decrypt"]);
@@ -2711,11 +2818,14 @@
       { name: "AES-GCM", iv }, aesKey, new TextEncoder().encode(newText)
     );
     const myWrapped = await wrapAesKeyForPublicKey(rawAes, myPublicKey);
-    const theirWrapped = await wrapAesKeyForPublicKey(rawAes, otherPublicKey);
+    const wrappedKeys = { [myUid]: myWrapped };
+    for (let i = 0; i < otherUids.length; i++) {
+      wrappedKeys[otherUids[i]] = await wrapAesKeyForPublicKey(rawAes, otherPublicKeys[i]);
+    }
     await fbDb.collection("conversations").doc(convId).collection("messages").doc(msgId).update({
       iv: b64encode(iv.buffer),
       ciphertext: b64encode(ciphertext),
-      wrappedKeys: { [myUid]: myWrapped, [otherUid]: theirWrapped },
+      wrappedKeys,
       edited: true,
       editedAt: firebase.firestore.FieldValue.serverTimestamp(),
     });
@@ -2736,8 +2846,8 @@
     } else {
       list.forEach(conv => {
         const li = document.createElement("li");
-        li.textContent = "@" + conv.otherNickname;
-        li.addEventListener("click", () => forwardMessageTo(conv.id, conv.otherUid));
+        li.textContent = conv.isGroup ? `👥 ${conv.groupName}` : "@" + conv.otherNickname;
+        li.addEventListener("click", () => forwardMessageTo(conv.id));
         forwardThreadList.appendChild(li);
       });
     }
@@ -2751,17 +2861,20 @@
 
   document.getElementById("forward-cancel").addEventListener("click", closeForwardModal);
 
-  async function forwardMessageTo(targetConvId, targetOtherUid) {
+  async function forwardMessageTo(targetConvId) {
     const msg = currentMessages.find(m => m.id === forwardingMsgId);
     closeForwardModal();
     if (!msg) return;
+    const targetConv = conversations.get(targetConvId);
+    const otherUids = targetConv ? targetConv.otherUids : [];
+    if (!otherUids.length) return;
     try {
       if (msg.type === "text") {
-        await sendEncryptedTo(targetConvId, targetOtherUid, msg.text, "text");
+        await sendEncryptedTo(targetConvId, otherUids, msg.text, "text");
       } else if (msg.type === "image") {
-        await sendEncryptedTo(targetConvId, targetOtherUid, msg.image, "image");
+        await sendEncryptedTo(targetConvId, otherUids, msg.image, "image");
       } else if (msg.type === "file") {
-        await sendEncryptedTo(targetConvId, targetOtherUid, JSON.stringify(msg.file), "file");
+        await sendEncryptedTo(targetConvId, otherUids, JSON.stringify(msg.file), "file");
       }
     } catch (e) {
       alert("İletilemedi: " + e.message);
@@ -2775,17 +2888,18 @@
 
   async function sendEncrypted(payloadText, type) {
     // Capture these locally: the user may navigate away from the conversation
-    // (clearing activeConvId/activeOtherUid) while this async send is still
+    // (clearing activeConvId/activeOtherUids) while this async send is still
     // in flight, and the write below must still target the right thread.
-    return sendEncryptedTo(activeConvId, activeOtherUid, payloadText, type);
+    return sendEncryptedTo(activeConvId, activeOtherUids, payloadText, type);
   }
 
-  async function sendEncryptedTo(convId, otherUid, payloadText, type) {
-    if (!convId || !otherUid) return;
-    if (myBlocked[otherUid]) return;
-    const otherPublicKey = await getPublicKeyForUid(otherUid);
-    if (!otherPublicKey) {
-      alert("Alıcının açık anahtarı bulunamadı.");
+  async function sendEncryptedTo(convId, otherUids, payloadText, type) {
+    if (!convId || !otherUids || !otherUids.length) return;
+    // Blocking only applies to 1:1 threads; groups don't expose a block UI.
+    if (otherUids.length === 1 && myBlocked[otherUids[0]]) return;
+    const otherPublicKeys = await Promise.all(otherUids.map(u => getPublicKeyForUid(u)));
+    if (otherPublicKeys.some(k => !k)) {
+      alert("Bir alıcının açık anahtarı bulunamadı.");
       return;
     }
     const aesKey = await crypto.subtle.generateKey({ name: "AES-GCM", length: 256 }, true, ["encrypt", "decrypt"]);
@@ -2795,7 +2909,10 @@
       { name: "AES-GCM", iv }, aesKey, new TextEncoder().encode(payloadText)
     );
     const myWrapped = await wrapAesKeyForPublicKey(rawAes, myPublicKey);
-    const theirWrapped = await wrapAesKeyForPublicKey(rawAes, otherPublicKey);
+    const wrappedKeys = { [myUid]: myWrapped };
+    for (let i = 0; i < otherUids.length; i++) {
+      wrappedKeys[otherUids[i]] = await wrapAesKeyForPublicKey(rawAes, otherPublicKeys[i]);
+    }
 
     const conv = conversations.get(convId);
     const disappearingSeconds = conv ? (conv.disappearingSeconds || 0) : 0;
@@ -2804,7 +2921,7 @@
       type,
       iv: b64encode(iv.buffer),
       ciphertext: b64encode(ciphertext),
-      wrappedKeys: { [myUid]: myWrapped, [otherUid]: theirWrapped },
+      wrappedKeys,
       ts: firebase.firestore.FieldValue.serverTimestamp(),
       read: false,
     };
@@ -2812,10 +2929,9 @@
       msgData.expiresAt = firebase.firestore.Timestamp.fromMillis(Date.now() + disappearingSeconds * 1000);
     }
     await fbDb.collection("conversations").doc(convId).collection("messages").add(msgData);
-    await fbDb.collection("conversations").doc(convId).update({
-      updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
-      [`unreadCount.${otherUid}`]: firebase.firestore.FieldValue.increment(1),
-    });
+    const convUpdate = { updatedAt: firebase.firestore.FieldValue.serverTimestamp() };
+    otherUids.forEach(u => { convUpdate[`unreadCount.${u}`] = firebase.firestore.FieldValue.increment(1); });
+    await fbDb.collection("conversations").doc(convId).update(convUpdate);
   }
 
   document.getElementById("message-send-btn").addEventListener("click", sendMessage);
@@ -2872,6 +2988,8 @@
     currentMessages = [];
     activeConvId = null;
     activeOtherUid = null;
+    activeOtherUids = [];
+    activeIsGroup = false;
     showThreadList();
   });
 
@@ -2887,6 +3005,8 @@
     await batch.commit();
     activeConvId = null;
     activeOtherUid = null;
+    activeOtherUids = [];
+    activeIsGroup = false;
     showThreadList();
   });
 
