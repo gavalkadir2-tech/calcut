@@ -2646,6 +2646,7 @@
         div.appendChild(link);
       } else {
         const span = document.createElement("span");
+        span.className = "msg-text";
         appendHighlightedText(span, m.text, query);
         div.appendChild(span);
       }
