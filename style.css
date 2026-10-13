@@ -35,6 +35,42 @@ html, body {
 
 .hidden { display: none !important; }
 
+/* Keyboard / remote-control (D-pad) focus visibility — invisible by default
+   on most of our custom-colored buttons, but essential for navigating with
+   a TV remote or a keyboard instead of touch. */
+button:focus-visible,
+input:focus-visible,
+a:focus-visible,
+li:focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Large screens (desktop browsers, and Android TV / smart TV browsers,
+   which render at full TV resolution with no touch input): letterbox the
+   phone-shaped layout in a centered column instead of stretching every
+   button and bubble edge-to-edge across a 1920px-wide screen. */
+@media (min-width: 700px) {
+  body {
+    display: flex;
+    justify-content: center;
+  }
+  .screen {
+    width: 100%;
+    max-width: 480px;
+  }
+  #call-screen,
+  .modal {
+    left: 50%;
+    right: auto;
+    width: 480px;
+    margin-left: -240px;
+  }
+  #reaction-picker {
+    max-width: 480px;
+  }
+}
+
 /* Calculator */
 .calc-display {
   flex: 1;
