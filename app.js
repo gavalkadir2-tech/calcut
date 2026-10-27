@@ -869,10 +869,11 @@
     }
   }
 
-  // ---- Background push (FCM). The Cloud Function in functions/index.js
-  // pushes to every token stored under users/{uid}.fcmTokens, so messages and
-  // incoming calls still ring when the app is closed. Needs notification
-  // permission, and on iOS the app must be opened from the home screen.
+  // ---- Background push (FCM). After a message is sent or a call starts, the
+  // app asks the push Worker (worker/push-worker.js, window.PUSH_URL) to push
+  // to every token stored under users/{uid}.fcmTokens of the recipients, so
+  // messages and incoming calls still ring when their app is closed. Needs
+  // notification permission, and on iOS the app must be opened from the home screen.
 
   let currentPushToken = null;
 
@@ -915,6 +916,23 @@
       console.error("push token remove error", e);
     }
     currentPushToken = null;
+  }
+
+  // Fire-and-forget: the Worker checks with Firestore that this user really
+  // sent the message / placed the call before pushing anything.
+  async function requestPush(body) {
+    if (!window.PUSH_URL || !fbAuth.currentUser) return;
+    try {
+      const idToken = await fbAuth.currentUser.getIdToken();
+      await fetch(window.PUSH_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Authorization": "Bearer " + idToken },
+        body: JSON.stringify(body),
+        keepalive: true,
+      });
+    } catch (e) {
+      console.error("push request error", e);
+    }
   }
 
   // Once the call is answered/rejected in the app, drop the ringing system notification.
@@ -1868,7 +1886,7 @@
 
   /* ---------------- Voice calls (WebRTC, signaled through Firestore) ----------------
      The call itself only runs while the app is open; when it's closed, the
-     Cloud Function pushes a ringing notification (sw.js) and tapping it opens
+     push Worker sends a ringing notification (sw.js) and tapping it opens
      the app, which picks up the still-ringing call. Only STUN is configured (free public
      servers) — there's no TURN relay, so calls between two very restrictive
      NATs (e.g. some mobile carriers) may fail to connect; that would need a
@@ -1919,6 +1937,7 @@
   let ringToneTimer = null;
   let ringToneCtx = null;
   let callTimeoutTimer = null;
+  let callRingPushTimer = null; // re-pushes while ringing, since a web notification can't loop a ringtone
   // Only the caller logs a call-history entry into the conversation (once,
   // when the call reaches a terminal state), so these track what's needed
   // to write it regardless of whether the user has navigated away from the
@@ -2129,6 +2148,8 @@
       if (activeCallRole === "caller" && data.status === "accepted" && data.answer &&
           peerConnection && !peerConnection.currentRemoteDescription) {
         clearTimeout(callTimeoutTimer);
+        clearInterval(callRingPushTimer);
+        callRingPushTimer = null;
         try {
           await peerConnection.setRemoteDescription(new RTCSessionDescription(data.answer));
           showActiveCallUi(data.toNickname);
@@ -2202,9 +2223,21 @@
       listenToCallDoc(activeCallId);
       listenToRemoteCandidates(activeCallId, "calleeCandidates");
 
+      requestPush({ kind: "call", callId: callDocRef.id });
+      callRingPushTimer = setInterval(() => {
+        if (activeCallId !== callDocRef.id || callWasConnected) {
+          clearInterval(callRingPushTimer);
+          callRingPushTimer = null;
+          return;
+        }
+        requestPush({ kind: "call", callId: callDocRef.id });
+      }, 8000);
+
       callTimeoutTimer = setTimeout(() => {
         if (activeCallId === callDocRef.id && activeCallRole === "caller") {
-          fbDb.collection("calls").doc(callDocRef.id).update({ status: "ended" }).catch(() => {});
+          fbDb.collection("calls").doc(callDocRef.id).update({ status: "ended" })
+            .then(() => requestPush({ kind: "call-missed", callId: callDocRef.id }))
+            .catch(() => {});
           endCall("TIMEOUT");
         }
       }, CALL_RING_TIMEOUT_MS);
@@ -2266,7 +2299,10 @@
 
   function cancelOutgoingCall() {
     if (activeCallId && activeCallRole === "caller") {
-      fbDb.collection("calls").doc(activeCallId).update({ status: "ended" }).catch(() => {});
+      const callId = activeCallId;
+      fbDb.collection("calls").doc(callId).update({ status: "ended" })
+        .then(() => requestPush({ kind: "call-missed", callId }))
+        .catch(() => {});
     }
     endCall("CANCELED");
   }
@@ -2280,6 +2316,8 @@
 
   function endCall(code) {
     clearTimeout(callTimeoutTimer);
+    clearInterval(callRingPushTimer);
+    callRingPushTimer = null;
     clearInterval(callTimerInterval);
     callTimerInterval = null;
     stopRingtone();
@@ -3005,7 +3043,8 @@
     if (disappearingSeconds > 0) {
       msgData.expiresAt = firebase.firestore.Timestamp.fromMillis(Date.now() + disappearingSeconds * 1000);
     }
-    await fbDb.collection("conversations").doc(convId).collection("messages").add(msgData);
+    const msgRef = await fbDb.collection("conversations").doc(convId).collection("messages").add(msgData);
+    if (type !== "call") requestPush({ kind: "message", convId, msgId: msgRef.id });
     const convUpdate = { updatedAt: firebase.firestore.FieldValue.serverTimestamp() };
     otherUids.forEach(u => { convUpdate[`unreadCount.${u}`] = firebase.firestore.FieldValue.increment(1); });
     await fbDb.collection("conversations").doc(convId).update(convUpdate);

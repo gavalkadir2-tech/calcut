@@ -15,3 +15,7 @@ window.fbDb = firebase.firestore();
 // Web Push certificate key: Firebase console > Project settings > Cloud Messaging >
 // Web Push certificates > "Generate key pair", then paste the public key here.
 window.FCM_VAPID_KEY = "BE6LNp9930MgkDdY3n1e8yBbGnAbZ_5CregfzuLVsXZ-HI-UM9GIco3aTzfE5DvC7nqHBHvIbgh0HrBRr0m6AJ8";
+
+// URL of the push Worker (worker/push-worker.js) deployed on Cloudflare,
+// e.g. "https://calcut-push.ADIN.workers.dev". Empty = no background push.
+window.PUSH_URL = "";

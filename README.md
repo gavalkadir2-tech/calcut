@@ -1,38 +1,39 @@
 # calcut
 
-## Arka plan bildirimleri (uygulama kapalıyken mesaj ve arama alarmı)
+## Arka plan bildirimleri (uygulama kapalıyken mesaj ve arama alarmı) — ücretsiz
 
 Uygulama kapalıyken (ya da telefon kilitliyken) yeni mesaj ve gelen arama
-için "Alarm" görünümlü, sesli ve titreşimli bildirim gelir:
+için "Alarm" görünümlü, sesli ve titreşimli bildirim gelir. Firebase'in
+ücretsiz (Spark) planında çalışır; kredi kartı gerekmez.
 
-- `functions/index.js`: Firestore'da yeni mesaj veya arama oluşunca alıcının
-  cihazlarına Firebase Cloud Messaging (FCM) ile push gönderir. Arama çalarken
-  push'u 8 saniyede bir tekrarlar, cevapsız kalırsa "Cevapsız" bildirimi gönderir.
-- `sw.js`: Push'u alıp bildirimi gösterir. Bildirime dokununca uygulama açılır.
-  PIN girildikten sonra hâlâ çalan arama ekrana gelir (arama 45 sn çalar).
+- `worker/push-worker.js`: Cloudflare'in ücretsiz Worker'ında çalışan küçük
+  sunucu. Uygulama mesaj gönderince / arama başlatınca buna haber verir; Worker
+  gönderenin gerçekten o kişi olduğunu Firestore'dan doğrulayıp alıcının
+  cihazlarına Firebase Cloud Messaging (FCM) ile push gönderir.
+- `sw.js`: Push'u alıp bildirimi gösterir. Arama çalarken 8 saniyede bir
+  yeniden çalar, cevapsız kalırsa "Cevapsız" olur. Bildirime dokununca uygulama
+  açılır; PIN girildikten sonra hâlâ çalan arama ekrana gelir (arama 45 sn çalar).
 
-### Bir kerelik kurulum (Firebase)
+### Bir kerelik kurulum
 
-1. **Web Push anahtarı:** Firebase konsolu → Proje ayarları → Cloud Messaging →
-   *Web Push sertifikaları* → "Generate key pair". Anahtarı
-   `firebase-config.js` içindeki `window.FCM_VAPID_KEY` alanına yapıştır.
-2. **Blaze planı:** Cloud Functions için proje Blaze (kullandıkça öde) planında
-   olmalı. Bu kullanımda ücretsiz kota yeterlidir.
-3. **Bölge:** Firebase konsolu → Firestore → veritabanı konumu `eur3` ise
-   `functions/index.js` içindeki `region` değerini `europe-west1` yap
-   (`nam5` ise `us-central1` kalabilir).
-4. **Fonksiyonları yükle** (bilgisayarda, proje klasöründe):
-   ```
-   npm install -g firebase-tools
-   firebase login
-   cd functions && npm install && cd ..
-   firebase deploy --only functions
-   ```
-5. **Firestore kuralı:** Uygulama cihaz anahtarını `users/{uid}.fcmTokens`
-   alanına yazar. Kullanıcının kendi dokümanını güncellemesine izin veren
-   kuralların bu alanı engellememeli; "Missing or insufficient permissions"
-   hatası alırsan `fcmTokens` alanını izin verilen alanlara ekle.
-6. Siteyi her zamanki gibi HTTPS üzerinden yayınla.
+1. **Web Push anahtarı** (yapıldı): `firebase-config.js` → `window.FCM_VAPID_KEY`.
+2. **Servis hesabı anahtarı:** Firebase konsolu → Proje ayarları →
+   *Hizmet hesapları (Service accounts)* → "Yeni özel anahtar oluştur" →
+   bir `.json` dosyası iner. Bu dosya gizlidir, kimseyle paylaşma, GitHub'a koyma.
+3. **Cloudflare Worker:**
+   1. https://dash.cloudflare.com adresinden ücretsiz hesap aç (kart istemez).
+   2. *Workers & Pages* → *Create* → *Create Worker* → ad: `calcut-push` → *Deploy*.
+   3. *Edit code* → içindekini tamamen sil, `worker/push-worker.js` dosyasının
+      tamamını yapıştır → *Deploy*.
+   4. Worker → *Settings* → *Variables and Secrets* → *Add* → Tür: **Secret**,
+      Ad: `SERVICE_ACCOUNT`, Değer: 2. adımda inen `.json` dosyasının
+      tüm içeriği → *Deploy*.
+   5. Worker'ın adresini kopyala (ör. `https://calcut-push.ADIN.workers.dev`) ve
+      `firebase-config.js` içindeki `window.PUSH_URL` alanına yapıştır.
+4. **Firestore kuralı:** Uygulama cihaz anahtarını `users/{uid}.fcmTokens`
+   alanına yazar. "Missing or insufficient permissions" hatası alırsan
+   kullanıcının kendi dokümanında `fcmTokens` alanını güncellemesine izin ver.
+5. Siteyi her zamanki gibi HTTPS üzerinden yayınla.
 
 ### Telefonda
 
