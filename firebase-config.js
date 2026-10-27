@@ -18,4 +18,4 @@ window.FCM_VAPID_KEY = "BE6LNp9930MgkDdY3n1e8yBbGnAbZ_5CregfzuLVsXZ-HI-UM9GIco3a
 
 // URL of the push Worker (worker/push-worker.js) deployed on Cloudflare,
 // e.g. "https://calcut-push.ADIN.workers.dev". Empty = no background push.
-window.PUSH_URL = "";
+window.PUSH_URL = "https://calcut-bildirim.gavalkadir2.workers.dev";
