@@ -73,17 +73,19 @@ self.addEventListener("push", (event) => {
     data: { url: self.registration.scope },
   };
   let options;
+  let title = "Alarm";
   if (data.kind === "call") {
     options = Object.assign(base, {
-      body: alarmTime() + " · Çalıyor",
+      body: alarmTime(),
       tag: CALL_TAG,
       renotify: true,          // each re-ring push plays the sound/vibration again
       requireInteraction: true, // stay on screen until tapped or replaced
       vibrate: [800, 400, 800, 400, 800, 400, 800],
     });
   } else if (data.kind === "call-missed") {
+    title = "Kaçırılan alarm";
     options = Object.assign(base, {
-      body: alarmTime() + " · Cevapsız",
+      body: alarmTime(),
       tag: CALL_TAG,           // replaces the ringing notification
       renotify: false,
     });
@@ -96,7 +98,7 @@ self.addEventListener("push", (event) => {
     });
   }
   // Always show something: iOS revokes push permission for pushes that display nothing.
-  event.waitUntil(self.registration.showNotification("Alarm", options));
+  event.waitUntil(self.registration.showNotification(title, options));
 });
 
 self.addEventListener("notificationclick", (event) => {

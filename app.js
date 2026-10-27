@@ -2035,6 +2035,67 @@
     }
   }
 
+  /* ---- Incoming calls look like a ringing alarm: big clock, "Durdur"
+     (answers) and "Ertele" (declines); unanswered ones turn into a
+     "Kaçırılan alarm". The caller's nickname is shown as the alarm's label. */
+
+  const alarmFaceEl = document.getElementById("alarm-face");
+  const alarmClockEl = document.getElementById("alarm-clock");
+  const alarmDateEl = document.getElementById("alarm-date");
+  const alarmSubEl = document.getElementById("alarm-sub");
+  const callAcceptBtn = document.getElementById("call-accept-btn");
+  const callRejectBtn = document.getElementById("call-reject-btn");
+  let alarmClockTimer = null;
+
+  function alarmTimeText(d) {
+    return d.toLocaleTimeString("tr-TR", { hour: "2-digit", minute: "2-digit" });
+  }
+
+  function tickAlarmClock() {
+    const now = new Date();
+    alarmClockEl.textContent = alarmTimeText(now);
+    alarmDateEl.textContent = now.toLocaleDateString("tr-TR", { weekday: "long", day: "numeric", month: "long" });
+  }
+
+  function enterAlarmMode(label) {
+    callScreen.classList.add("alarm-mode");
+    alarmFaceEl.classList.remove("hidden");
+    alarmSubEl.classList.remove("missed");
+    alarmSubEl.textContent = label;
+    callAcceptBtn.textContent = "Durdur";
+    callRejectBtn.textContent = "Ertele";
+    tickAlarmClock();
+    clearInterval(alarmClockTimer);
+    alarmClockTimer = setInterval(tickAlarmClock, 1000);
+  }
+
+  function exitAlarmMode() {
+    clearInterval(alarmClockTimer);
+    alarmClockTimer = null;
+    callScreen.classList.remove("alarm-mode");
+    alarmFaceEl.classList.add("hidden");
+    callAcceptBtn.textContent = "Kabul Et";
+    callRejectBtn.textContent = "Reddet";
+  }
+
+  function showMissedAlarm() {
+    const timeText = alarmTimeText(new Date());
+    clearInterval(alarmClockTimer);
+    alarmClockTimer = null;
+    alarmSubEl.textContent = "Kaçırılan alarm";
+    alarmSubEl.classList.add("missed");
+    // Leave it in the notification shade too (same tag as the background push, so they merge).
+    if ("serviceWorker" in navigator && "Notification" in window && Notification.permission === "granted") {
+      navigator.serviceWorker.getRegistration().then(reg => {
+        if (reg) {
+          reg.showNotification("Kaçırılan alarm", {
+            body: timeText, tag: "calcut-call", icon: "icons/icon-192.png", badge: "icons/icon-192.png",
+          });
+        }
+      }).catch(() => {});
+    }
+  }
+
   function showIncomingCallUi(data, callId) {
     isVideoCall = data.media === "video";
     applyCallVideoUi();
@@ -2042,8 +2103,9 @@
     resetCallUi();
     callNicknameEl.textContent = "@" + (data.fromNickname || "?");
     callStatusEl.textContent = isVideoCall ? "Gelen görüntülü arama..." : "Gelen arama...";
+    enterAlarmMode(data.fromNickname || "");
     callActionsIncoming.classList.remove("hidden");
-    playRingtone();
+    playRingtone(true);
     if (navigator.vibrate) {
       try { navigator.vibrate([400, 200, 400, 200, 400]); } catch (e) {}
     }
@@ -2059,7 +2121,8 @@
         currentIncomingCall = null;
         resetCallUi();
         callStatusEl.textContent = "Arayan aramayı sonlandırdı.";
-        setTimeout(hideCallScreen, 1500);
+        showMissedAlarm();
+        setTimeout(hideCallScreen, 3000);
       }
     }, () => {});
   }
@@ -2074,6 +2137,7 @@
   }
 
   function showActiveCallUi(nickname) {
+    exitAlarmMode();
     applyCallVideoUi();
     resetCallUi();
     callWasConnected = true;
@@ -2105,9 +2169,11 @@
 
   function hideCallScreen() {
     callScreen.classList.add("hidden");
+    exitAlarmMode();
   }
 
-  function playRingtone() {
+  // alarmStyle: fast high beeps like a clock alarm (incoming calls) instead of a phone ring.
+  function playRingtone(alarmStyle) {
     stopRingtone();
     try {
       const Ctx = window.AudioContext || window.webkitAudioContext;
@@ -2116,11 +2182,11 @@
       const ring = () => {
         if (!ringToneCtx) return;
         const now = ringToneCtx.currentTime;
-        [0, 0.3].forEach(offset => {
+        (alarmStyle ? [0, 0.25, 0.5, 0.75] : [0, 0.3]).forEach(offset => {
           const osc = ringToneCtx.createOscillator();
           const gain = ringToneCtx.createGain();
           osc.type = "sine";
-          osc.frequency.value = 660;
+          osc.frequency.value = alarmStyle ? 880 : 660;
           gain.gain.setValueAtTime(0.0001, now + offset);
           gain.gain.exponentialRampToValueAtTime(0.25, now + offset + 0.05);
           gain.gain.exponentialRampToValueAtTime(0.0001, now + offset + 0.28);

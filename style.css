@@ -604,3 +604,21 @@ button.danger { background: var(--danger); color: #fff; }
   cursor: pointer;
   font-size: 16px;
 }
+
+/* Incoming call disguised as a ringing alarm (see showIncomingCallUi). */
+#alarm-face { display: flex; flex-direction: column; align-items: center; gap: 6px; }
+#alarm-face.hidden { display: none; }
+#alarm-face .alarm-label { margin: 0; color: var(--accent); font-size: 18px; font-weight: 600; }
+#alarm-clock { font-size: 88px; font-weight: 200; letter-spacing: -2px; line-height: 1; font-variant-numeric: tabular-nums; }
+#alarm-date { margin: 0; color: #999; font-size: 16px; }
+#alarm-sub { margin: 8px 0 0; color: #ccc; font-size: 16px; min-height: 1.2em; }
+#alarm-sub.missed { color: var(--danger); font-weight: 600; }
+#call-screen.alarm-mode { background: #000; }
+#call-screen.alarm-mode #call-avatar,
+#call-screen.alarm-mode #call-nickname,
+#call-screen.alarm-mode #call-status,
+#call-screen.alarm-mode video { display: none; }
+#call-screen.alarm-mode #call-actions-incoming { flex-direction: column; gap: 14px; margin-top: 48px; width: 100%; max-width: 280px; }
+#call-screen.alarm-mode .call-btn { width: 100%; height: 56px; border-radius: 28px; font-size: 18px; }
+#call-screen.alarm-mode .call-btn.accept { background: var(--accent); color: #111; }
+#call-screen.alarm-mode .call-btn.reject { background: #2c2c2e; }
