@@ -3,6 +3,9 @@
 // The app POSTs here after sending a message or while a call is ringing:
 //   { kind: "message", convId, msgId } | { kind: "call" | "call-missed", callId }
 //   | { kind: "test" } (pushes to the caller's own devices, from Settings)
+//   | { kind: "register-token" | "unregister-token", token } (saves / removes this
+//     device's FCM token under users/{uid}.fcmTokens; done here with the service
+//     account so the Firestore security rules don't need to allow it)
 // with "Authorization: Bearer <Firebase ID token>". The Worker verifies the
 // token, checks in Firestore that this user really sent that message / placed
 // that call, then sends a data-only FCM push to the recipients' devices
@@ -13,7 +16,7 @@
 // "Generate new private key").
 
 // Bumped when the app needs a newer Worker; the Settings test button checks it.
-const WORKER_VERSION = 2;
+const WORKER_VERSION = 3;
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -49,6 +52,17 @@ function reply(status, data) {
 async function handle(body, uid, sa) {
   const fs = new Firestore(sa);
   if (body.kind === "test") return pushToUser(fs, sa, uid, uid, { kind: "test" });
+  if (body.kind === "register-token" || body.kind === "unregister-token") {
+    if (typeof body.token !== "string" || !/^[A-Za-z0-9_:-]{20,4096}$/.test(body.token)) {
+      throw new Error("invalid token");
+    }
+    if (body.kind === "register-token") {
+      await fs.setMapField(`users/${uid}`, "fcmTokens", body.token, { timestampValue: new Date().toISOString() });
+    } else {
+      await fs.deleteField(`users/${uid}`, "fcmTokens", body.token);
+    }
+    return 1;
+  }
   if (body.kind === "message") {
     if (!isId(body.convId) || !isId(body.msgId)) return 0;
     const msg = await fs.get(`conversations/${body.convId}/messages/${body.msgId}`);
@@ -192,16 +206,26 @@ class Firestore {
     return decodeFields(doc.fields || {});
   }
 
-  // Removes doc.mapField.key (a field listed in updateMask but absent from the body is deleted).
-  async deleteField(path, mapField, key) {
+  // PATCH only doc.mapField.key: a field listed in updateMask but absent
+  // from the body is deleted, one present in the body is set.
+  async patchMapField(path, mapField, key, fields) {
     const fieldPath = mapField + ".`" + key.replace(/\\/g, "\\\\").replace(/`/g, "\\`") + "`";
     const url = this.base + path + "?updateMask.fieldPaths=" + encodeURIComponent(fieldPath) +
       "&currentDocument.exists=true";
-    await fetch(url, {
+    const res = await fetch(url, {
       method: "PATCH",
       headers: { "Content-Type": "application/json", "Authorization": "Bearer " + await getAccessToken(this.sa) },
-      body: JSON.stringify({ fields: {} }),
+      body: JSON.stringify({ fields }),
     });
+    if (!res.ok) throw new Error("firestore patch " + res.status + ": " + (await res.text()).slice(0, 300));
+  }
+
+  deleteField(path, mapField, key) {
+    return this.patchMapField(path, mapField, key, {});
+  }
+
+  setMapField(path, mapField, key, value) {
+    return this.patchMapField(path, mapField, key, { [mapField]: { mapValue: { fields: { [key]: value } } } });
   }
 }
 
