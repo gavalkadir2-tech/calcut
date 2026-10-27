@@ -11,3 +11,7 @@ const firebaseConfig = {
 firebase.initializeApp(firebaseConfig);
 window.fbAuth = firebase.auth();
 window.fbDb = firebase.firestore();
+
+// Web Push certificate key: Firebase console > Project settings > Cloud Messaging >
+// Web Push certificates > "Generate key pair", then paste the public key here.
+window.FCM_VAPID_KEY = "";

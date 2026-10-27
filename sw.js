@@ -1,4 +1,4 @@
-const CACHE_NAME = "calcut-shell-v1";
+const CACHE_NAME = "calcut-shell-v2";
 const SHELL_FILES = [
   "./",
   "./index.html",
@@ -45,4 +45,68 @@ self.addEventListener("fetch", (event) => {
       return cached || network;
     })
   );
+});
+
+/* ---------------- Background push (FCM) ----------------
+   The Cloud Function in functions/index.js sends data-only pushes:
+   { kind: "message" | "call" | "call-missed", media? }. They arrive here
+   even when the app/browser is closed. Text is disguised as an alarm, the
+   same way the in-app notification is, and never names the sender. */
+
+const CALL_TAG = "calcut-call";
+
+function alarmTime() {
+  return new Date().toLocaleTimeString("tr-TR", { hour: "2-digit", minute: "2-digit" });
+}
+
+self.addEventListener("push", (event) => {
+  let data = {};
+  try {
+    const json = event.data ? event.data.json() : {};
+    data = json.data || json;
+  } catch (e) {}
+
+  const base = {
+    icon: "icons/icon-192.png",
+    badge: "icons/icon-192.png",
+    silent: false,
+    data: { url: self.registration.scope },
+  };
+  let options;
+  if (data.kind === "call") {
+    options = Object.assign(base, {
+      body: alarmTime() + " · Çalıyor",
+      tag: CALL_TAG,
+      renotify: true,          // each re-ring push plays the sound/vibration again
+      requireInteraction: true, // stay on screen until tapped or replaced
+      vibrate: [800, 400, 800, 400, 800, 400, 800],
+    });
+  } else if (data.kind === "call-missed") {
+    options = Object.assign(base, {
+      body: alarmTime() + " · Cevapsız",
+      tag: CALL_TAG,           // replaces the ringing notification
+      renotify: false,
+    });
+  } else {
+    options = Object.assign(base, {
+      body: alarmTime(),
+      tag: "calcut-alarm",     // same tag as the in-app alarm notification, so they merge
+      renotify: true,
+      vibrate: [300, 150, 300, 150, 300],
+    });
+  }
+  // Always show something: iOS revokes push permission for pushes that display nothing.
+  event.waitUntil(self.registration.showNotification("Alarm", options));
+});
+
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+  const url = (event.notification.data && event.notification.data.url) || self.registration.scope;
+  event.waitUntil((async () => {
+    const windows = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+    for (const w of windows) {
+      if (w.url.startsWith(self.registration.scope) && "focus" in w) return w.focus();
+    }
+    return self.clients.openWindow(url);
+  })());
 });

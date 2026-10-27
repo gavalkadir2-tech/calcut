@@ -825,9 +825,9 @@
   const previousUnread = new Map(); // convId -> last known unread count, for alarm-trigger edge detection
 
   // ---- Alarm-style notification: disguised as a phone alarm going off,
-  // never mentions messages, senders or nicknames. Only fires while this
-  // tab/PWA is open (foreground or backgrounded) — there is no server-side
-  // push set up, so a fully closed app or locked phone won't ring.
+  // never mentions messages, senders or nicknames. This in-app version fires
+  // while the tab/PWA is open; when it's closed, the FCM push below (handled
+  // in sw.js) shows the same disguised notification instead.
 
   function playAlarmSound() {
     try {
@@ -869,6 +869,63 @@
     }
   }
 
+  // ---- Background push (FCM). The Cloud Function in functions/index.js
+  // pushes to every token stored under users/{uid}.fcmTokens, so messages and
+  // incoming calls still ring when the app is closed. Needs notification
+  // permission, and on iOS the app must be opened from the home screen.
+
+  let currentPushToken = null;
+
+  async function pushSupported() {
+    if (!("serviceWorker" in navigator) || !("Notification" in window) || !("PushManager" in window)) return false;
+    if (!firebase.messaging) return false;
+    try {
+      return await firebase.messaging.isSupported();
+    } catch (e) {
+      return false;
+    }
+  }
+
+  async function registerPushToken() {
+    if (!myUid || !("Notification" in window) || Notification.permission !== "granted") return false;
+    if (!(await pushSupported())) return false;
+    const registration = await navigator.serviceWorker.register("sw.js");
+    await navigator.serviceWorker.ready;
+    const opts = { serviceWorkerRegistration: registration };
+    if (window.FCM_VAPID_KEY) opts.vapidKey = window.FCM_VAPID_KEY;
+    const token = await firebase.messaging().getToken(opts);
+    if (!token) return false;
+    currentPushToken = token;
+    await fbDb.collection("users").doc(myUid).update(
+      new firebase.firestore.FieldPath("fcmTokens", token),
+      firebase.firestore.FieldValue.serverTimestamp()
+    );
+    return true;
+  }
+
+  async function unregisterPushToken() {
+    if (!myUid || !currentPushToken) return;
+    try {
+      await fbDb.collection("users").doc(myUid).update(
+        new firebase.firestore.FieldPath("fcmTokens", currentPushToken),
+        firebase.firestore.FieldValue.delete()
+      );
+      await firebase.messaging().deleteToken();
+    } catch (e) {
+      console.error("push token remove error", e);
+    }
+    currentPushToken = null;
+  }
+
+  // Once the call is answered/rejected in the app, drop the ringing system notification.
+  function closeCallNotifications() {
+    if (!("serviceWorker" in navigator)) return;
+    navigator.serviceWorker.getRegistration().then(reg => {
+      if (!reg) return;
+      return reg.getNotifications({ tag: "calcut-call" }).then(list => list.forEach(n => n.close()));
+    }).catch(() => {});
+  }
+
   function convIdFor(uidA, uidB) {
     return [uidA, uidB].sort().join("_");
   }
@@ -884,6 +941,7 @@
     showThreadList();
     listenToConversations();
     listenForIncomingCalls();
+    registerPushToken().catch(err => console.error("push token register error", err));
     resetInactivityTimer();
     // Refresh the blocked list in case it changed on another device.
     fbDb.collection("users").doc(myUid).get().then(doc => {
@@ -1438,6 +1496,13 @@
 
   document.getElementById("enable-alarm-btn").addEventListener("click", async () => {
     const msgEl = document.getElementById("alarm-msg");
+    const isIos = /iphone|ipad|ipod/i.test(navigator.userAgent) ||
+      (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+    const standalone = window.matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
+    if (isIos && !standalone) {
+      msgEl.textContent = "iPhone'da bildirim için önce Paylaş > Ana Ekrana Ekle ile uygulamayı ekleyip ana ekrandaki ikondan açmalısın.";
+      return;
+    }
     if (!("Notification" in window)) {
       msgEl.textContent = "Bu tarayıcı bildirimleri desteklemiyor.";
       return;
@@ -1445,8 +1510,16 @@
     try {
       const perm = await Notification.requestPermission();
       if (perm === "granted") {
-        msgEl.textContent = "Bildirimler etkinleştirildi. Uygulama açıkken (arka planda dahi) yeni mesajda alarm çalacak.";
         triggerAlarmAlert();
+        let pushOk = false;
+        try {
+          pushOk = await registerPushToken();
+        } catch (e) {
+          console.error("push token register error", e);
+        }
+        msgEl.textContent = pushOk
+          ? "Bildirimler etkinleştirildi. Uygulama kapalıyken de yeni mesaj ve aramalarda alarm çalacak."
+          : "Bildirimler yalnızca uygulama açıkken çalışacak (bu cihazda arka plan bildirimi kurulamadı).";
       } else {
         msgEl.textContent = "Bildirim izni verilmedi.";
       }
@@ -1458,6 +1531,7 @@
   document.getElementById("logout-btn").addEventListener("click", async () => {
     if (!confirm("Hesabından çıkış yapılsın mı?")) return;
     stopAllMessengerListeners();
+    await unregisterPushToken();
     await fbAuth.signOut();
     await clearPersistedSession();
     myUid = null; myNickname = null; myPrivateKey = null; myPublicKey = null; myStatus = null; myReferredByNickname = null;
@@ -1793,8 +1867,9 @@
   }
 
   /* ---------------- Voice calls (WebRTC, signaled through Firestore) ----------------
-     No push/background support: this only works while the tab/PWA is open, same
-     tradeoff as the alarm notifications. Only STUN is configured (free public
+     The call itself only runs while the app is open; when it's closed, the
+     Cloud Function pushes a ringing notification (sw.js) and tapping it opens
+     the app, which picks up the still-ringing call. Only STUN is configured (free public
      servers) — there's no TURN relay, so calls between two very restrictive
      NATs (e.g. some mobile carriers) may fail to connect; that would need a
      paid TURN service to fix. */
@@ -1803,7 +1878,7 @@
     { urls: "stun:stun.l.google.com:19302" },
     { urls: "stun:stun1.l.google.com:19302" },
   ] };
-  const CALL_RING_TIMEOUT_MS = 30000;
+  const CALL_RING_TIMEOUT_MS = 45000;
 
   const callScreen = document.getElementById("call-screen");
   const callNicknameEl = document.getElementById("call-nickname");
@@ -2142,6 +2217,7 @@
   async function acceptIncomingCall() {
     if (!currentIncomingCall) return;
     stopRingtone();
+    closeCallNotifications();
     if (incomingCallDocUnsub) { incomingCallDocUnsub(); incomingCallDocUnsub = null; }
     const { id, data } = currentIncomingCall;
     currentIncomingCall = null;
@@ -2181,6 +2257,7 @@
   function rejectIncomingCall() {
     if (!currentIncomingCall) return;
     stopRingtone();
+    closeCallNotifications();
     if (incomingCallDocUnsub) { incomingCallDocUnsub(); incomingCallDocUnsub = null; }
     fbDb.collection("calls").doc(currentIncomingCall.id).update({ status: "rejected" }).catch(() => {});
     currentIncomingCall = null;
