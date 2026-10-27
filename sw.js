@@ -1,4 +1,4 @@
-const CACHE_NAME = "calcut-shell-v2";
+const CACHE_NAME = "calcut-shell-v3";
 const SHELL_FILES = [
   "./",
   "./index.html",
@@ -25,25 +25,27 @@ self.addEventListener("activate", (event) => {
 
 // Only the static app shell is cached, and only for same-origin GET
 // requests — everything else (Firebase Auth/Firestore, any API call)
-// always goes straight to the network untouched.
+// always goes straight to the network untouched. Network-first, so a new
+// deploy reaches phones on the next open; the cache is only an offline fallback.
 self.addEventListener("fetch", (event) => {
   const url = new URL(event.request.url);
   if (event.request.method !== "GET" || url.origin !== self.location.origin) {
     return;
   }
   event.respondWith(
-    caches.match(event.request).then((cached) => {
-      const network = fetch(event.request)
-        .then((response) => {
-          if (response && response.ok) {
-            const copy = response.clone();
-            caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy));
-          }
-          return response;
-        })
-        .catch(() => cached);
-      return cached || network;
-    })
+    // "no-cache" revalidates with the server instead of trusting the HTTP cache.
+    fetch(event.request.url, { cache: "no-cache", credentials: "same-origin" })
+      .then((response) => {
+        if (response && response.ok) {
+          const copy = response.clone();
+          caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy));
+        }
+        return response;
+      })
+      .catch(() => caches.match(event.request).then((cached) => {
+        if (cached) return cached;
+        throw new Error("offline");
+      }))
   );
 });
 
