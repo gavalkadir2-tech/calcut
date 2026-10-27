@@ -903,13 +903,14 @@
         throw new Error("cihaz anahtarı alınamadı (" + e.message + ")");
       }
       if (!token) throw new Error("cihaz anahtarı alınamadı");
-      try {
-        await fbDb.collection("users").doc(myUid).update(
-          new firebase.firestore.FieldPath("fcmTokens", token),
-          firebase.firestore.FieldValue.serverTimestamp()
-        );
-      } catch (e) {
-        throw new Error("anahtar kaydedilemedi (" + e.message + ")");
+      // Saved through the push Worker, so the Firestore rules don't have to allow it.
+      const r = await requestPush({ kind: "register-token", token });
+      if (r.error) throw new Error("anahtar kaydedilemedi, bildirim sunucusuna ulaşılamadı (" + r.error + ")");
+      if (r.status !== 200) {
+        throw new Error("anahtar kaydedilemedi, sunucu hatası " + r.status + " (" + JSON.stringify(r.data) + ")");
+      }
+      if (!r.data || !(r.data.v >= 3)) {
+        throw new Error("Cloudflare'deki Worker kodu eski. worker/push-worker.js dosyasının yeni halini Edit code ile yapıştırıp Deploy'a bas.");
       }
       currentPushToken = token;
       lastPushError = null;
@@ -934,10 +935,7 @@
   async function unregisterPushToken() {
     if (!myUid || !currentPushToken) return;
     try {
-      await fbDb.collection("users").doc(myUid).update(
-        new firebase.firestore.FieldPath("fcmTokens", currentPushToken),
-        firebase.firestore.FieldValue.delete()
-      );
+      await requestPush({ kind: "unregister-token", token: currentPushToken });
       await firebase.messaging().deleteToken();
     } catch (e) {
       console.error("push token remove error", e);
@@ -1588,7 +1586,7 @@
     const r = await requestPush({ kind: "test" });
     if (r.error) {
       msgEl.textContent = "⚠️ Bildirim sunucusuna ulaşılamadı: " + r.error;
-    } else if (r.status === 200 && r.data && r.data.v === undefined) {
+    } else if (r.status === 200 && r.data && !(r.data.v >= 3)) {
       msgEl.textContent = "⚠️ Cloudflare'deki Worker kodu eski. worker/push-worker.js dosyasının yeni halini Edit code ile yapıştırıp Deploy'a bas.";
     } else if (r.status === 200 && r.data && r.data.sent > 0) {
       msgEl.textContent = "✅ Test bildirimi gönderildi. Birkaç saniye içinde \"Alarm\" bildirimi gelmeli. Geldiyse kurulum tamam.";

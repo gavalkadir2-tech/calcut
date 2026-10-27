@@ -30,9 +30,10 @@ için "Alarm" görünümlü, sesli ve titreşimli bildirim gelir. Firebase'in
       tüm içeriği → *Deploy*.
    5. Worker'ın adresini kopyala (ör. `https://calcut-push.ADIN.workers.dev`) ve
       `firebase-config.js` içindeki `window.PUSH_URL` alanına yapıştır.
-4. **Firestore kuralı:** Uygulama cihaz anahtarını `users/{uid}.fcmTokens`
-   alanına yazar. "Missing or insufficient permissions" hatası alırsan
-   kullanıcının kendi dokümanında `fcmTokens` alanını güncellemesine izin ver.
+4. **Firestore kuralı gerekmez:** Cihaz anahtarları (`users/{uid}.fcmTokens`)
+   Worker tarafından servis hesabıyla kaydedilir. Worker kodu her
+   güncellendiğinde Cloudflare'de *Edit code* ile yeniden yapıştırılıp
+   *Deploy* edilmelidir.
 5. Siteyi her zamanki gibi HTTPS üzerinden yayınla.
 
 ### Telefonda
