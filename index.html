@@ -4,6 +4,14 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>Hesap Makinesi</title>
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#000000">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
+<meta name="apple-mobile-web-app-title" content="Hesap Makinesi">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="icon" href="icons/icon-192.png">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -101,6 +109,11 @@
         <button id="change-pin-btn">PIN'i Değiştir</button>
         <p id="settings-msg"></p>
         <hr>
+        <label>Bildirimler</label>
+        <button id="enable-push-btn">Arka plan bildirimlerini aç</button>
+        <button id="test-sound-btn" class="ghost">Bildirim sesini dene</button>
+        <p id="push-msg"></p>
+        <hr>
         <label>Ek güvenlik</label>
         <button id="enable-biometric-btn">Biyometrik onay ekle</button>
         <p id="biometric-msg"></p>
@@ -126,6 +139,7 @@
 <script src="https://www.gstatic.com/firebasejs/10.13.1/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.13.1/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.13.1/firebase-firestore-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.13.1/firebase-messaging-compat.js"></script>
 <script src="firebase-config.js"></script>
 <script src="app.js"></script>
 </body>

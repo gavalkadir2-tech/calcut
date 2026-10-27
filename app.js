@@ -496,6 +496,149 @@
     return key;
   }
 
+  /* ---------------- Background notifications (PWA service worker + FCM) ---------------- */
+
+  const pushMsgEl = document.getElementById("push-msg");
+  let swRegistrationPromise = null;
+  let currentPushToken = null;
+
+  if ("serviceWorker" in navigator) {
+    swRegistrationPromise = navigator.serviceWorker.register("sw.js").catch(err => {
+      console.error("service worker register error", err);
+      return null;
+    });
+    navigator.serviceWorker.addEventListener("message", (e) => {
+      if (e.data && e.data.type === "push-received") playChime();
+    });
+  }
+
+  // Short ringtone generated with WebAudio, so no audio file is needed.
+  let audioCtx = null;
+  let lastChimeAt = 0;
+  function playChime() {
+    const now = Date.now();
+    if (now - lastChimeAt < 2000) return; // push + live listener can both fire for one message
+    lastChimeAt = now;
+    try {
+      audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+      if (audioCtx.state === "suspended") audioCtx.resume();
+      const t0 = audioCtx.currentTime;
+      [880, 1175, 880, 1175].forEach((freq, i) => {
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        osc.type = "sine";
+        osc.frequency.value = freq;
+        const start = t0 + i * 0.18;
+        gain.gain.setValueAtTime(0.0001, start);
+        gain.gain.exponentialRampToValueAtTime(0.4, start + 0.02);
+        gain.gain.exponentialRampToValueAtTime(0.0001, start + 0.16);
+        osc.connect(gain).connect(audioCtx.destination);
+        osc.start(start);
+        osc.stop(start + 0.17);
+      });
+    } catch (e) {}
+    if (navigator.vibrate) navigator.vibrate([300, 150, 300]);
+  }
+
+  function isIos() {
+    return /iphone|ipad|ipod/i.test(navigator.userAgent) ||
+      (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+  }
+  function isStandalone() {
+    return window.matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
+  }
+
+  async function pushSupported() {
+    if (!("serviceWorker" in navigator) || !("Notification" in window) || !("PushManager" in window)) return false;
+    try {
+      return await firebase.messaging.isSupported();
+    } catch (e) {
+      return false;
+    }
+  }
+
+  // Gets an FCM token for this device and stores it on the user's doc so the
+  // Cloud Function can push to it. Only call once notification permission is granted.
+  async function registerPushToken() {
+    if (!myUid || Notification.permission !== "granted" || !(await pushSupported())) return false;
+    const registration = await swRegistrationPromise;
+    if (!registration) return false;
+    const opts = { serviceWorkerRegistration: registration };
+    if (window.FCM_VAPID_KEY) opts.vapidKey = window.FCM_VAPID_KEY;
+    const token = await firebase.messaging().getToken(opts);
+    if (!token) return false;
+    currentPushToken = token;
+    await fbDb.collection("users").doc(myUid).update(
+      new firebase.firestore.FieldPath("fcmTokens", token),
+      firebase.firestore.FieldValue.serverTimestamp()
+    );
+    return true;
+  }
+
+  async function unregisterPushToken() {
+    if (!myUid || !currentPushToken) return;
+    try {
+      await fbDb.collection("users").doc(myUid).update(
+        new firebase.firestore.FieldPath("fcmTokens", currentPushToken),
+        firebase.firestore.FieldValue.delete()
+      );
+      await firebase.messaging().deleteToken();
+    } catch (e) {
+      console.error("push token remove error", e);
+    }
+    currentPushToken = null;
+  }
+
+  function refreshPushStatus() {
+    if (!pushMsgEl) return;
+    if (isIos() && !isStandalone()) {
+      pushMsgEl.textContent = "iPhone'da bildirimler için önce Paylaş > Ana Ekrana Ekle ile uygulamayı ekleyip oradan açmalısın.";
+    } else if (!("Notification" in window)) {
+      pushMsgEl.textContent = "Bu tarayıcı bildirimleri desteklemiyor.";
+    } else if (Notification.permission === "granted") {
+      pushMsgEl.textContent = currentPushToken ? "Arka plan bildirimleri açık." : "İzin verildi.";
+    } else if (Notification.permission === "denied") {
+      pushMsgEl.textContent = "Bildirim izni reddedilmiş. Tarayıcı/uygulama ayarlarından izin vermelisin.";
+    } else {
+      pushMsgEl.textContent = "";
+    }
+  }
+
+  document.getElementById("enable-push-btn").addEventListener("click", async () => {
+    playChime(); // also unlocks audio playback on iOS, which needs a user gesture first
+    if (isIos() && !isStandalone()) { refreshPushStatus(); return; }
+    if (!(await pushSupported())) {
+      pushMsgEl.textContent = "Bu cihaz/tarayıcı arka plan bildirimlerini desteklemiyor.";
+      return;
+    }
+    try {
+      const perm = await Notification.requestPermission();
+      if (perm !== "granted") { refreshPushStatus(); return; }
+      pushMsgEl.textContent = "Kaydediliyor...";
+      const ok = await registerPushToken();
+      pushMsgEl.textContent = ok ? "Arka plan bildirimleri açık." : "Bildirim kaydı yapılamadı.";
+    } catch (e) {
+      pushMsgEl.textContent = "Bildirim kaydı başarısız: " + e.message;
+    }
+  });
+
+  document.getElementById("test-sound-btn").addEventListener("click", async () => {
+    lastChimeAt = 0;
+    playChime();
+    if ("Notification" in window && Notification.permission === "granted") {
+      const registration = await swRegistrationPromise;
+      if (registration) {
+        registration.showNotification("Hesap Makinesi", {
+          body: "Test bildirimi",
+          icon: "icons/icon-192.png",
+          tag: "calcut-test",
+          renotify: true,
+          vibrate: [300, 150, 300],
+        });
+      }
+    }
+  });
+
   /* ---------------- Messenger (contacts, conversations, E2E messages) ---------------- */
 
   const threadListPanel = document.getElementById("thread-list-panel");
@@ -505,6 +648,7 @@
 
   let conversations = new Map(); // convId -> {id, otherUid, otherEmail, lastText, updatedAt}
   let conversationsUnsub = null;
+  let conversationsLoaded = false;
   let activeConvId = null;
   let activeOtherUid = null;
   let messagesUnsub = null;
@@ -519,6 +663,7 @@
     appPanel.classList.remove("hidden");
     showThreadList();
     listenToConversations();
+    registerPushToken().catch(err => console.error("push token register error", err));
   }
 
   function showThreadList() {
@@ -530,21 +675,34 @@
 
   function listenToConversations() {
     if (conversationsUnsub) conversationsUnsub();
+    conversationsLoaded = false;
+    conversations.clear();
     conversationsUnsub = fbDb.collection("conversations")
       .where("participants", "array-contains", myUid)
       .onSnapshot(snap => {
+        const previous = new Map(conversations);
+        const isFirstSnapshot = !conversationsLoaded;
+        conversationsLoaded = true;
+        let incoming = false;
         conversations.clear();
         snap.docs.forEach(doc => {
           const d = doc.data();
           const otherUid = d.participants.find(u => u !== myUid);
           const otherEmail = (d.participantEmails && d.participantEmails[otherUid]) || "?";
+          const updatedAt = d.updatedAt ? d.updatedAt.toMillis() : 0;
+          const before = previous.get(doc.id);
+          if (!isFirstSnapshot && d.lastFrom && d.lastFrom !== myUid &&
+              (!before || updatedAt > before.updatedAt)) {
+            incoming = true;
+          }
           conversations.set(doc.id, {
             id: doc.id,
             otherUid,
             otherEmail,
-            updatedAt: d.updatedAt ? d.updatedAt.toMillis() : 0,
+            updatedAt,
           });
         });
+        if (incoming) playChime();
         if (!threadDetailPanel.classList.contains("hidden")) return;
         renderThreadList();
       }, err => console.error("conversations listen error", err));
@@ -621,6 +779,7 @@
     document.getElementById("new-pin-input").value = "";
     document.getElementById("settings-msg").textContent = "";
     document.getElementById("biometric-msg").textContent = "";
+    refreshPushStatus();
   });
   document.getElementById("settings-back-btn").addEventListener("click", showThreadList);
 
@@ -669,6 +828,7 @@
     if (!confirm("Hesabından çıkış yapılsın mı?")) return;
     if (conversationsUnsub) { conversationsUnsub(); conversationsUnsub = null; }
     if (messagesUnsub) { messagesUnsub(); messagesUnsub = null; }
+    await unregisterPushToken();
     await fbAuth.signOut();
     myUid = null; myEmail = null; myPrivateKey = null; myPublicKey = null;
     closeVaultToCalculator();
@@ -789,6 +949,7 @@
     });
     await fbDb.collection("conversations").doc(activeConvId).set({
       updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+      lastFrom: myUid,
     }, { merge: true });
   }
 
