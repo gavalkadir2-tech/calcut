@@ -876,6 +876,7 @@
   // notification permission, and on iOS the app must be opened from the home screen.
 
   let currentPushToken = null;
+  let lastPushError = null; // shown in Settings so a failed setup isn't silent
 
   async function pushSupported() {
     if (!("serviceWorker" in navigator) || !("Notification" in window) || !("PushManager" in window)) return false;
@@ -889,19 +890,45 @@
 
   async function registerPushToken() {
     if (!myUid || !("Notification" in window) || Notification.permission !== "granted") return false;
-    if (!(await pushSupported())) return false;
-    const registration = await navigator.serviceWorker.register("sw.js");
-    await navigator.serviceWorker.ready;
-    const opts = { serviceWorkerRegistration: registration };
-    if (window.FCM_VAPID_KEY) opts.vapidKey = window.FCM_VAPID_KEY;
-    const token = await firebase.messaging().getToken(opts);
-    if (!token) return false;
-    currentPushToken = token;
-    await fbDb.collection("users").doc(myUid).update(
-      new firebase.firestore.FieldPath("fcmTokens", token),
-      firebase.firestore.FieldValue.serverTimestamp()
-    );
-    return true;
+    try {
+      if (!(await pushSupported())) throw new Error("bu tarayıcı arka plan bildirimini desteklemiyor");
+      const registration = await navigator.serviceWorker.register("sw.js");
+      await navigator.serviceWorker.ready;
+      const opts = { serviceWorkerRegistration: registration };
+      if (window.FCM_VAPID_KEY) opts.vapidKey = window.FCM_VAPID_KEY;
+      let token;
+      try {
+        token = await firebase.messaging().getToken(opts);
+      } catch (e) {
+        throw new Error("cihaz anahtarı alınamadı (" + e.message + ")");
+      }
+      if (!token) throw new Error("cihaz anahtarı alınamadı");
+      try {
+        await fbDb.collection("users").doc(myUid).update(
+          new firebase.firestore.FieldPath("fcmTokens", token),
+          firebase.firestore.FieldValue.serverTimestamp()
+        );
+      } catch (e) {
+        throw new Error("anahtar kaydedilemedi (" + e.message + ")");
+      }
+      currentPushToken = token;
+      lastPushError = null;
+      return true;
+    } catch (e) {
+      lastPushError = e.message;
+      throw e;
+    }
+  }
+
+  function pushStatusText() {
+    if (!("Notification" in window)) return "Bu tarayıcı bildirimleri desteklemiyor.";
+    if (Notification.permission === "denied") {
+      return "Bildirim izni reddedilmiş. Telefon ayarlarından bu uygulamaya bildirim izni ver.";
+    }
+    if (Notification.permission !== "granted") return "Bildirimler kapalı. Açmak için yukarıdaki düğmeye bas.";
+    if (currentPushToken) return "✅ Arka plan bildirimleri açık: uygulama kapalıyken de mesaj ve aramalarda alarm çalacak.";
+    if (lastPushError) return "⚠️ Bildirimler yalnızca uygulama açıkken çalışıyor: " + lastPushError;
+    return "Kontrol ediliyor...";
   }
 
   async function unregisterPushToken() {
@@ -920,18 +947,21 @@
 
   // Fire-and-forget: the Worker checks with Firestore that this user really
   // sent the message / placed the call before pushing anything.
+  // Resolves to { status, data } (data is the Worker's JSON reply) or { error }.
   async function requestPush(body) {
-    if (!window.PUSH_URL || !fbAuth.currentUser) return;
+    if (!window.PUSH_URL || !fbAuth.currentUser) return { error: "PUSH_URL ayarlı değil" };
     try {
       const idToken = await fbAuth.currentUser.getIdToken();
-      await fetch(window.PUSH_URL, {
+      const res = await fetch(window.PUSH_URL, {
         method: "POST",
         headers: { "Content-Type": "application/json", "Authorization": "Bearer " + idToken },
         body: JSON.stringify(body),
         keepalive: true,
       });
+      return { status: res.status, data: await res.json().catch(() => null) };
     } catch (e) {
       console.error("push request error", e);
+      return { error: e.message };
     }
   }
 
@@ -1329,7 +1359,11 @@
     document.getElementById("new-pin-input").value = "";
     document.getElementById("settings-msg").textContent = "";
     document.getElementById("biometric-msg").textContent = "";
-    document.getElementById("alarm-msg").textContent = "";
+    const alarmMsgEl = document.getElementById("alarm-msg");
+    alarmMsgEl.textContent = pushStatusText();
+    if (!currentPushToken && "Notification" in window && Notification.permission === "granted") {
+      registerPushToken().catch(() => {}).then(() => { alarmMsgEl.textContent = pushStatusText(); });
+    }
     document.getElementById("nickname-change-msg").textContent = "";
     document.getElementById("new-nickname-input").value = "";
     document.getElementById("duress-pin-msg").textContent = "";
@@ -1529,20 +1563,39 @@
       const perm = await Notification.requestPermission();
       if (perm === "granted") {
         triggerAlarmAlert();
-        let pushOk = false;
+        msgEl.textContent = "Kaydediliyor...";
         try {
-          pushOk = await registerPushToken();
+          await registerPushToken();
         } catch (e) {
           console.error("push token register error", e);
         }
-        msgEl.textContent = pushOk
-          ? "Bildirimler etkinleştirildi. Uygulama kapalıyken de yeni mesaj ve aramalarda alarm çalacak."
-          : "Bildirimler yalnızca uygulama açıkken çalışacak (bu cihazda arka plan bildirimi kurulamadı).";
+        msgEl.textContent = pushStatusText();
       } else {
         msgEl.textContent = "Bildirim izni verilmedi.";
       }
     } catch (e) {
       msgEl.textContent = "Bildirimler etkinleştirilemedi: " + e.message;
+    }
+  });
+
+  document.getElementById("test-push-btn").addEventListener("click", async () => {
+    const msgEl = document.getElementById("alarm-msg");
+    if (!currentPushToken) {
+      msgEl.textContent = pushStatusText();
+      return;
+    }
+    msgEl.textContent = "Test bildirimi gönderiliyor...";
+    const r = await requestPush({ kind: "test" });
+    if (r.error) {
+      msgEl.textContent = "⚠️ Bildirim sunucusuna ulaşılamadı: " + r.error;
+    } else if (r.status === 200 && r.data && r.data.v === undefined) {
+      msgEl.textContent = "⚠️ Cloudflare'deki Worker kodu eski. worker/push-worker.js dosyasının yeni halini Edit code ile yapıştırıp Deploy'a bas.";
+    } else if (r.status === 200 && r.data && r.data.sent > 0) {
+      msgEl.textContent = "✅ Test bildirimi gönderildi. Birkaç saniye içinde \"Alarm\" bildirimi gelmeli. Geldiyse kurulum tamam.";
+    } else if (r.status === 200) {
+      msgEl.textContent = "⚠️ Sunucu bu cihaza ulaşamadı (gönderilen: 0). Bildirimleri Etkinleştir'e tekrar bas.";
+    } else {
+      msgEl.textContent = "⚠️ Bildirim sunucusu hata verdi (" + r.status + "): " + JSON.stringify(r.data);
     }
   });
 
