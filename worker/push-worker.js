@@ -2,6 +2,7 @@
 //
 // The app POSTs here after sending a message or while a call is ringing:
 //   { kind: "message", convId, msgId } | { kind: "call" | "call-missed", callId }
+//   | { kind: "test" } (pushes to the caller's own devices, from Settings)
 // with "Authorization: Bearer <Firebase ID token>". The Worker verifies the
 // token, checks in Firestore that this user really sent that message / placed
 // that call, then sends a data-only FCM push to the recipients' devices
@@ -10,6 +11,9 @@
 // Needs one secret: SERVICE_ACCOUNT = the whole JSON of a Firebase service
 // account key (Firebase console > Project settings > Service accounts >
 // "Generate new private key").
+
+// Bumped when the app needs a newer Worker; the Settings test button checks it.
+const WORKER_VERSION = 2;
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -28,7 +32,7 @@ export default {
       if (!uid) return reply(401, "unauthorized");
       const body = await request.json();
       const sent = await handle(body, uid, sa);
-      return reply(200, { sent });
+      return reply(200, { sent, v: WORKER_VERSION });
     } catch (e) {
       return reply(500, String(e && e.message || e));
     }
@@ -44,6 +48,7 @@ function reply(status, data) {
 
 async function handle(body, uid, sa) {
   const fs = new Firestore(sa);
+  if (body.kind === "test") return pushToUser(fs, sa, uid, uid, { kind: "test" });
   if (body.kind === "message") {
     if (!isId(body.convId) || !isId(body.msgId)) return 0;
     const msg = await fs.get(`conversations/${body.convId}/messages/${body.msgId}`);
