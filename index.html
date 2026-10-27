@@ -164,6 +164,7 @@
         <button id="enable-alarm-btn">Bildirimleri Etkinleştir</button>
         <button id="test-push-btn" class="ghost">Test bildirimi gönder</button>
         <p id="alarm-msg"></p>
+        <p class="app-version">Sürüm: 3 (alarm ekranı)</p>
         <hr>
         <label>Bekleyen Referanslar</label>
         <ul id="pending-referrals-list"></ul>
@@ -185,6 +186,12 @@
 <div id="call-screen" class="screen hidden">
   <video id="call-remote-video" class="hidden" autoplay playsinline></video>
   <video id="call-local-video" class="hidden" autoplay playsinline muted></video>
+  <div id="alarm-face" class="hidden">
+    <p class="alarm-label">⏰ Alarm</p>
+    <div id="alarm-clock">00:00</div>
+    <p id="alarm-date"></p>
+    <p id="alarm-sub"></p>
+  </div>
   <div id="call-avatar">📞</div>
   <h2 id="call-nickname">@kullanıcı</h2>
   <p id="call-status">Aranıyor...</p>
