@@ -319,6 +319,67 @@
     renderCalc();
   }
 
+  /* ---------------- Biometric vault layer (Android app) ----------------
+     In the Android app, biometrics can protect the vault itself, not just
+     gate it. The PIN still opens the outer blob (so the calculator's
+     as-you-type unlock and the duress PIN work unchanged), but the session
+     inside it (private key and all) is then encrypted again with a secret
+     only a fingerprint can release: { bioLayer: { iv, data } }. See
+     BiometricKeyPlugin.java. */
+
+  const STORAGE_BIO_SEALED = "calcut_vault_bio_sealed";
+  let currentBioKey = null;
+  let lastBioError = null;
+
+  function biometricKeyPlugin() {
+    const cap = window.Capacitor;
+    if (!cap || !cap.isNativePlatform || !cap.isNativePlatform()) return null;
+    return (cap.Plugins && cap.Plugins.BiometricKey) || null;
+  }
+
+  function bioKeyFromSecret(secretB64) {
+    return crypto.subtle.importKey("raw", b64decode(secretB64), { name: "AES-GCM" }, false, ["encrypt", "decrypt"]);
+  }
+
+  // What goes into the PIN-encrypted blob: the session itself, or the
+  // session encrypted again with the biometric key when that is on.
+  async function sealSession(data) {
+    if (!currentBioKey) return data;
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const ciphertext = await crypto.subtle.encrypt(
+      { name: "AES-GCM", iv }, currentBioKey, new TextEncoder().encode(JSON.stringify(data))
+    );
+    return { bioLayer: { iv: b64encode(iv.buffer), data: b64encode(ciphertext) } };
+  }
+
+  async function openBioLayer(layer) {
+    const plugin = biometricKeyPlugin();
+    const sealed = localStorage.getItem(STORAGE_BIO_SEALED);
+    if (!plugin || !sealed) throw new Error("Bu cihazda biyometrik anahtar yok.");
+    const { secret } = await plugin.unlock({ sealed });
+    const key = await bioKeyFromSecret(secret);
+    const plain = await crypto.subtle.decrypt(
+      { name: "AES-GCM", iv: new Uint8Array(b64decode(layer.iv)) }, key, b64decode(layer.data)
+    );
+    currentBioKey = key;
+    return JSON.parse(new TextDecoder().decode(plain));
+  }
+
+  function bioFailText() {
+    if (lastBioError && lastBioError.code === "invalidated") {
+      return "Parmak izi kayıtların değiştiği için biyometrik anahtar geçersiz oldu. " +
+        "\"PIN'i unuttum\" ile sıfırlayıp hesabına yeniden giriş yap; mesajların hesabında duruyor.";
+    }
+    return "Biyometrik doğrulama başarısız.";
+  }
+
+  function forgetBiometricKey() {
+    localStorage.removeItem(STORAGE_BIO_SEALED);
+    currentBioKey = null;
+    const plugin = biometricKeyPlugin();
+    if (plugin) plugin.remove().catch(() => {});
+  }
+
   async function verifyBiometricIfEnabled() {
     const credIdB64 = localStorage.getItem(STORAGE_BIOMETRIC);
     if (!credIdB64 || !window.PublicKeyCredential) return true;
@@ -426,17 +487,17 @@
       privateKeyJwk,
       publicKeyJwk,
     };
-    await saveLocalBlob(currentLocalKey, localSessionData).catch(() => {});
+    await saveLocalBlob(currentLocalKey, await sealSession(localSessionData)).catch(() => {});
   }
 
   async function clearPersistedSession() {
     localSessionData = {};
     if (currentLocalKey) {
-      await saveLocalBlob(currentLocalKey, {}).catch(() => {});
+      await saveLocalBlob(currentLocalKey, await sealSession({})).catch(() => {});
     }
   }
 
-  // Returns "real" | "duress" | "fail". The real vault is always tried
+  // Returns "real" | "duress" | "fail" | "biofail". The real vault is always tried
   // first; only on a real-PIN mismatch do we check the duress PIN, so a
   // duress PIN can never accidentally shadow the real one.
   async function attemptUnlock(pin) {
@@ -447,14 +508,27 @@
       localSessionData = {};
       return "real";
     }
+    let outer;
     try {
-      localSessionData = await loadLocalBlob(key);
-      currentLocalKey = key;
-      return "real";
+      outer = await loadLocalBlob(key);
     } catch (e) {
       if (await tryDuressPin(pin)) return "duress";
       return "fail";
     }
+    // The PIN is right; a biometric layer still needs the fingerprint.
+    if (outer && outer.bioLayer) {
+      try {
+        localSessionData = await openBioLayer(outer.bioLayer);
+      } catch (e) {
+        lastBioError = e;
+        return "biofail";
+      }
+    } else {
+      currentBioKey = null;
+      localSessionData = outer;
+    }
+    currentLocalKey = key;
+    return "real";
   }
 
   function openDuressScreen() {
@@ -472,7 +546,7 @@
   async function tryAutoUnlock(pin) {
     if (!vaultExists() && !duressPinExists()) return false; // require explicit setup via triple-tap gesture first
     const mode = await attemptUnlock(pin);
-    if (mode === "fail") return false;
+    if (mode === "fail" || mode === "biofail") return false;
     calcView.classList.add("hidden");
     vaultView.classList.remove("hidden");
     if (mode === "duress") {
@@ -496,6 +570,8 @@
     } else if (mode === "duress") {
       errorEl.textContent = "";
       openDuressScreen();
+    } else if (mode === "biofail") {
+      errorEl.textContent = bioFailText();
     } else {
       errorEl.textContent = "Yanlış PIN.";
     }
@@ -510,6 +586,7 @@
     localStorage.removeItem(STORAGE_BLOB);
     localStorage.removeItem(STORAGE_SALT);
     localStorage.removeItem(STORAGE_BIOMETRIC);
+    forgetBiometricKey();
     clearDuressPin();
     openVaultLockScreen();
   });
@@ -1686,7 +1763,7 @@
       return;
     }
     const newKey = await deriveLocalKey(newPin);
-    await saveLocalBlob(newKey, localSessionData || {});
+    await saveLocalBlob(newKey, await sealSession(localSessionData || {}));
     currentLocalKey = newKey;
     msgEl.textContent = "PIN güncellendi.";
     document.getElementById("new-pin-input").value = "";
@@ -1733,6 +1810,26 @@
 
   document.getElementById("enable-biometric-btn").addEventListener("click", async () => {
     const msgEl = document.getElementById("biometric-msg");
+    const bioPlugin = biometricKeyPlugin();
+    if (bioPlugin) {
+      try {
+        const { available } = await bioPlugin.available();
+        if (!available) {
+          msgEl.textContent = "Bu telefonda kayıtlı güçlü bir parmak izi/yüz tanıma yok. Önce telefon ayarlarından ekle.";
+          return;
+        }
+        if (!currentLocalKey) return;
+        const { secret, sealed } = await bioPlugin.enroll();
+        currentBioKey = await bioKeyFromSecret(secret);
+        localStorage.setItem(STORAGE_BIO_SEALED, sealed);
+        await saveLocalBlob(currentLocalKey, await sealSession(localSessionData || {}));
+        renderBiometricButtons();
+        msgEl.textContent = "Biyometrik kilit açıldı: kasayı açmak için artık PIN'in yanında parmak izin de gerekiyor.";
+      } catch (e) {
+        msgEl.textContent = "Biyometrik kayıt başarısız: " + e.message;
+      }
+      return;
+    }
     if (!window.PublicKeyCredential) {
       msgEl.textContent = "Bu cihaz/tarayıcı biyometrik onayı desteklemiyor.";
       return;
@@ -1761,13 +1858,22 @@
   });
 
   function renderBiometricButtons() {
-    const enabled = !!localStorage.getItem(STORAGE_BIOMETRIC);
+    const enabled = biometricKeyPlugin()
+      ? !!localStorage.getItem(STORAGE_BIO_SEALED)
+      : !!localStorage.getItem(STORAGE_BIOMETRIC);
     document.getElementById("enable-biometric-btn").classList.toggle("hidden", enabled);
     document.getElementById("disable-biometric-btn").classList.toggle("hidden", !enabled);
   }
 
-  document.getElementById("disable-biometric-btn").addEventListener("click", () => {
+  document.getElementById("disable-biometric-btn").addEventListener("click", async () => {
     if (!confirm("Biyometrik onay kaldırılsın mı? Kilit yalnızca PIN ile açılacak.")) return;
+    if (biometricKeyPlugin()) {
+      if (!currentLocalKey) return;
+      // Re-save the session without the biometric layer before dropping the key.
+      currentBioKey = null;
+      await saveLocalBlob(currentLocalKey, localSessionData || {});
+      forgetBiometricKey();
+    }
     localStorage.removeItem(STORAGE_BIOMETRIC);
     renderBiometricButtons();
     document.getElementById("biometric-msg").textContent = "Biyometrik onay kaldırıldı.";
@@ -1878,6 +1984,7 @@
     localStorage.removeItem(STORAGE_BLOB);
     localStorage.removeItem(STORAGE_SALT);
     localStorage.removeItem(STORAGE_BIOMETRIC);
+    forgetBiometricKey();
     clearDuressPin();
     closeVaultToCalculator();
   });
