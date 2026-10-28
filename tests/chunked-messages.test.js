@@ -69,7 +69,7 @@ function filePayload(size) {
   return JSON.stringify({ name: "x.bin", mime: "", size, dataUrl: "data:application/octet-stream;base64," + body });
 }
 
-for (const [label, size, chunked] of [["1 KB", 1024, false], ["600 KB", 600 * 1024, true], ["10 MB", 10 * 1024 * 1024, true]]) {
+for (const [label, size, chunked] of [["1 KB", 1024, false], ["600 KB", 600 * 1024, true], ["10 MB", 10 * 1024 * 1024, true], ["50 MB (the send limit)", 50 * 1024 * 1024, true]]) {
   test(`a ${label} file round-trips${chunked ? " through chunk documents" : " in one document"}`, async () => {
     const { api, store } = await load();
     const payload = filePayload(size);

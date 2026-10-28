@@ -3902,10 +3902,11 @@
       alert("Tek seferde en fazla " + MAX_FILES_PER_SEND + " dosya seçebilirsin.");
       return;
     }
-    // Large payloads are split over chunk documents (see CHUNK_CHARS), so
-    // this only bounds upload time and storage; base64 and encryption make
-    // the stored size about 1.8x the file.
-    const maxSize = 10 * 1024 * 1024;
+    // Large payloads are split over chunk documents (see CHUNK_CHARS), but
+    // a file is still held several times over in memory while it's encoded
+    // and encrypted, and stored at ~1.8x its size in Firestore's 1GiB free
+    // quota, so there is a cap rather than none.
+    const maxSize = 50 * 1024 * 1024;
     const tooBig = files.filter(f => f.size > maxSize);
     const toSend = files.filter(f => f.size <= maxSize);
     let replyFields = takeReplyFields();
@@ -3926,7 +3927,7 @@
       }
     }
     const problems = [];
-    if (tooBig.length) problems.push("10MB'tan büyük olduğu için gönderilmedi: " + tooBig.map(f => f.name).join(", "));
+    if (tooBig.length) problems.push("50MB'tan büyük olduğu için gönderilmedi: " + tooBig.map(f => f.name).join(", "));
     if (failed.length) problems.push("Gönderilemedi: " + failed.join(", "));
     if (problems.length) alert(problems.join("\n"));
   });
