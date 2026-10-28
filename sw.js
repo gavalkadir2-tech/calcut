@@ -69,8 +69,9 @@ self.addEventListener("push", (event) => {
   } catch (e) {}
 
   const base = {
-    icon: "icons/icon-192.png",
-    badge: "icons/icon-192.png",
+    // Alarm-clock icons so the notification looks like a ringing alarm, not the calculator.
+    icon: "icons/alarm-192.png",
+    badge: "icons/alarm-badge-96.png",
     silent: false,
     data: { url: self.registration.scope },
   };

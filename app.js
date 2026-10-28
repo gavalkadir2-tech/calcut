@@ -857,7 +857,10 @@
     if (!("Notification" in window) || Notification.permission !== "granted") return;
     const timeStr = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
     try {
-      new Notification("Alarm", { body: timeStr, tag: "calcut-alarm", silent: true, requireInteraction: false });
+      new Notification("Alarm", {
+        body: timeStr, tag: "calcut-alarm", silent: true, requireInteraction: false,
+        icon: "icons/alarm-192.png", badge: "icons/alarm-badge-96.png",
+      });
     } catch (e) {}
   }
 
@@ -2127,7 +2130,7 @@
       navigator.serviceWorker.getRegistration().then(reg => {
         if (reg) {
           reg.showNotification("Kaçırılan alarm", {
-            body: timeText, tag: "calcut-call", icon: "icons/icon-192.png", badge: "icons/icon-192.png",
+            body: timeText, tag: "calcut-call", icon: "icons/alarm-192.png", badge: "icons/alarm-badge-96.png",
           });
         }
       }).catch(() => {});
