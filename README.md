@@ -73,3 +73,8 @@ sahte nesnelerle çalıştırır. Her PR'da GitHub Actions'ta otomatik çalış�
 elle çalıştırmak için Node 22 ile:
 
     node --test tests/*.test.js
+
+Kural testleri (`tests/firestore-rules/`) kuralları Firebase emülatöründe
+çalıştırır ve her PR'da otomatik koşar. Elle çalıştırmak için (Java gerekir):
+
+    cd tests/firestore-rules && npm ci && npm test

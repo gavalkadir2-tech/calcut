@@ -12,6 +12,19 @@ service cloud.firestore {
     }
 
     // ---------------- users ----------------
+    // A profile photo, if set, must be a small JPEG data URL (see makeAvatar
+    // in app.js), never a link to somewhere else.
+    // Only the fields this update changes are checked, so an old lastSeen
+    // doesn't block e.g. a nickname change.
+    function validProfileFields(data, changed) {
+      return (!changed.hasAny(['avatar']) || !('avatar' in data) ||
+              (data.avatar is string && data.avatar.size() < 100000 &&
+               data.avatar.matches('data:image/jpeg;base64,[A-Za-z0-9+/=]+'))) &&
+             (!changed.hasAny(['hidePresence']) || data.hidePresence is bool) &&
+             // lastSeen can only be "now" as set by the server, not a made-up time.
+             (!changed.hasAny(['lastSeen']) || !('lastSeen' in data) || data.lastSeen == request.time);
+    }
+
     match /users/{userId} {
       allow read: if isSignedIn();
 
@@ -32,7 +45,9 @@ service cloud.firestore {
 
       allow update: if isSignedIn() && (
         (request.auth.uid == userId &&
-         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['nickname', 'blocked'])) ||
+         request.resource.data.diff(resource.data).affectedKeys()
+           .hasOnly(['nickname', 'blocked', 'avatar', 'lastSeen', 'hidePresence']) &&
+         validProfileFields(request.resource.data, request.resource.data.diff(resource.data).affectedKeys())) ||
         (request.auth.uid == resource.data.referredBy &&
          resource.data.status == "pending" &&
          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status']) &&
