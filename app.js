@@ -1451,6 +1451,7 @@
     document.getElementById("new-pin-input").value = "";
     document.getElementById("settings-msg").textContent = "";
     document.getElementById("biometric-msg").textContent = "";
+    renderBiometricButtons();
     const alarmMsgEl = document.getElementById("alarm-msg");
     alarmMsgEl.textContent = pushStatusText();
     if (!currentPushToken && "Notification" in window && Notification.permission === "granted") {
@@ -1632,10 +1633,24 @@
         },
       });
       localStorage.setItem(STORAGE_BIOMETRIC, b64encode(cred.rawId));
+      renderBiometricButtons();
       msgEl.textContent = "Biyometrik onay etkinleştirildi.";
     } catch (e) {
       msgEl.textContent = "Biyometrik kayıt başarısız: " + e.message;
     }
+  });
+
+  function renderBiometricButtons() {
+    const enabled = !!localStorage.getItem(STORAGE_BIOMETRIC);
+    document.getElementById("enable-biometric-btn").classList.toggle("hidden", enabled);
+    document.getElementById("disable-biometric-btn").classList.toggle("hidden", !enabled);
+  }
+
+  document.getElementById("disable-biometric-btn").addEventListener("click", () => {
+    if (!confirm("Biyometrik onay kaldırılsın mı? Kilit yalnızca PIN ile açılacak.")) return;
+    localStorage.removeItem(STORAGE_BIOMETRIC);
+    renderBiometricButtons();
+    document.getElementById("biometric-msg").textContent = "Biyometrik onay kaldırıldı.";
   });
 
   document.getElementById("enable-alarm-btn").addEventListener("click", async () => {
