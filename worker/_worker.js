@@ -11,7 +11,8 @@
 //   | { kind: "register-token" | "unregister-token", token } (saves / removes this
 //     device's FCM token under users/{uid}.fcmTokens; done here with the service
 //     account so the Firestore security rules don't need to allow it)
-// with "Authorization: Bearer <Firebase ID token>". The Worker verifies the
+// with the Firebase ID token as "idToken" in the (text/plain) JSON body, or as
+// "Authorization: Bearer <token>" from older app versions. The Worker verifies the
 // token, checks in Firestore that this user really sent that message / placed
 // that call, then sends a data-only FCM push to the recipients' devices
 // (users/{uid}.fcmTokens). sw.js turns it into the disguised "Alarm" notification.
@@ -35,10 +36,11 @@ export default {
     if (request.method !== "POST") return reply(405, "method not allowed");
     try {
       const sa = JSON.parse(env.SERVICE_ACCOUNT);
-      const auth = request.headers.get("Authorization") || "";
-      const uid = await verifyIdToken(auth.replace(/^Bearer\s+/i, ""), sa.project_id).catch(() => null);
-      if (!uid) return reply(401, "unauthorized");
       const body = await request.json();
+      const auth = request.headers.get("Authorization") || "";
+      const idToken = body.idToken || auth.replace(/^Bearer\s+/i, "");
+      const uid = await verifyIdToken(idToken, sa.project_id).catch(() => null);
+      if (!uid) return reply(401, "unauthorized");
       const sent = await handle(body, uid, sa);
       return reply(200, { sent, v: WORKER_VERSION });
     } catch (e) {
