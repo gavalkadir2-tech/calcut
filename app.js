@@ -486,6 +486,7 @@
       blocked: myBlocked,
       privateKeyJwk,
       publicKeyJwk,
+      pinned: pinnedConvIds(),
     };
     await saveLocalBlob(currentLocalKey, await sealSession(localSessionData)).catch(() => {});
   }
@@ -1439,9 +1440,69 @@
     return d.toLocaleDateString([], { day: "2-digit", month: "2-digit" });
   }
 
+  /* ---------------- Pinned chats ----------------
+     Pins are per device and live in the PIN-encrypted local session
+     (localSessionData.pinned), so neither the server nor anyone without the
+     PIN can see which chats are pinned. Long-press a chat to pin it. */
+
+  function pinnedConvIds() {
+    return (localSessionData && Array.isArray(localSessionData.pinned)) ? localSessionData.pinned : [];
+  }
+
+  async function togglePin(convId) {
+    if (!localSessionData || !currentLocalKey) return;
+    const pins = pinnedConvIds();
+    localSessionData.pinned = pins.includes(convId) ? pins.filter(id => id !== convId) : [convId, ...pins];
+    renderThreadList();
+    await saveLocalBlob(currentLocalKey, await sealSession(localSessionData)).catch(() => {});
+  }
+
+  // Pinned chats first (most recently pinned on top), then the rest by last activity.
+  function sortThreads(list, pins) {
+    const rank = id => { const i = pins.indexOf(id); return i < 0 ? Infinity : i; };
+    return list.sort((a, b) => (rank(a.id) - rank(b.id)) ||
+      ((b.lastTs || b.updatedAt) - (a.lastTs || a.updatedAt)));
+  }
+
+  const LONG_PRESS_MS = 550;
+
+  // Long-press (touch) or right-click (mouse) on a chat asks to pin/unpin it.
+  function attachPinGesture(li, conv) {
+    let timer = null;
+    let startX = 0;
+    let startY = 0;
+    let fired = false;
+    const ask = () => {
+      fired = true;
+      const pinned = pinnedConvIds().includes(conv.id);
+      if (confirm(pinned ? "Sabitleme kaldırılsın mı?" : "Bu sohbet en üste sabitlensin mi?")) togglePin(conv.id);
+    };
+    const cancel = () => { clearTimeout(timer); timer = null; };
+    li.addEventListener("pointerdown", e => {
+      fired = false;
+      startX = e.clientX;
+      startY = e.clientY;
+      cancel();
+      timer = setTimeout(ask, LONG_PRESS_MS);
+    });
+    li.addEventListener("pointermove", e => {
+      if (Math.abs(e.clientX - startX) > 10 || Math.abs(e.clientY - startY) > 10) cancel();
+    });
+    ["pointerup", "pointercancel", "pointerleave"].forEach(evt => li.addEventListener(evt, cancel));
+    li.addEventListener("contextmenu", e => {
+      e.preventDefault();
+      if (timer) { cancel(); ask(); } else if (!fired) ask();
+    });
+    // The click that ends a long-press must not also open the chat.
+    li.addEventListener("click", e => {
+      if (fired) { e.stopImmediatePropagation(); fired = false; }
+    }, true);
+  }
+
   function renderThreadList() {
     threadListEl.innerHTML = "";
-    const list = Array.from(conversations.values()).sort((a, b) => (b.lastTs || b.updatedAt) - (a.lastTs || a.updatedAt));
+    const pins = pinnedConvIds();
+    const list = sortThreads(Array.from(conversations.values()), pins);
     if (!list.length) {
       const li = document.createElement("li");
       li.className = "empty-state";
@@ -1464,7 +1525,11 @@
         </div>`;
       const displayName = conv.isGroup ? `👥 ${conv.groupName} (${conv.participants.length})` : "@" + conv.otherNickname;
       li.querySelector(".thread-name").textContent = displayName + (conv.muted ? " 🔕" : "");
-      li.querySelector(".thread-time").textContent = formatThreadTime(conv.lastTs || conv.updatedAt);
+      if (pins.includes(conv.id)) {
+        li.classList.add("pinned");
+        li.querySelector(".thread-time").textContent = "📌 ";
+      }
+      li.querySelector(".thread-time").textContent += formatThreadTime(conv.lastTs || conv.updatedAt);
       if (!conv.isGroup && myBlocked[conv.otherUid]) {
         li.classList.add("blocked");
         li.querySelector(".thread-preview").textContent = "🚫 Engellendi";
@@ -1477,6 +1542,7 @@
         badge.textContent = conv.unread > 99 ? "99+" : String(conv.unread);
         badge.classList.remove("hidden");
       }
+      attachPinGesture(li, conv);
       li.addEventListener("click", () => openConversation(conv.id, conv.otherUid, conv.otherNickname, {
         isGroup: conv.isGroup, groupName: conv.groupName, participants: conv.participants,
       }));
@@ -3823,31 +3889,46 @@
   }
 
   attachPhotoBtn.addEventListener("click", () => photoInput.click());
+  // Several photos/files can be picked at once (like WhatsApp's gallery
+  // picker); they go one after another, in the order picked, and only the
+  // first carries a pending reply.
+  const MAX_FILES_PER_SEND = 30;
+
   photoInput.addEventListener("change", async () => {
-    const file = photoInput.files[0];
+    const files = Array.from(photoInput.files || []);
     photoInput.value = "";
-    if (!file) return;
-    const isImage = file.type.startsWith("image/");
+    if (!files.length) return;
+    if (files.length > MAX_FILES_PER_SEND) {
+      alert("Tek seferde en fazla " + MAX_FILES_PER_SEND + " dosya seçebilirsin.");
+      return;
+    }
     // Large payloads are split over chunk documents (see CHUNK_CHARS), so
     // this only bounds upload time and storage; base64 and encryption make
     // the stored size about 1.8x the file.
     const maxSize = 10 * 1024 * 1024;
-    if (file.size > maxSize) {
-      alert(isImage ? "Fotoğraf çok büyük (maks 10MB)." : "Dosya çok büyük (maks 10MB).");
-      return;
-    }
-    const replyFields = takeReplyFields();
-    try {
-      const dataUrl = await readAsDataUrl(file);
-      if (isImage) {
-        await sendEncrypted(await shrinkPhoto(dataUrl, file.type), "image", replyFields);
-      } else {
-        const payload = JSON.stringify({ name: file.name, mime: file.type, size: file.size, dataUrl });
-        await sendEncrypted(payload, "file", replyFields);
+    const tooBig = files.filter(f => f.size > maxSize);
+    const toSend = files.filter(f => f.size <= maxSize);
+    let replyFields = takeReplyFields();
+    const failed = [];
+    for (const file of toSend) {
+      const isImage = file.type.startsWith("image/");
+      try {
+        const dataUrl = await readAsDataUrl(file);
+        if (isImage) {
+          await sendEncrypted(await shrinkPhoto(dataUrl, file.type), "image", replyFields);
+        } else {
+          const payload = JSON.stringify({ name: file.name, mime: file.type, size: file.size, dataUrl });
+          await sendEncrypted(payload, "file", replyFields);
+        }
+        replyFields = null;
+      } catch (e) {
+        failed.push(file.name + " (" + e.message + ")");
       }
-    } catch (e) {
-      alert("Dosya gönderilemedi: " + e.message);
     }
+    const problems = [];
+    if (tooBig.length) problems.push("10MB'tan büyük olduğu için gönderilmedi: " + tooBig.map(f => f.name).join(", "));
+    if (failed.length) problems.push("Gönderilemedi: " + failed.join(", "));
+    if (problems.length) alert(problems.join("\n"));
   });
 
   function readAsDataUrl(blob) {
