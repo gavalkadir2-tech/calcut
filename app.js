@@ -936,6 +936,22 @@
   let currentPushToken = null;
   let lastPushError = null; // shown in Settings so a failed setup isn't silent
 
+  // The Android app (native/) has no web push; it gets an FCM token from its
+  // NativePush plugin instead and registers it with the push server the same way.
+  function nativePush() {
+    const cap = window.Capacitor;
+    if (!cap || !cap.isNativePlatform || !cap.isNativePlatform()) return null;
+    return (cap.Plugins && cap.Plugins.NativePush) || null;
+  }
+  let nativePushState = null; // { configured, notifications, fullScreen }
+
+  async function refreshNativePushState() {
+    const np = nativePush();
+    if (!np) return null;
+    nativePushState = await np.status().catch(() => null);
+    return nativePushState;
+  }
+
   async function pushSupported() {
     if (!("serviceWorker" in navigator) || !("Notification" in window) || !("PushManager" in window)) return false;
     if (!firebase.messaging) return false;
@@ -946,19 +962,35 @@
     }
   }
 
-  async function registerPushToken() {
-    if (!myUid || !("Notification" in window) || Notification.permission !== "granted") return false;
+  // interactive: called from the Settings button, so the Android app may ask
+  // for notification permission; on sign-in it only registers if already allowed.
+  async function registerPushToken(interactive) {
+    const np = nativePush();
+    if (!myUid) return false;
+    if (!np && (!("Notification" in window) || Notification.permission !== "granted")) return false;
     try {
-      if (!(await pushSupported())) throw new Error("bu tarayıcı arka plan bildirimini desteklemiyor");
-      const registration = await navigator.serviceWorker.register("sw.js");
-      await navigator.serviceWorker.ready;
-      const opts = { serviceWorkerRegistration: registration };
-      if (window.FCM_VAPID_KEY) opts.vapidKey = window.FCM_VAPID_KEY;
       let token;
-      try {
-        token = await firebase.messaging().getToken(opts);
-      } catch (e) {
-        throw new Error("cihaz anahtarı alınamadı (" + e.message + ")");
+      if (np) {
+        const st = await refreshNativePushState();
+        if (!st || !st.configured) throw new Error("bu uygulama sürümü arka plan bildirimi için ayarlanmamış");
+        if (!st.notifications && !interactive) return false;
+        try {
+          token = (await np.getToken()).token;
+        } catch (e) {
+          throw new Error(e.message);
+        }
+        await refreshNativePushState();
+      } else {
+        if (!(await pushSupported())) throw new Error("bu tarayıcı arka plan bildirimini desteklemiyor");
+        const registration = await navigator.serviceWorker.register("sw.js");
+        await navigator.serviceWorker.ready;
+        const opts = { serviceWorkerRegistration: registration };
+        if (window.FCM_VAPID_KEY) opts.vapidKey = window.FCM_VAPID_KEY;
+        try {
+          token = await firebase.messaging().getToken(opts);
+        } catch (e) {
+          throw new Error("cihaz anahtarı alınamadı (" + e.message + ")");
+        }
       }
       if (!token) throw new Error("cihaz anahtarı alınamadı");
       // Saved through the push Worker, so the Firestore rules don't have to allow it.
@@ -980,6 +1012,18 @@
   }
 
   function pushStatusText() {
+    if (nativePush()) {
+      const st = nativePushState;
+      if (!st) return "Kontrol ediliyor...";
+      if (!st.configured) return "⚠️ Bu uygulama sürümü arka plan bildirimi için henüz ayarlanmadı.";
+      if (!st.notifications) return "Bildirimler kapalı. Açmak için yukarıdaki düğmeye bas.";
+      if (currentPushToken) {
+        return "✅ Arka plan bildirimleri açık: uygulama kapalıyken de mesaj ve aramalarda alarm çalacak." +
+          (st.fullScreen ? "" : " Kilit ekranında aramanın tam ekran açılması için düğmeye basıp izin ver.");
+      }
+      if (lastPushError) return "⚠️ Bildirimler yalnızca uygulama açıkken çalışıyor: " + lastPushError;
+      return "Kontrol ediliyor...";
+    }
     if (!("Notification" in window)) return "Bu tarayıcı bildirimleri desteklemiyor.";
     if (Notification.permission === "denied") {
       return "Bildirim izni reddedilmiş. Telefon ayarlarından bu uygulamaya bildirim izni ver.";
@@ -994,7 +1038,9 @@
     if (!myUid || !currentPushToken) return;
     try {
       await requestPush({ kind: "unregister-token", token: currentPushToken });
-      await firebase.messaging().deleteToken();
+      const np = nativePush();
+      if (np) await np.deleteToken();
+      else await firebase.messaging().deleteToken();
     } catch (e) {
       console.error("push token remove error", e);
     }
@@ -1047,6 +1093,8 @@
 
   // Once the call is answered/rejected in the app, drop the ringing system notification.
   function closeCallNotifications() {
+    const np = nativePush();
+    if (np) { np.cancelCallNotification().catch(() => {}); return; }
     if (!("serviceWorker" in navigator)) return;
     navigator.serviceWorker.getRegistration().then(reg => {
       if (!reg) return;
@@ -1468,7 +1516,14 @@
     renderBiometricButtons();
     const alarmMsgEl = document.getElementById("alarm-msg");
     alarmMsgEl.textContent = pushStatusText();
-    if (!currentPushToken && "Notification" in window && Notification.permission === "granted") {
+    if (nativePush()) {
+      refreshNativePushState().then(() => {
+        alarmMsgEl.textContent = pushStatusText();
+        if (!currentPushToken) {
+          registerPushToken().catch(() => {}).then(() => { alarmMsgEl.textContent = pushStatusText(); });
+        }
+      });
+    } else if (!currentPushToken && "Notification" in window && Notification.permission === "granted") {
       registerPushToken().catch(() => {}).then(() => { alarmMsgEl.textContent = pushStatusText(); });
     }
     document.getElementById("nickname-change-msg").textContent = "";
@@ -1669,6 +1724,20 @@
 
   document.getElementById("enable-alarm-btn").addEventListener("click", async () => {
     const msgEl = document.getElementById("alarm-msg");
+    const np = nativePush();
+    if (np) {
+      msgEl.textContent = "Kaydediliyor...";
+      try {
+        await registerPushToken(true);
+      } catch (e) {
+        console.error("push token register error", e);
+      }
+      const st = await refreshNativePushState();
+      // Android 14+ only lets an app ring full screen on the lock screen once the user allows it.
+      if (currentPushToken && st && !st.fullScreen) await np.openFullScreenSettings().catch(() => {});
+      msgEl.textContent = pushStatusText();
+      return;
+    }
     const isIos = /iphone|ipad|ipod/i.test(navigator.userAgent) ||
       (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
     const standalone = window.matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;

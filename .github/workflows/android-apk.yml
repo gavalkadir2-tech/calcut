@@ -29,13 +29,36 @@ jobs:
           cache-dependency-path: native/package-lock.json
       - run: npm ci
       - run: npm run sync
-      - name: Build debug APK
+      # Optional secrets (Settings > Secrets and variables > Actions):
+      #   GOOGLE_SERVICES_JSON: google-services.json from the Firebase console,
+      #     enables background notifications.
+      #   ANDROID_KEYSTORE_BASE64 + ANDROID_KEYSTORE_PASSWORD + ANDROID_KEY_ALIAS:
+      #     a fixed signing key, so new builds install over old ones. Without
+      #     them the APK is debug-signed with a different key on every build.
+      - name: Build APK
         working-directory: native/android
-        run: ./gradlew assembleDebug --no-daemon
+        env:
+          GOOGLE_SERVICES_JSON: ${{ secrets.GOOGLE_SERVICES_JSON }}
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        run: |
+          if [ -n "$GOOGLE_SERVICES_JSON" ]; then
+            printf '%s' "$GOOGLE_SERVICES_JSON" > app/google-services.json
+          fi
+          if [ -n "$ANDROID_KEYSTORE_BASE64" ]; then
+            printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.jks"
+            export ANDROID_KEYSTORE_PATH="$RUNNER_TEMP/release.jks"
+            ./gradlew assembleRelease --no-daemon
+            cp app/build/outputs/apk/release/app-release.apk hesap-makinesi.apk
+          else
+            ./gradlew assembleDebug --no-daemon
+            cp app/build/outputs/apk/debug/app-debug.apk hesap-makinesi.apk
+          fi
       - uses: actions/upload-artifact@v4
         with:
           name: hesap-makinesi-apk
-          path: native/android/app/build/outputs/apk/debug/app-debug.apk
+          path: native/android/hesap-makinesi.apk
       # A stable link the phone can open directly (no GitHub login or zip):
       # https://github.com/gavalkadir2-tech/calcut/releases/download/android-test/hesap-makinesi.apk
       - name: Publish to the android-test release
@@ -44,8 +67,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          cp app/build/outputs/apk/debug/app-debug.apk hesap-makinesi.apk
           gh release view android-test >/dev/null 2>&1 || gh release create android-test \
             --prerelease --title "Android deneme sürümü" \
-            --notes "main dalının son hali. Yeni sürümü kurmadan önce eskisini kaldır."
+            --notes "main dalının son hali."
           gh release upload android-test hesap-makinesi.apk --clobber

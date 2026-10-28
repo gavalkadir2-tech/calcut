@@ -106,6 +106,9 @@ function pushToUser_(fs, sa, toUid, fromUid, data) {
         token: token,
         data: data,
         webpush: { headers: { Urgency: "high", TTL: data.kind === "call" ? "45" : "86400" } },
+        // The Android app gets these through native FCM; without "high" Android
+        // holds them back while the phone sleeps.
+        android: { priority: "high", ttl: data.kind === "call" ? "45s" : "86400s" },
       },
     }),
   }));

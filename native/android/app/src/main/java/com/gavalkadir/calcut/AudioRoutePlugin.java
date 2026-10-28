@@ -56,6 +56,11 @@ public class AudioRoutePlugin extends Plugin {
         }
         am.setMode(savedMode != null ? savedMode : AudioManager.MODE_NORMAL);
         savedMode = null;
+        // A call answered from the lock screen must not leave the app showing over it.
+        if (getActivity() instanceof MainActivity) {
+            MainActivity a = (MainActivity) getActivity();
+            a.runOnUiThread(() -> a.setShowOverLockScreen(false));
+        }
         call.resolve();
     }
 
