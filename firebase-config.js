@@ -16,6 +16,10 @@ window.fbDb = firebase.firestore();
 // Web Push certificates > "Generate key pair", then paste the public key here.
 window.FCM_VAPID_KEY = "BE6LNp9930MgkDdY3n1e8yBbGnAbZ_5CregfzuLVsXZ-HI-UM9GIco3aTzfE5DvC7nqHBHvIbgh0HrBRr0m6AJ8";
 
-// URL of the push Worker (worker/push-worker.js) deployed on Cloudflare,
-// e.g. "https://calcut-push.ADIN.workers.dev". Empty = no background push.
-window.PUSH_URL = "https://calcut-bildirim.gavalkadir2.workers.dev";
+// Addresses of the push Worker (worker/_worker.js) on Cloudflare, tried in
+// order until one answers. Put the Cloudflare Pages (*.pages.dev) copy first:
+// some Turkish ISPs block *.workers.dev. Only list addresses you own — the
+// app sends the user's Firebase ID token to them. Empty = no background push.
+window.PUSH_URLS = [
+  "https://calcut-bildirim.gavalkadir2.workers.dev",
+];
