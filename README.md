@@ -64,3 +64,12 @@ bu dosyayla aynı olmalı. Değiştirince ya Firebase konsolunda
 **Firestore → Kurallar** sekmesine dosyanın içeriğini yapıştırıp **Yayınla**'ya
 bas, ya da Firebase CLI ile `firebase deploy --only firestore:rules` çalıştır
 (`firebase.json` bu dosyayı gösteriyor).
+
+## Testler
+
+`tests/` klasöründeki testler `app.js`'in gerçek kodunu (büyük dosyaların
+parçalanması, Android parmak izi kilidi) tarayıcı ve Firebase yerine geçen
+sahte nesnelerle çalıştırır. Her PR'da GitHub Actions'ta otomatik çalışırlar;
+elle çalıştırmak için Node 22 ile:
+
+    node --test tests/*.test.js

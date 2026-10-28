@@ -1581,6 +1581,15 @@
     stopAllMessengerListeners();
     myPrivateKey = null;
     myPublicKey = null;
+    // Nothing that can decrypt the vault, and nothing already decrypted,
+    // stays in memory or on the page while locked; unlocking re-derives it.
+    currentLocalKey = null;
+    currentBioKey = null;
+    localSessionData = null;
+    chunkedPlainCache.clear();
+    currentMessages = [];
+    messageListEl.innerHTML = "";
+    document.getElementById("thread-list").innerHTML = "";
     closeVaultToCalculator();
   }
 
@@ -3501,8 +3510,17 @@
     if (delBtn) {
       if (!confirm("Bu mesaj silinsin mi? (Herkes için)")) return;
       try {
+        // Erase the content and its keys too, not just hide it: a "deleted"
+        // flag alone would leave the encrypted message readable in Firestore.
+        const erase = firebase.firestore.FieldValue.delete();
         await fbDb.collection("conversations").doc(activeConvId).collection("messages")
-          .doc(delBtn.dataset.msgId).update({ deleted: true, deletedAt: firebase.firestore.FieldValue.serverTimestamp() });
+          .doc(delBtn.dataset.msgId).update({
+            deleted: true,
+            deletedAt: firebase.firestore.FieldValue.serverTimestamp(),
+            ciphertext: erase,
+            iv: erase,
+            wrappedKeys: erase,
+          });
         const deletedMsg = currentMessages.find(m => m.id === delBtn.dataset.msgId);
         if (deletedMsg) await deleteChunks(deletedMsg.chunked);
       } catch (e2) {
