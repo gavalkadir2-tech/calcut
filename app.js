@@ -486,7 +486,7 @@
       blocked: myBlocked,
       privateKeyJwk,
       publicKeyJwk,
-      pinned: pinnedConvIds(),
+      ...localPrefsOf(localSessionData),
     };
     await saveLocalBlob(currentLocalKey, await sealSession(localSessionData)).catch(() => {});
   }
@@ -959,6 +959,26 @@
     silent: { name: "Sessiz (sadece titreşim)", play: () => 0 },
   };
 
+  // The Android app can also use the phone's own alarm tone (AlarmSoundPlugin),
+  // which then rings for background notifications too, at alarm volume.
+  function alarmSoundPlugin() {
+    const cap = window.Capacitor;
+    if (!cap || !cap.isNativePlatform || !cap.isNativePlatform()) return null;
+    return (cap.Plugins && cap.Plugins.AlarmSound) || null;
+  }
+  if (alarmSoundPlugin()) {
+    SOUND_PRESETS.phoneAlarm = { name: "📱 Telefonun alarm sesi", native: true, play: () => 0 };
+  }
+
+  // Tells the native side which channel (sound) background notifications use.
+  function syncNativeSoundPref(kind) {
+    const plugin = alarmSoundPlugin();
+    if (!plugin) return;
+    const id = getSoundPref(kind);
+    const sound = id === "phoneAlarm" ? "alarm" : id === "silent" ? "silent" : "default";
+    plugin.setPreference({ kind, sound }).catch(() => {});
+  }
+
   function getSoundPref(kind) {
     try {
       const v = localStorage.getItem("calcut_sound_" + kind);
@@ -969,10 +989,18 @@
 
   function setSoundPref(kind, id) {
     try { localStorage.setItem("calcut_sound_" + kind, id); } catch (e) {}
+    syncNativeSoundPref(kind);
   }
+  syncNativeSoundPref("message");
+  syncNativeSoundPref("call");
 
   // Plays a preset once (message alarm, or a preview in Settings).
   function playSoundOnce(presetId) {
+    if (SOUND_PRESETS[presetId].native) {
+      const plugin = alarmSoundPlugin();
+      if (plugin) plugin.play({ loop: false, maxMs: 4000 }).catch(() => {});
+      return;
+    }
     try {
       const Ctx = window.AudioContext || window.webkitAudioContext;
       if (!Ctx) return;
@@ -1299,7 +1327,7 @@
         if (d.deleted) {
           preview = "Bu mesaj silindi";
         } else if (d.type === "image") {
-          preview = "📷 Fotoğraf";
+          preview = d.viewOnce ? "👁️ Fotoğraf" : "📷 Fotoğraf";
         } else if (d.type === "file") {
           preview = "📄 Dosya";
         } else if (d.type === "audio") {
@@ -1442,13 +1470,32 @@
     return d.toLocaleDateString([], { day: "2-digit", month: "2-digit" });
   }
 
-  /* ---------------- Pinned chats ----------------
-     Pins are per device and live in the PIN-encrypted local session
-     (localSessionData.pinned), so neither the server nor anyone without the
-     PIN can see which chats are pinned. Long-press a chat to pin it. */
+  /* ---------------- Per-device chat preferences ----------------
+     Pinned and archived chats, starred messages and messages deleted "for
+     me" are per device and live in the PIN-encrypted local session, so
+     neither the server nor anyone without the PIN can see them. */
+
+  function localPrefsOf(d) {
+    d = d || {};
+    return {
+      pinned: Array.isArray(d.pinned) ? d.pinned : [],
+      archived: Array.isArray(d.archived) ? d.archived : [],
+      starred: d.starred && typeof d.starred === "object" ? d.starred : {},
+      hiddenMsgs: d.hiddenMsgs && typeof d.hiddenMsgs === "object" ? d.hiddenMsgs : {},
+    };
+  }
+
+  async function saveLocalPrefs() {
+    if (!localSessionData || !currentLocalKey) return;
+    await saveLocalBlob(currentLocalKey, await sealSession(localSessionData)).catch(() => {});
+  }
 
   function pinnedConvIds() {
-    return (localSessionData && Array.isArray(localSessionData.pinned)) ? localSessionData.pinned : [];
+    return localPrefsOf(localSessionData).pinned;
+  }
+
+  function archivedConvIds() {
+    return localPrefsOf(localSessionData).archived;
   }
 
   async function togglePin(convId) {
@@ -1456,7 +1503,37 @@
     const pins = pinnedConvIds();
     localSessionData.pinned = pins.includes(convId) ? pins.filter(id => id !== convId) : [convId, ...pins];
     renderThreadList();
-    await saveLocalBlob(currentLocalKey, await sealSession(localSessionData)).catch(() => {});
+    await saveLocalPrefs();
+  }
+
+  // Archiving also unpins, as in WhatsApp.
+  async function toggleArchive(convId) {
+    if (!localSessionData || !currentLocalKey) return;
+    const archived = archivedConvIds();
+    if (archived.includes(convId)) {
+      localSessionData.archived = archived.filter(id => id !== convId);
+    } else {
+      localSessionData.archived = [convId, ...archived];
+      localSessionData.pinned = pinnedConvIds().filter(id => id !== convId);
+    }
+    renderThreadList();
+    await saveLocalPrefs();
+  }
+
+  // Message ids per conversation: starred, or deleted for me.
+  function msgFlag(field, convId, msgId) {
+    const list = localPrefsOf(localSessionData)[field][convId];
+    return Array.isArray(list) && list.includes(msgId);
+  }
+
+  async function setMsgFlag(field, convId, msgId, on) {
+    if (!localSessionData || !currentLocalKey) return;
+    const map = { ...localPrefsOf(localSessionData)[field] };
+    const list = (map[convId] || []).filter(id => id !== msgId);
+    if (on) list.push(msgId);
+    if (list.length) map[convId] = list; else delete map[convId];
+    localSessionData[field] = map;
+    await saveLocalPrefs();
   }
 
   // Pinned chats first (most recently pinned on top), then the rest by last activity.
@@ -1468,44 +1545,88 @@
 
   const LONG_PRESS_MS = 550;
 
-  // Long-press (touch) or right-click (mouse) on a chat asks to pin/unpin it.
-  function attachPinGesture(li, conv) {
+  // Long-press (touch) or right-click (mouse) runs onLongPress; the click that
+  // ends a long-press doesn't also count as a tap.
+  function attachLongPress(el, onLongPress) {
     let timer = null;
     let startX = 0;
     let startY = 0;
     let fired = false;
-    const ask = () => {
-      fired = true;
-      const pinned = pinnedConvIds().includes(conv.id);
-      if (confirm(pinned ? "Sabitleme kaldırılsın mı?" : "Bu sohbet en üste sabitlensin mi?")) togglePin(conv.id);
-    };
+    const fire = () => { fired = true; timer = null; onLongPress(); };
     const cancel = () => { clearTimeout(timer); timer = null; };
-    li.addEventListener("pointerdown", e => {
+    el.addEventListener("pointerdown", e => {
       fired = false;
       startX = e.clientX;
       startY = e.clientY;
       cancel();
-      timer = setTimeout(ask, LONG_PRESS_MS);
+      timer = setTimeout(fire, LONG_PRESS_MS);
     });
-    li.addEventListener("pointermove", e => {
+    el.addEventListener("pointermove", e => {
       if (Math.abs(e.clientX - startX) > 10 || Math.abs(e.clientY - startY) > 10) cancel();
     });
-    ["pointerup", "pointercancel", "pointerleave"].forEach(evt => li.addEventListener(evt, cancel));
-    li.addEventListener("contextmenu", e => {
+    ["pointerup", "pointercancel", "pointerleave"].forEach(evt => el.addEventListener(evt, cancel));
+    el.addEventListener("contextmenu", e => {
       e.preventDefault();
-      if (timer) { cancel(); ask(); } else if (!fired) ask();
+      if (timer) { cancel(); fire(); } else if (!fired) fire();
     });
-    // The click that ends a long-press must not also open the chat.
-    li.addEventListener("click", e => {
-      if (fired) { e.stopImmediatePropagation(); fired = false; }
+    el.addEventListener("click", e => {
+      if (fired) { e.stopImmediatePropagation(); e.preventDefault(); fired = false; }
     }, true);
   }
+
+  /* ---------------- Action sheet ---------------- */
+
+  const actionSheet = document.getElementById("action-sheet");
+
+  // actions: [{ label, run, danger }]
+  function showActionSheet(title, actions) {
+    document.getElementById("action-sheet-title").textContent = title || "";
+    const list = document.getElementById("action-sheet-list");
+    list.innerHTML = "";
+    actions.forEach(a => {
+      const btn = document.createElement("button");
+      btn.textContent = a.label;
+      if (a.danger) btn.className = "danger";
+      btn.addEventListener("click", () => { hideActionSheet(); a.run(); });
+      list.appendChild(btn);
+    });
+    actionSheet.classList.remove("hidden");
+  }
+
+  function hideActionSheet() {
+    actionSheet.classList.add("hidden");
+  }
+
+  document.getElementById("action-sheet-cancel").addEventListener("click", hideActionSheet);
+  actionSheet.addEventListener("click", e => { if (e.target === actionSheet) hideActionSheet(); });
+
+  function showThreadActions(conv) {
+    const pinned = pinnedConvIds().includes(conv.id);
+    const archived = archivedConvIds().includes(conv.id);
+    const actions = [];
+    if (!archived) actions.push({ label: pinned ? "📌 Sabitlemeyi kaldır" : "📌 Sabitle", run: () => togglePin(conv.id) });
+    actions.push({ label: archived ? "🗄️ Arşivden çıkar" : "🗄️ Arşivle", run: () => toggleArchive(conv.id) });
+    showActionSheet(conv.isGroup ? conv.groupName : "@" + conv.otherNickname, actions);
+  }
+
+  let showingArchived = false;
 
   function renderThreadList() {
     threadListEl.innerHTML = "";
     const pins = pinnedConvIds();
-    const list = sortThreads(Array.from(conversations.values()), pins);
-    if (!list.length) {
+    const archived = archivedConvIds();
+    const all = Array.from(conversations.values());
+    const archivedCount = all.filter(c => archived.includes(c.id)).length;
+    if (showingArchived && !archivedCount) showingArchived = false;
+    const list = sortThreads(all.filter(c => archived.includes(c.id) === showingArchived), pins);
+    if (showingArchived || archivedCount) {
+      const row = document.createElement("li");
+      row.className = "archive-row";
+      row.textContent = showingArchived ? "← Arşivlenmiş sohbetler" : "🗄️ Arşivlenmiş (" + archivedCount + ")";
+      row.addEventListener("click", () => { showingArchived = !showingArchived; renderThreadList(); });
+      threadListEl.appendChild(row);
+    }
+    if (!list.length && !archivedCount) {
       const li = document.createElement("li");
       li.className = "empty-state";
       li.textContent = "Henüz sohbet yok. '+' ile bir kişinin kullanıcı adını ekle.";
@@ -1556,7 +1677,7 @@
         badge.textContent = conv.unread > 99 ? "99+" : String(conv.unread);
         badge.classList.remove("hidden");
       }
-      attachPinGesture(li, conv);
+      attachLongPress(li, () => showThreadActions(conv));
       li.addEventListener("click", () => openConversation(conv.id, conv.otherUid, conv.otherNickname, {
         isGroup: conv.isGroup, groupName: conv.groupName, participants: conv.participants,
       }));
@@ -1666,6 +1787,9 @@
     // Nothing that can decrypt the vault, and nothing already decrypted,
     // stays in memory or on the page while locked; unlocking re-derives it.
     leaveComposer();
+    hideActionSheet();
+    closeImageViewer();
+    showingArchived = false;
     currentLocalKey = null;
     currentBioKey = null;
     localSessionData = null;
@@ -2683,6 +2807,11 @@
   function playRingtone() {
     stopRingtone();
     const preset = SOUND_PRESETS[getSoundPref("call")];
+    if (preset.native) {
+      const plugin = alarmSoundPlugin();
+      if (plugin) plugin.play({ loop: true }).catch(() => {});
+      return;
+    }
     try {
       const Ctx = window.AudioContext || window.webkitAudioContext;
       if (!Ctx) return;
@@ -2697,6 +2826,8 @@
   }
 
   function stopRingtone() {
+    const plugin = alarmSoundPlugin();
+    if (plugin) plugin.stop().catch(() => {}); // harmless when nothing is playing
     if (ringToneTimer) { clearInterval(ringToneTimer); ringToneTimer = null; }
     if (ringToneCtx) { ringToneCtx.close().catch(() => {}); ringToneCtx = null; }
   }
@@ -3476,6 +3607,7 @@
             image: d.type === "image" ? plain : null,
             audio: d.type === "audio" ? plain : null,
             replyTo: d.replyTo || null,
+            viewOnce: !!d.viewOnce,
             file,
             call,
             ts: d.ts ? d.ts.toMillis() : Date.now(),
@@ -3511,11 +3643,20 @@
   const threadSearchCount = document.getElementById("thread-search-count");
   let currentMessages = [];
   let searchQuery = "";
+  let starredOnly = false;
+  const threadStarredBtn = document.getElementById("thread-starred-btn");
+  threadStarredBtn.addEventListener("click", () => {
+    starredOnly = !starredOnly;
+    threadStarredBtn.classList.toggle("active", starredOnly);
+    renderMessages(currentMessages);
+  });
 
   function closeThreadSearch() {
     threadSearchBar.classList.add("hidden");
     threadSearchInput.value = "";
     searchQuery = "";
+    starredOnly = false;
+    threadStarredBtn.classList.remove("active");
     threadSearchCount.textContent = "";
   }
 
@@ -3533,9 +3674,28 @@
     renderMessages(currentMessages);
   });
 
+  const LINK_RE = /\bhttps?:\/\/[^\s<>"]+[^\s<>".,:;'!?)\]]/g;
+
+  // Plain text with http(s) links made tappable.
+  function appendLinkified(container, text) {
+    let cursor = 0;
+    for (const match of text.matchAll(LINK_RE)) {
+      container.appendChild(document.createTextNode(text.slice(cursor, match.index)));
+      const a = document.createElement("a");
+      a.className = "msg-link";
+      a.href = match[0];
+      a.target = "_blank";
+      a.rel = "noopener noreferrer";
+      a.textContent = match[0];
+      container.appendChild(a);
+      cursor = match.index + match[0].length;
+    }
+    container.appendChild(document.createTextNode(text.slice(cursor)));
+  }
+
   function appendHighlightedText(container, text, query) {
     if (!query) {
-      container.textContent = text;
+      appendLinkified(container, text);
       return;
     }
     const lowerText = text.toLowerCase();
@@ -3666,18 +3826,39 @@
 
   document.getElementById("reply-bar-cancel").addEventListener("click", cancelReply);
 
+  function dayLabel(ts) {
+    const d = new Date(ts);
+    const today = new Date();
+    const yesterday = new Date(today.getFullYear(), today.getMonth(), today.getDate() - 1);
+    if (d.toDateString() === today.toDateString()) return "Bugün";
+    if (d.toDateString() === yesterday.toDateString()) return "Dün";
+    return d.toLocaleDateString("tr-TR", d.getFullYear() === today.getFullYear()
+      ? { day: "numeric", month: "long" } : { day: "numeric", month: "long", year: "numeric" });
+  }
+
   function renderMessages(msgs) {
     messageListEl.innerHTML = "";
     const query = searchQuery.trim();
     let matchCount = 0;
+    let lastDay = null;
     msgs.forEach(m => {
       if (m.expiresAtMillis && m.expiresAtMillis <= Date.now()) return;
+      if (msgFlag("hiddenMsgs", activeConvId, m.id)) return; // deleted for me
+      if (starredOnly && !msgFlag("starred", activeConvId, m.id)) return;
       if (query) {
         // Images, call log entries and deleted messages aren't searchable
         // (no text to match), so hide them while filtering; only text
         // messages containing the query are shown.
         if (m.deleted || m.image || !m.text || !m.text.toLowerCase().includes(query.toLowerCase())) return;
         matchCount++;
+      }
+      const day = new Date(m.ts).toDateString();
+      if (day !== lastDay) {
+        lastDay = day;
+        const sep = document.createElement("div");
+        sep.className = "day-sep";
+        sep.textContent = dayLabel(m.ts);
+        messageListEl.appendChild(sep);
       }
       const time = new Date(m.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
       if (m.deleted) {
@@ -3691,6 +3872,7 @@
         timeSpan.className = "msg-time";
         timeSpan.textContent = time;
         div.appendChild(timeSpan);
+        attachLongPress(div, () => showMessageActions(m));
         messageListEl.appendChild(div);
         return;
       }
@@ -3705,6 +3887,7 @@
         timeSpan.className = "msg-time";
         timeSpan.textContent = time;
         callDiv.appendChild(timeSpan);
+        attachLongPress(callDiv, () => showMessageActions(m));
         messageListEl.appendChild(callDiv);
         return;
       }
@@ -3718,7 +3901,13 @@
         div.appendChild(senderLabel);
       }
       if (m.replyTo) div.appendChild(renderQuote(msgs.find(q => q.id === m.replyTo), m.replyTo));
-      if (m.image) {
+      if (m.image && m.viewOnce) {
+        const vo = document.createElement("span");
+        vo.className = "view-once";
+        vo.dataset.msgId = m.id;
+        vo.textContent = m.from === "me" ? "👁️ Tek seferlik fotoğraf" : "👁️ Fotoğraf · açmak için dokun";
+        div.appendChild(vo);
+      } else if (m.image) {
         const img = document.createElement("img");
         img.src = m.image;
         div.appendChild(img);
@@ -3729,6 +3918,15 @@
         audio.src = m.audio;
         div.appendChild(audio);
       } else if (m.file) {
+        const mime = m.file.mime || "";
+        if (mime.startsWith("video/") || mime.startsWith("audio/")) {
+          const media = document.createElement(mime.startsWith("video/") ? "video" : "audio");
+          media.controls = true;
+          media.preload = "metadata";
+          media.playsInline = true;
+          media.src = m.file.dataUrl;
+          div.appendChild(media);
+        }
         const link = document.createElement("a");
         link.className = "file-attachment";
         link.href = m.file.dataUrl;
@@ -3767,43 +3965,17 @@
       timeSpan.className = "msg-time";
       timeSpan.textContent = time;
       metaRow.appendChild(timeSpan);
-      if (m.from === "me") {
-        if (!activeIsGroup) {
-          const tick = document.createElement("span");
-          tick.className = "msg-tick" + (m.read ? " read" : "");
-          tick.textContent = "✓✓";
-          metaRow.appendChild(tick);
-        }
-        if (m.type === "text") {
-          const editBtn = document.createElement("button");
-          editBtn.className = "msg-action msg-edit-btn";
-          editBtn.textContent = "✎";
-          editBtn.dataset.msgId = m.id;
-          metaRow.appendChild(editBtn);
-        }
-        const delBtn = document.createElement("button");
-        delBtn.className = "msg-action msg-delete-btn";
-        delBtn.textContent = "🗑";
-        delBtn.dataset.msgId = m.id;
-        metaRow.appendChild(delBtn);
+      if (msgFlag("starred", activeConvId, m.id)) {
+        const star = document.createElement("span");
+        star.className = "msg-star";
+        star.textContent = "⭐";
+        metaRow.appendChild(star);
       }
-      const reactBtn = document.createElement("button");
-      reactBtn.className = "msg-action msg-react-btn";
-      reactBtn.textContent = "🙂";
-      reactBtn.dataset.msgId = m.id;
-      metaRow.appendChild(reactBtn);
-      const replyBtn = document.createElement("button");
-      replyBtn.className = "msg-action msg-reply-btn";
-      replyBtn.textContent = "↩";
-      replyBtn.title = "Yanıtla";
-      replyBtn.dataset.msgId = m.id;
-      metaRow.appendChild(replyBtn);
-      if (m.type === "text" || m.type === "image" || m.type === "file" || m.type === "audio") {
-        const fwdBtn = document.createElement("button");
-        fwdBtn.className = "msg-action msg-forward-btn";
-        fwdBtn.textContent = "➡️";
-        fwdBtn.dataset.msgId = m.id;
-        metaRow.appendChild(fwdBtn);
+      if (m.from === "me" && !activeIsGroup) {
+        const tick = document.createElement("span");
+        tick.className = "msg-tick" + (m.read ? " read" : "");
+        tick.textContent = "✓✓";
+        metaRow.appendChild(tick);
       }
       div.appendChild(metaRow);
       const reactionEntries = Object.entries(m.reactions || {});
@@ -3823,6 +3995,7 @@
         });
         div.appendChild(row);
       }
+      attachLongPress(div, () => showMessageActions(m));
       messageListEl.appendChild(div);
     });
     messageListEl.scrollTop = messageListEl.scrollHeight;
@@ -3861,32 +4034,136 @@
     });
   });
   document.addEventListener("click", (e) => {
-    if (!reactionPicker.classList.contains("hidden") && !e.target.closest("#reaction-picker") && !e.target.closest(".msg-react-btn")) {
+    if (!reactionPicker.classList.contains("hidden") && !e.target.closest("#reaction-picker") && !e.target.closest("#action-sheet")) {
       hideReactionPicker();
     }
   });
 
-  messageListEl.addEventListener("click", async (e) => {
-    const reactBtn = e.target.closest(".msg-react-btn");
-    if (reactBtn) {
-      const rect = reactBtn.getBoundingClientRect();
-      reactionTargetMsgId = reactBtn.dataset.msgId;
-      reactionPicker.classList.remove("hidden");
-      const pickerRect = reactionPicker.getBoundingClientRect();
-      let left = rect.left - pickerRect.width / 2;
-      left = Math.max(8, Math.min(left, window.innerWidth - pickerRect.width - 8));
-      reactionPicker.style.left = left + "px";
-      reactionPicker.style.top = Math.max(8, rect.top - pickerRect.height - 8) + "px";
-      return;
+  function openReactionPicker(msgId, anchor) {
+    const rect = anchor.getBoundingClientRect();
+    reactionTargetMsgId = msgId;
+    reactionPicker.classList.remove("hidden");
+    const pickerRect = reactionPicker.getBoundingClientRect();
+    let left = rect.left + rect.width / 2 - pickerRect.width / 2;
+    left = Math.max(8, Math.min(left, window.innerWidth - pickerRect.width - 8));
+    reactionPicker.style.left = left + "px";
+    reactionPicker.style.top = Math.max(8, rect.top - pickerRect.height - 8) + "px";
+  }
+
+  async function copyText(text) {
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch (e) {
+      // Older WebViews: copy through a temporary textarea.
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand("copy");
+      ta.remove();
     }
+  }
+
+  async function deleteForEveryone(msgId) {
+    if (!confirm("Bu mesaj herkesten silinsin mi?")) return;
+    try {
+      // Erase the content and its keys too, not just hide it: a "deleted"
+      // flag alone would leave the encrypted message readable in Firestore.
+      const erase = firebase.firestore.FieldValue.delete();
+      await fbDb.collection("conversations").doc(activeConvId).collection("messages").doc(msgId).update({
+        deleted: true,
+        deletedAt: firebase.firestore.FieldValue.serverTimestamp(),
+        ciphertext: erase,
+        iv: erase,
+        wrappedKeys: erase,
+      });
+      const deletedMsg = currentMessages.find(m => m.id === msgId);
+      if (deletedMsg) await deleteChunks(deletedMsg.chunked);
+    } catch (e) {
+      alert("Silinemedi: " + e.message);
+    }
+  }
+
+  async function promptEditMessage(msg) {
+    const newText = prompt("Mesajı düzenle:", msg.text || "");
+    if (newText === null) return;
+    const trimmed = newText.trim();
+    if (!trimmed || trimmed === msg.text) return;
+    try {
+      await editMessage(activeConvId, activeOtherUids, msg.id, trimmed);
+    } catch (e) {
+      alert("Düzenlenemedi: " + e.message);
+    }
+  }
+
+  // Long-press on a message: WhatsApp's action menu.
+  function showMessageActions(m) {
+    const bubble = messageListEl.querySelector('[data-msg-id="' + CSS.escape(m.id) + '"]');
+    const convId = activeConvId;
+    const starred = msgFlag("starred", convId, m.id);
+    const actions = [];
+    if (!m.deleted && !m.call) {
+      actions.push({ label: "↩ Yanıtla", run: () => startReply(m.id) });
+      if (bubble) actions.push({ label: "🙂 Tepki ver", run: () => openReactionPicker(m.id, bubble) });
+    }
+    if (m.text) actions.push({ label: "📋 Kopyala", run: () => copyText(m.text) });
+    if (!m.deleted && !m.viewOnce && (m.type === "text" || m.type === "image" || m.type === "file" || m.type === "audio")) {
+      actions.push({ label: "➡️ İlet", run: () => openForwardModal(m.id) });
+    }
+    if (!m.deleted) {
+      actions.push({ label: starred ? "⭐ Yıldızı kaldır" : "⭐ Yıldızla", run: async () => {
+        await setMsgFlag("starred", convId, m.id, !starred);
+        renderMessages(currentMessages);
+      } });
+    }
+    if (m.from === "me" && m.type === "text" && !m.deleted) {
+      actions.push({ label: "✎ Düzenle", run: () => promptEditMessage(m) });
+    }
+    actions.push({ label: "🙈 Benden sil", danger: true, run: async () => {
+      await setMsgFlag("hiddenMsgs", convId, m.id, true);
+      renderMessages(currentMessages);
+    } });
+    if (m.from === "me" && !m.deleted && !m.call) {
+      actions.push({ label: "🗑 Herkesten sil", danger: true, run: () => deleteForEveryone(m.id) });
+    }
+    showActionSheet(m.text ? m.text.slice(0, 80) : messageSnippet(m), actions);
+  }
+
+  // Opening a view-once photo shows it full screen once; closing the viewer
+  // deletes the message (and its chunks) for both sides.
+  async function openViewOnce(msgId) {
+    const m = currentMessages.find(x => x.id === msgId);
+    if (!m || !m.image || m.from === "me") return;
+    openImageViewer(m.image, {
+      viewOnce: true,
+      onClose: async () => {
+        try {
+          await fbDb.collection("conversations").doc(activeConvId).collection("messages").doc(msgId).delete();
+          await deleteChunks(m.chunked);
+        } catch (e) {}
+      },
+    });
+  }
+
+  messageListEl.addEventListener("click", async (e) => {
     const badge = e.target.closest(".msg-reaction-badge");
     if (badge && badge.classList.contains("mine")) {
       await setMyReaction(activeConvId, badge.dataset.msgId, badge.dataset.emoji);
       return;
     }
-    const replyBtn = e.target.closest(".msg-reply-btn");
-    if (replyBtn) {
-      startReply(replyBtn.dataset.msgId);
+    const link = e.target.closest(".msg-link");
+    if (link) {
+      // In the Android app, open links in the phone's browser, not the app.
+      const updatePlugin = appUpdatePlugin();
+      if (updatePlugin) {
+        e.preventDefault();
+        updatePlugin.openExternal({ url: link.href }).catch(() => {});
+      }
+      return;
+    }
+    const viewOnce = e.target.closest(".msg-bubble.them .view-once");
+    if (viewOnce) {
+      openViewOnce(viewOnce.dataset.msgId);
       return;
     }
     const quote = e.target.closest(".msg-quote");
@@ -3902,48 +4179,6 @@
     }
     if (e.target.tagName === "IMG" && e.target.closest(".msg-bubble")) {
       openImageViewer(e.target.src);
-      return;
-    }
-    const fwdBtn = e.target.closest(".msg-forward-btn");
-    if (fwdBtn) {
-      openForwardModal(fwdBtn.dataset.msgId);
-      return;
-    }
-    const delBtn = e.target.closest(".msg-delete-btn");
-    if (delBtn) {
-      if (!confirm("Bu mesaj silinsin mi? (Herkes için)")) return;
-      try {
-        // Erase the content and its keys too, not just hide it: a "deleted"
-        // flag alone would leave the encrypted message readable in Firestore.
-        const erase = firebase.firestore.FieldValue.delete();
-        await fbDb.collection("conversations").doc(activeConvId).collection("messages")
-          .doc(delBtn.dataset.msgId).update({
-            deleted: true,
-            deletedAt: firebase.firestore.FieldValue.serverTimestamp(),
-            ciphertext: erase,
-            iv: erase,
-            wrappedKeys: erase,
-          });
-        const deletedMsg = currentMessages.find(m => m.id === delBtn.dataset.msgId);
-        if (deletedMsg) await deleteChunks(deletedMsg.chunked);
-      } catch (e2) {
-        alert("Silinemedi: " + e2.message);
-      }
-      return;
-    }
-    const editBtn = e.target.closest(".msg-edit-btn");
-    if (editBtn) {
-      const msg = currentMessages.find(m => m.id === editBtn.dataset.msgId);
-      if (!msg) return;
-      const newText = prompt("Mesajı düzenle:", msg.text || "");
-      if (newText === null) return;
-      const trimmed = newText.trim();
-      if (!trimmed || trimmed === msg.text) return;
-      try {
-        await editMessage(activeConvId, activeOtherUids, editBtn.dataset.msgId, trimmed);
-      } catch (e2) {
-        alert("Düzenlenemedi: " + e2.message);
-      }
     }
   });
 
@@ -4131,6 +4366,16 @@
     attachMenu.classList.add("hidden");
     photoInput.click();
   });
+  const viewOnceInput = document.getElementById("viewonce-input");
+  document.getElementById("attach-viewonce-btn").addEventListener("click", () => {
+    attachMenu.classList.add("hidden");
+    viewOnceInput.click();
+  });
+  viewOnceInput.addEventListener("change", () => {
+    const files = Array.from(viewOnceInput.files || []);
+    viewOnceInput.value = "";
+    sendPickedFiles(files, { viewOnce: true });
+  });
   // Several photos/files can be picked at once (like WhatsApp's gallery
   // picker); they go one after another, in the order picked, and only the
   // first carries a pending reply.
@@ -4142,7 +4387,9 @@
     sendPickedFiles(files);
   }));
 
-  async function sendPickedFiles(files) {
+  // opts.viewOnce: send photos as view-once (opened once, then deleted).
+  async function sendPickedFiles(files, opts) {
+    opts = opts || {};
     if (!files.length) return;
     if (files.length > MAX_FILES_PER_SEND) {
       alert("Tek seferde en fazla " + MAX_FILES_PER_SEND + " dosya seçebilirsin.");
@@ -4162,7 +4409,10 @@
       try {
         const dataUrl = await readAsDataUrl(file);
         if (isImage) {
-          await sendEncrypted(await shrinkPhoto(dataUrl, file.type), "image", replyFields);
+          const fields = opts.viewOnce ? { ...(replyFields || {}), viewOnce: true } : replyFields;
+          await sendEncrypted(await shrinkPhoto(dataUrl, file.type), "image", fields);
+        } else if (opts.viewOnce) {
+          throw new Error("tek seferlik yalnızca fotoğraf olabilir");
         } else {
           const payload = JSON.stringify({ name: file.name, mime: file.type, size: file.size, dataUrl });
           await sendEncrypted(payload, "file", replyFields);
@@ -4306,18 +4556,32 @@
 
   const imageViewer = document.getElementById("image-viewer");
 
-  function openImageViewer(src) {
+  let imageViewerOnClose = null;
+
+  // opts.viewOnce hides the download button; opts.onClose runs when closed.
+  function openImageViewer(src, opts) {
+    opts = opts || {};
     document.getElementById("image-viewer-img").src = src;
     const download = document.getElementById("image-viewer-download");
     download.href = src;
     download.download = "foto" + (src.startsWith("data:image/png") ? ".png" : ".jpg");
+    download.classList.toggle("hidden", !!opts.viewOnce);
+    imageViewerOnClose = opts.onClose || null;
     imageViewer.classList.remove("hidden");
+  }
+
+  function closeImageViewer() {
+    if (imageViewer.classList.contains("hidden")) return;
+    imageViewer.classList.add("hidden");
+    document.getElementById("image-viewer-img").src = "";
+    const onClose = imageViewerOnClose;
+    imageViewerOnClose = null;
+    if (onClose) onClose();
   }
 
   imageViewer.addEventListener("click", (e) => {
     if (e.target.closest("#image-viewer-download")) return;
-    imageViewer.classList.add("hidden");
-    document.getElementById("image-viewer-img").src = "";
+    closeImageViewer();
   });
 
   document.getElementById("thread-back-btn").addEventListener("click", () => {

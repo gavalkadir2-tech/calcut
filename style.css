@@ -804,3 +804,74 @@ button.danger { background: var(--danger); color: #fff; }
   font-size: 15px;
   cursor: pointer;
 }
+
+/* WhatsApp-style action sheet: long-press a message or a chat. */
+#action-sheet {
+  position: fixed;
+  inset: 0;
+  z-index: 900;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+}
+#action-sheet.hidden { display: none; }
+.action-sheet-box {
+  width: 100%;
+  max-width: 480px;
+  background: #1c1f26;
+  border-radius: 16px 16px 0 0;
+  padding: 8px 8px calc(8px + env(safe-area-inset-bottom));
+}
+#action-sheet-title { color: #888; font-size: 13px; padding: 8px 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#action-sheet-title:empty { display: none; }
+#action-sheet-list button, #action-sheet-cancel {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  color: var(--panel-fg);
+  font-size: 16px;
+  padding: 14px 12px;
+  border-radius: 10px;
+  cursor: pointer;
+}
+#action-sheet-list button:active, #action-sheet-cancel:active { background: #2a2e37; }
+#action-sheet-list button.danger { color: var(--danger); }
+#action-sheet-cancel { text-align: center; color: #888; margin-top: 4px; }
+
+/* Message bubbles: long-press for actions; no text selection callout. */
+.msg-bubble { -webkit-touch-callout: none; }
+.day-sep {
+  align-self: center;
+  background: #22252c;
+  color: #aaa;
+  font-size: 12px;
+  padding: 4px 10px;
+  border-radius: 8px;
+  margin: 8px 0;
+}
+.msg-star { font-size: 11px; }
+.msg-link { color: #5ac8fa; text-decoration: underline; word-break: break-all; }
+.msg-bubble video { display: block; max-width: 100%; max-height: 320px; border-radius: 10px; margin-bottom: 4px; }
+.view-once {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 4px;
+  font-size: 14px;
+}
+.msg-bubble.them .view-once { cursor: pointer; text-decoration: underline; }
+#thread-starred-btn {
+  background: #1c1f26;
+  border: 1px solid #333;
+  border-radius: 8px;
+  padding: 6px 10px;
+  cursor: pointer;
+  opacity: 0.5;
+}
+#thread-starred-btn.active { opacity: 1; border-color: var(--accent); }
+
+/* Archived chats: a row at the top of the list, and the archive view's header. */
+#thread-list li.archive-row { flex-direction: row; align-items: center; gap: 12px; color: #aaa; font-size: 14px; }

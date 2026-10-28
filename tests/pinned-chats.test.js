@@ -11,8 +11,8 @@ function load(session) {
     const renderThreadList = () => {};
     const sealSession = async d => ({ sealed: JSON.parse(JSON.stringify(d)) });
     const saveLocalBlob = async (key, d) => { saved.push(d); };
-    ${extract("  function pinnedConvIds()", "  const LONG_PRESS_MS")}
-    return { pinnedConvIds, togglePin, sortThreads, session: () => localSessionData };
+    ${extract("  function localPrefsOf(", "  const LONG_PRESS_MS")}
+    return { pinnedConvIds, togglePin, toggleArchive, archivedConvIds, msgFlag, setMsgFlag, sortThreads, localPrefsOf, session: () => localSessionData };
   `)(session, saved);
   return { api, saved };
 }
@@ -53,4 +53,31 @@ test("while locked (no session) pinning does nothing", async () => {
   await api.togglePin("new");
   assert.deepStrictEqual(api.pinnedConvIds(), []);
   assert.strictEqual(saved.length, 0);
+});
+
+test("archiving hides from pins and can be undone", async () => {
+  const { api } = load({ pinned: ["a"] });
+  await api.toggleArchive("a");
+  assert.deepStrictEqual(api.archivedConvIds(), ["a"]);
+  assert.deepStrictEqual(api.pinnedConvIds(), []);
+  await api.toggleArchive("a");
+  assert.deepStrictEqual(api.archivedConvIds(), []);
+});
+
+test("starred and deleted-for-me flags are per conversation and saved", async () => {
+  const { api, saved } = load({});
+  await api.setMsgFlag("starred", "c1", "m1", true);
+  await api.setMsgFlag("hiddenMsgs", "c1", "m2", true);
+  assert.ok(api.msgFlag("starred", "c1", "m1"));
+  assert.ok(!api.msgFlag("starred", "c2", "m1"));
+  assert.ok(api.msgFlag("hiddenMsgs", "c1", "m2"));
+  await api.setMsgFlag("starred", "c1", "m1", false);
+  assert.ok(!api.msgFlag("starred", "c1", "m1"));
+  assert.deepStrictEqual(saved.at(-1).sealed.hiddenMsgs, { c1: ["m2"] });
+  assert.deepStrictEqual(saved.at(-1).sealed.starred, {});
+});
+
+test("old sessions without these fields read as empty", () => {
+  const { api } = load({ uid: "u1" });
+  assert.deepStrictEqual(api.localPrefsOf({ uid: "u1" }), { pinned: [], archived: [], starred: {}, hiddenMsgs: {} });
 });

@@ -123,6 +123,7 @@
       </div>
       <div id="thread-search-bar" class="hidden">
         <input id="thread-search-input" type="text" placeholder="Bu sohbette ara...">
+        <button id="thread-starred-btn" title="Yalnızca yıldızlı mesajlar">⭐</button>
         <span id="thread-search-count"></span>
       </div>
       <div id="thread-blocked-banner" class="hidden">
@@ -133,6 +134,7 @@
       <div id="attach-menu" class="hidden">
         <button id="attach-camera-btn">📷 Kamera</button>
         <button id="attach-gallery-btn">🖼️ Galeri / Dosya</button>
+        <button id="attach-viewonce-btn">👁️ Tek seferlik</button>
       </div>
       <div id="reply-bar" class="hidden">
         <div class="reply-bar-text">
@@ -145,6 +147,7 @@
         <button id="attach-photo-btn" title="Dosya ekle">📎</button>
         <input id="photo-input" type="file" multiple class="hidden">
         <input id="camera-input" type="file" accept="image/*" capture="environment" class="hidden">
+        <input id="viewonce-input" type="file" accept="image/*" class="hidden">
         <input id="message-input" type="text" placeholder="Mesaj yaz...">
         <button id="voice-btn" title="Sesli mesaj kaydet">🎤</button>
         <button id="message-send-btn">Gönder</button>
@@ -206,7 +209,7 @@
         <button id="enable-alarm-btn">Bildirimleri Etkinleştir</button>
         <button id="test-push-btn" class="ghost">Test bildirimi gönder</button>
         <p id="alarm-msg"></p>
-        <p class="app-version">Sürüm: 26</p>
+        <p class="app-version">Sürüm: 27</p>
         <div id="app-update-section" class="hidden">
           <hr>
           <label>Uygulama güncellemesi</label>
@@ -215,7 +218,7 @@
         </div>
         <hr>
         <label>Bildirim sesleri</label>
-        <p class="hint">Uygulama açıkken çalan sesler. Uygulama kapalıyken telefonun kendi bildirim sesi çalar.</p>
+        <p class="hint">Uygulama açıkken çalan sesler. Uygulama kapalıyken telefonun kendi bildirim sesi çalar; Android uygulamasında "📱 Telefonun alarm sesi" seçilirse kapalıyken de telefonunun alarm sesi, alarm ses seviyesinde çalar.</p>
         <label for="message-sound-select">Mesaj alarmı</label>
         <div class="sound-row">
           <select id="message-sound-select"></select>
@@ -348,6 +351,14 @@
       <button id="new-group-cancel" class="ghost">İptal</button>
       <button id="new-group-create">Grup Oluştur</button>
     </div>
+  </div>
+</div>
+
+<div id="action-sheet" class="hidden">
+  <div class="action-sheet-box">
+    <div id="action-sheet-title"></div>
+    <div id="action-sheet-list"></div>
+    <button id="action-sheet-cancel">İptal</button>
   </div>
 </div>
 

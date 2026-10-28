@@ -34,6 +34,19 @@ public class AppUpdatePlugin extends Plugin {
         }
     }
 
+    /** Opens a link from a message in the phone's browser, outside the app. */
+    @PluginMethod
+    public void openExternal(PluginCall call) {
+        String url = call.getString("url");
+        if (url == null || !(url.startsWith("https://") || url.startsWith("http://"))) {
+            call.reject("invalid url");
+            return;
+        }
+        Intent i = new Intent(Intent.ACTION_VIEW, Uri.parse(url)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        getContext().startActivity(i);
+        call.resolve();
+    }
+
     /** Opens the APK link in the browser, which downloads it for the installer. */
     @PluginMethod
     public void openDownload(PluginCall call) {

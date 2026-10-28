@@ -25,6 +25,12 @@ final class Notifier {
 
     private static final String CHANNEL_MESSAGES = "alarm-messages";
     private static final String CHANNEL_CALLS = "alarm-calls";
+    // A channel's sound can't change once created, so each sound choice in
+    // Settings (AlarmSoundPlugin) has its own channel.
+    private static final String CHANNEL_MESSAGES_ALARM = "alarm-messages-alarmtone";
+    private static final String CHANNEL_CALLS_ALARM = "alarm-calls-alarmtone";
+    private static final String CHANNEL_MESSAGES_SILENT = "alarm-messages-silent";
+    private static final String CHANNEL_CALLS_SILENT = "alarm-calls-silent";
     private static final int ID_MESSAGE = 1;
     private static final int ID_CALL = 2;
     // Matches the TTL the push server gives call pushes.
@@ -34,7 +40,7 @@ final class Notifier {
 
     static void showMessage(Context ctx) {
         ensureChannels(ctx);
-        NotificationCompat.Builder b = base(ctx, CHANNEL_MESSAGES, "Alarm", openAppIntent(ctx, false))
+        NotificationCompat.Builder b = base(ctx, messageChannel(ctx), "Alarm", openAppIntent(ctx, false))
             .setCategory(NotificationCompat.CATEGORY_ALARM)
             .setAutoCancel(true);
         manager(ctx).notify(ID_MESSAGE, b.build());
@@ -43,7 +49,7 @@ final class Notifier {
     static void showIncomingCall(Context ctx) {
         ensureChannels(ctx);
         PendingIntent open = openAppIntent(ctx, true);
-        NotificationCompat.Builder b = base(ctx, CHANNEL_CALLS, "Alarm", open)
+        NotificationCompat.Builder b = base(ctx, callChannel(ctx), "Alarm", open)
             .setCategory(NotificationCompat.CATEGORY_CALL)
             .setPriority(NotificationCompat.PRIORITY_MAX)
             .setFullScreenIntent(open, true)
@@ -60,10 +66,26 @@ final class Notifier {
     static void showMissedCall(Context ctx) {
         ensureChannels(ctx);
         cancelCall(ctx);
-        NotificationCompat.Builder b = base(ctx, CHANNEL_MESSAGES, "Kaçırılan alarm", openAppIntent(ctx, false))
+        NotificationCompat.Builder b = base(ctx, messageChannel(ctx), "Kaçırılan alarm", openAppIntent(ctx, false))
             .setCategory(NotificationCompat.CATEGORY_MISSED_CALL)
             .setAutoCancel(true);
         manager(ctx).notify(ID_CALL, b.build());
+    }
+
+    private static String messageChannel(Context ctx) {
+        switch (AlarmSoundPlugin.soundFor(ctx, "message")) {
+            case "alarm": return CHANNEL_MESSAGES_ALARM;
+            case "silent": return CHANNEL_MESSAGES_SILENT;
+            default: return CHANNEL_MESSAGES;
+        }
+    }
+
+    private static String callChannel(Context ctx) {
+        switch (AlarmSoundPlugin.soundFor(ctx, "call")) {
+            case "alarm": return CHANNEL_CALLS_ALARM;
+            case "silent": return CHANNEL_CALLS_SILENT;
+            default: return CHANNEL_CALLS;
+        }
     }
 
     static void cancelCall(Context ctx) {
@@ -100,6 +122,38 @@ final class Notifier {
             NotificationChannel c = new NotificationChannel(CHANNEL_MESSAGES, "Alarmlar", NotificationManager.IMPORTANCE_HIGH);
             c.enableVibration(true);
             c.setVibrationPattern(new long[] {0, 300, 150, 300, 150, 300});
+            c.setLockscreenVisibility(Notification.VISIBILITY_PUBLIC);
+            nm.createNotificationChannel(c);
+        }
+        if (nm.getNotificationChannel(CHANNEL_MESSAGES_ALARM) == null) {
+            NotificationChannel c = new NotificationChannel(CHANNEL_MESSAGES_ALARM, "Alarmlar (telefonun alarm sesi)", NotificationManager.IMPORTANCE_HIGH);
+            c.setSound(AlarmSoundPlugin.alarmUri(), AlarmSoundPlugin.alarmAttributes());
+            c.enableVibration(true);
+            c.setVibrationPattern(new long[] {0, 300, 150, 300, 150, 300});
+            c.setLockscreenVisibility(Notification.VISIBILITY_PUBLIC);
+            nm.createNotificationChannel(c);
+        }
+        if (nm.getNotificationChannel(CHANNEL_CALLS_ALARM) == null) {
+            NotificationChannel c = new NotificationChannel(CHANNEL_CALLS_ALARM, "Çalan alarmlar (telefonun alarm sesi)", NotificationManager.IMPORTANCE_HIGH);
+            c.setSound(AlarmSoundPlugin.alarmUri(), AlarmSoundPlugin.alarmAttributes());
+            c.enableVibration(true);
+            c.setVibrationPattern(new long[] {0, 800, 400, 800, 400, 800, 400, 800});
+            c.setLockscreenVisibility(Notification.VISIBILITY_PUBLIC);
+            nm.createNotificationChannel(c);
+        }
+        if (nm.getNotificationChannel(CHANNEL_MESSAGES_SILENT) == null) {
+            NotificationChannel c = new NotificationChannel(CHANNEL_MESSAGES_SILENT, "Alarmlar (sessiz)", NotificationManager.IMPORTANCE_HIGH);
+            c.setSound(null, null);
+            c.enableVibration(true);
+            c.setVibrationPattern(new long[] {0, 300, 150, 300, 150, 300});
+            c.setLockscreenVisibility(Notification.VISIBILITY_PUBLIC);
+            nm.createNotificationChannel(c);
+        }
+        if (nm.getNotificationChannel(CHANNEL_CALLS_SILENT) == null) {
+            NotificationChannel c = new NotificationChannel(CHANNEL_CALLS_SILENT, "Çalan alarmlar (sessiz)", NotificationManager.IMPORTANCE_HIGH);
+            c.setSound(null, null);
+            c.enableVibration(true);
+            c.setVibrationPattern(new long[] {0, 800, 400, 800, 400, 800, 400, 800});
             c.setLockscreenVisibility(Notification.VISIBILITY_PUBLIC);
             nm.createNotificationChannel(c);
         }
