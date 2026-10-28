@@ -126,11 +126,25 @@
         <button id="thread-unblock-btn">Engeli Kaldır</button>
       </div>
       <div id="message-list"></div>
+      <div id="reply-bar" class="hidden">
+        <div class="reply-bar-text">
+          <span id="reply-bar-sender"></span>
+          <span id="reply-bar-snippet"></span>
+        </div>
+        <button id="reply-bar-cancel" title="Yanıtı iptal et">✕</button>
+      </div>
       <div class="message-input-row">
         <button id="attach-photo-btn" title="Dosya ekle">📎</button>
         <input id="photo-input" type="file" class="hidden">
         <input id="message-input" type="text" placeholder="Mesaj yaz...">
+        <button id="voice-btn" title="Sesli mesaj kaydet">🎤</button>
         <button id="message-send-btn">Gönder</button>
+        <div id="voice-recording">
+          <button id="voice-cancel-btn" title="Kaydı sil">✕</button>
+          <span class="rec-dot"></span>
+          <span id="voice-timer">0:00</span>
+          <button id="voice-send-btn">Gönder</button>
+        </div>
       </div>
     </div>
 
@@ -167,7 +181,7 @@
         <button id="enable-alarm-btn">Bildirimleri Etkinleştir</button>
         <button id="test-push-btn" class="ghost">Test bildirimi gönder</button>
         <p id="alarm-msg"></p>
-        <p class="app-version">Sürüm: 22</p>
+        <p class="app-version">Sürüm: 23</p>
         <div id="app-update-section" class="hidden">
           <hr>
           <label>Uygulama güncellemesi</label>
@@ -310,6 +324,11 @@
       <button id="new-group-create">Grup Oluştur</button>
     </div>
   </div>
+</div>
+
+<div id="image-viewer" class="hidden">
+  <img id="image-viewer-img" alt="">
+  <a id="image-viewer-download" download="foto.jpg" title="İndir">⬇</a>
 </div>
 
 <script src="https://www.gstatic.com/firebasejs/10.13.1/firebase-app-compat.js"></script>
