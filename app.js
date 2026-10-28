@@ -910,7 +910,7 @@
         throw new Error("anahtar kaydedilemedi, sunucu hatası " + r.status + " (" + JSON.stringify(r.data) + ")");
       }
       if (!r.data || !(r.data.v >= 3)) {
-        throw new Error("Cloudflare'deki bildirim sunucusunun kodu eski (worker/_worker.js güncellenmeli).");
+        throw new Error("Bildirim sunucusunun kodu eski, güncellenmesi gerekiyor.");
       }
       currentPushToken = token;
       lastPushError = null;
@@ -945,9 +945,12 @@
 
   // Fire-and-forget: the Worker checks with Firestore that this user really
   // sent the message / placed the call before pushing anything.
-  // Resolves to { status, data } (data is the Worker's JSON reply) or { error }.
+  // Resolves to { status, data } (data is the server's JSON reply) or { error }.
   // Tries each address in PUSH_URLS until one is reachable (an ISP may block
   // one of the domains) and sticks with the first that answers.
+  // Sent as a "simple" request (text/plain body, ID token inside it, no
+  // Authorization header) so there's no CORS preflight: the Apps Script
+  // server (apps-script/Code.gs) can't answer one.
   const pushUrls = window.PUSH_URLS || (window.PUSH_URL ? [window.PUSH_URL] : []);
   let pushUrlIndex = 0;
 
@@ -965,15 +968,17 @@
       try {
         const res = await fetch(pushUrls[idx], {
           method: "POST",
-          headers: { "Content-Type": "application/json", "Authorization": "Bearer " + idToken },
-          body: JSON.stringify(body),
+          headers: { "Content-Type": "text/plain;charset=utf-8" },
+          body: JSON.stringify(Object.assign({ idToken }, body)),
           keepalive: true,
         });
         const data = await res.json().catch(() => null);
         // A reply that isn't our JSON (e.g. a placeholder page) counts as unreachable.
         if (!data) { lastError = pushUrls[idx] + " geçersiz yanıt (" + res.status + ")"; continue; }
         pushUrlIndex = idx;
-        return { status: res.status, data };
+        // Apps Script always answers 200 and reports failures as { error }.
+        const status = res.status === 200 && data.error ? 500 : res.status;
+        return { status, data };
       } catch (e) {
         lastError = pushUrls[idx] + ": " + e.message;
       }
@@ -1621,7 +1626,7 @@
     if (r.error) {
       msgEl.textContent = "⚠️ Bildirim sunucusuna ulaşılamadı: " + r.error;
     } else if (r.status === 200 && r.data && !(r.data.v >= 3)) {
-      msgEl.textContent = "⚠️ Cloudflare'deki bildirim sunucusunun kodu eski (worker/_worker.js güncellenmeli).";
+      msgEl.textContent = "⚠️ Bildirim sunucusunun kodu eski, güncellenmesi gerekiyor.";
     } else if (r.status === 200 && r.data && r.data.sent > 0) {
       msgEl.textContent = "✅ Test bildirimi gönderildi. Birkaç saniye içinde \"Alarm\" bildirimi gelmeli. Geldiyse kurulum tamam.";
     } else if (r.status === 200) {

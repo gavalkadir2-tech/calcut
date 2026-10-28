@@ -6,9 +6,12 @@ Uygulama kapalıyken (ya da telefon kilitliyken) yeni mesaj ve gelen arama
 için "Alarm" görünümlü, sesli ve titreşimli bildirim gelir. Firebase'in
 ücretsiz (Spark) planında çalışır; kredi kartı gerekmez.
 
-- `worker/_worker.js`: Cloudflare'de (ücretsiz) çalışan küçük sunucu. Uygulama mesaj gönderince / arama başlatınca buna haber verir; Worker
-  gönderenin gerçekten o kişi olduğunu Firestore'dan doğrulayıp alıcının
-  cihazlarına Firebase Cloud Messaging (FCM) ile push gönderir.
+- `apps-script/Code.gs`: Google Apps Script'te (ücretsiz, `script.google.com`)
+  çalışan küçük bildirim sunucusu. Uygulama mesaj gönderince / arama başlatınca
+  buna haber verir; sunucu gönderenin gerçekten o kişi olduğunu Firestore'dan
+  doğrulayıp alıcının cihazlarına Firebase Cloud Messaging (FCM) ile push gönderir.
+- `worker/_worker.js`: Aynı sunucunun Cloudflare sürümü (yedek). Bazı Türk
+  internet sağlayıcıları `*.workers.dev` ve `*.pages.dev` adreslerini engelliyor.
 - `sw.js`: Push'u alıp bildirimi gösterir. Arama çalarken 8 saniyede bir
   yeniden çalar, cevapsız kalırsa "Cevapsız" olur. Bildirime dokununca uygulama
   açılır; PIN girildikten sonra hâlâ çalan arama ekrana gelir (arama 45 sn çalar).
@@ -19,22 +22,23 @@ için "Alarm" görünümlü, sesli ve titreşimli bildirim gelir. Firebase'in
 2. **Servis hesabı anahtarı:** Firebase konsolu → Proje ayarları →
    *Hizmet hesapları (Service accounts)* → "Yeni özel anahtar oluştur" →
    bir `.json` dosyası iner. Bu dosya gizlidir, kimseyle paylaşma, GitHub'a koyma.
-3. **Cloudflare Pages (bildirim sunucusu):** Bazı Türk internet sağlayıcıları
-   `*.workers.dev` adreslerini engellediği için sunucu `*.pages.dev` üzerinde
-   çalıştırılır. GitHub'a bağlı olduğu için kod güncellenince kendiliğinden yayınlanır.
-   1. https://dash.cloudflare.com → *Workers & Pages* → *Create* → **Pages** sekmesi →
-      *Import an existing Git repository* → `gavalkadir2-tech/calcut` → *Begin setup*.
-   2. Project name: `calcut-bildirim` · Production branch: `main` ·
-      Framework preset: *None* · Build command: **boş** ·
-      Build output directory: **`worker`** → *Save and Deploy*.
-   3. Proje → *Settings* → *Variables and Secrets* → *Add* → Tür: **Secret**,
-      Ad: `SERVICE_ACCOUNT`, Değer: 2. adımda inen `.json` dosyasının tüm içeriği → *Save*.
-   4. *Deployments* → en üstteki dağıtım → *⋯* → *Retry deployment* (secret'ın
-      devreye girmesi için).
-   5. Proje adresini (ör. `https://calcut-bildirim.pages.dev`) VPN'siz açınca
-      `"method not allowed"` yazmalı. Bu adresi `firebase-config.js` içindeki
-      `window.PUSH_URLS` listesinin başına ekle. Sadece kendi adreslerini ekle:
-      uygulama bu adreslere kullanıcının giriş anahtarını gönderir.
+3. **Google Apps Script (bildirim sunucusu):**
+   1. https://script.google.com → *Yeni proje*. Proje adını `calcut-bildirim` yap.
+   2. `Code.gs` içindekini tamamen sil, `apps-script/Code.gs` dosyasının tamamını
+      yapıştır → *Kaydet* (💾).
+   3. Soldaki ⚙️ *Proje Ayarları* → en altta *Komut dosyası özellikleri* →
+      *Komut dosyası özelliği ekle* → Özellik: `SERVICE_ACCOUNT`, Değer: 2. adımda
+      inen `.json` dosyasının tüm içeriği → *Komut dosyası özelliklerini kaydet*.
+   4. Sağ üstte *Dağıt* → *Yeni dağıtım* → ⚙️ → *Web uygulaması* →
+      Şu kullanıcı olarak yürüt: **Ben** · Erişimi olanlar: **Herkes** → *Dağıt*.
+   5. *Erişimi yetkilendir* → Google hesabını seç → "Google bu uygulamayı
+      doğrulamadı" çıkarsa *Gelişmiş* → *calcut-bildirim (güvenli değil) sayfasına
+      git* → *İzin ver*. (Uygulama senin kendi kodun olduğu için bu uyarı normal.)
+   6. Çıkan *Web uygulaması URL'sini* (`https://script.google.com/macros/s/…/exec`)
+      kopyala, `firebase-config.js` içindeki `window.PUSH_URLS` listesinin başına
+      ekle. Adresi tarayıcıda açınca `"method not allowed"` yazmalı.
+   7. Kodu sonradan güncellersen: *Dağıt* → *Dağıtımları yönet* → ✏️ → Sürüm:
+      *Yeni sürüm* → *Dağıt* (adres değişmez).
 4. **Firestore kuralı gerekmez:** Cihaz anahtarları (`users/{uid}.fcmTokens`)
    sunucu tarafından servis hesabıyla kaydedilir.
 5. Siteyi her zamanki gibi HTTPS üzerinden yayınla.
