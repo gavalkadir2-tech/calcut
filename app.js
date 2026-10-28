@@ -829,28 +829,78 @@
   // while the tab/PWA is open; when it's closed, the FCM push below (handled
   // in sw.js) shows the same disguised notification instead.
 
-  function playAlarmSound() {
+  // ---- Selectable alarm sounds (Settings > Bildirim sesleri), generated with
+  // WebAudio. The choice is per device (localStorage). Each preset schedules
+  // one "ring" starting at t0 and returns its length in seconds; incoming calls
+  // repeat it. These only play while the app is open; a closed app's push
+  // notification uses the phone's own notification sound.
+
+  function tone(ctx, t, freq, len, type, vol) {
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = type || "sine";
+    osc.frequency.value = freq;
+    gain.gain.setValueAtTime(0.0001, t);
+    gain.gain.exponentialRampToValueAtTime(vol || 0.3, t + 0.02);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t + len);
+    osc.connect(gain).connect(ctx.destination);
+    osc.start(t);
+    osc.stop(t + len + 0.05);
+  }
+
+  const SOUND_PRESETS = {
+    classic: { name: "Klasik alarm", play: (ctx, t) => {
+      for (let i = 0; i < 4; i++) tone(ctx, t + i * 0.5, 880, 0.3, "sine", 0.35);
+      return 2;
+    } },
+    digital: { name: "Dijital saat", play: (ctx, t) => {
+      [0, 0.12, 0.24, 0.36, 0.8, 0.92, 1.04, 1.16].forEach(o => tone(ctx, t + o, 2000, 0.08, "square", 0.08));
+      return 1.4;
+    } },
+    bell: { name: "Zil", play: (ctx, t) => {
+      [0, 0.8].forEach(o => {
+        tone(ctx, t + o, 660, 1.1, "sine", 0.3);
+        tone(ctx, t + o, 1320, 0.7, "sine", 0.12);
+        tone(ctx, t + o, 1980, 0.4, "sine", 0.06);
+      });
+      return 1.9;
+    } },
+    melody: { name: "Yumuşak melodi", play: (ctx, t) => {
+      [523, 659, 784, 1047].forEach((f, i) => tone(ctx, t + i * 0.22, f, 0.4, "triangle", 0.3));
+      return 1.3;
+    } },
+    rising: { name: "Yükselen bip", play: (ctx, t) => {
+      for (let i = 0; i < 6; i++) tone(ctx, t + i * 0.22, 600 + i * 120, 0.15, "sine", 0.3);
+      return 1.4;
+    } },
+    silent: { name: "Sessiz (sadece titreşim)", play: () => 0 },
+  };
+
+  function getSoundPref(kind) {
+    try {
+      const v = localStorage.getItem("calcut_sound_" + kind);
+      if (v && SOUND_PRESETS[v]) return v;
+    } catch (e) {}
+    return "classic";
+  }
+
+  function setSoundPref(kind, id) {
+    try { localStorage.setItem("calcut_sound_" + kind, id); } catch (e) {}
+  }
+
+  // Plays a preset once (message alarm, or a preview in Settings).
+  function playSoundOnce(presetId) {
     try {
       const Ctx = window.AudioContext || window.webkitAudioContext;
       if (!Ctx) return;
       const ctx = new Ctx();
-      const now = ctx.currentTime;
-      const beeps = 4;
-      for (let i = 0; i < beeps; i++) {
-        const start = now + i * 0.5;
-        const osc = ctx.createOscillator();
-        const gain = ctx.createGain();
-        osc.type = "sine";
-        osc.frequency.value = 880;
-        gain.gain.setValueAtTime(0.0001, start);
-        gain.gain.exponentialRampToValueAtTime(0.35, start + 0.05);
-        gain.gain.exponentialRampToValueAtTime(0.0001, start + 0.3);
-        osc.connect(gain).connect(ctx.destination);
-        osc.start(start);
-        osc.stop(start + 0.35);
-      }
-      setTimeout(() => ctx.close().catch(() => {}), (beeps * 0.5 + 1) * 1000);
+      const len = SOUND_PRESETS[presetId].play(ctx, ctx.currentTime);
+      setTimeout(() => ctx.close().catch(() => {}), (len + 1) * 1000);
     } catch (e) {}
+  }
+
+  function playAlarmSound() {
+    playSoundOnce(getSoundPref("message"));
   }
 
   function showAlarmNotification() {
@@ -1620,6 +1670,29 @@
     }
   });
 
+  // Settings > Bildirim sesleri: one picker for the message alarm, one for calls.
+  [["message", "message-sound-select", "message-sound-preview"],
+   ["call", "call-sound-select", "call-sound-preview"]].forEach(([kind, selectId, previewId]) => {
+    const select = document.getElementById(selectId);
+    Object.keys(SOUND_PRESETS).forEach(id => {
+      const opt = document.createElement("option");
+      opt.value = id;
+      opt.textContent = SOUND_PRESETS[id].name;
+      select.appendChild(opt);
+    });
+    select.value = getSoundPref(kind);
+    select.addEventListener("change", () => {
+      setSoundPref(kind, select.value);
+      playSoundOnce(select.value);
+    });
+    document.getElementById(previewId).addEventListener("click", () => {
+      playSoundOnce(select.value);
+      if (navigator.vibrate) {
+        try { navigator.vibrate([300, 150, 300]); } catch (e) {}
+      }
+    });
+  });
+
   document.getElementById("test-push-btn").addEventListener("click", async () => {
     const msgEl = document.getElementById("alarm-msg");
     if (!currentPushToken) {
@@ -2148,7 +2221,7 @@
     callStatusEl.textContent = isVideoCall ? "Gelen görüntülü arama..." : "Gelen arama...";
     enterAlarmMode(data.fromNickname || "");
     callActionsIncoming.classList.remove("hidden");
-    playRingtone(true);
+    playRingtone();
     if (navigator.vibrate) {
       try { navigator.vibrate([400, 200, 400, 200, 400]); } catch (e) {}
     }
@@ -2215,31 +2288,20 @@
     exitAlarmMode();
   }
 
-  // alarmStyle: fast high beeps like a clock alarm (incoming calls) instead of a phone ring.
-  function playRingtone(alarmStyle) {
+  // Incoming-call ring: repeats the sound chosen in Settings ("Arama alarmı").
+  function playRingtone() {
     stopRingtone();
+    const preset = SOUND_PRESETS[getSoundPref("call")];
     try {
       const Ctx = window.AudioContext || window.webkitAudioContext;
       if (!Ctx) return;
       ringToneCtx = new Ctx();
       const ring = () => {
-        if (!ringToneCtx) return;
-        const now = ringToneCtx.currentTime;
-        (alarmStyle ? [0, 0.25, 0.5, 0.75] : [0, 0.3]).forEach(offset => {
-          const osc = ringToneCtx.createOscillator();
-          const gain = ringToneCtx.createGain();
-          osc.type = "sine";
-          osc.frequency.value = alarmStyle ? 880 : 660;
-          gain.gain.setValueAtTime(0.0001, now + offset);
-          gain.gain.exponentialRampToValueAtTime(0.25, now + offset + 0.05);
-          gain.gain.exponentialRampToValueAtTime(0.0001, now + offset + 0.28);
-          osc.connect(gain).connect(ringToneCtx.destination);
-          osc.start(now + offset);
-          osc.stop(now + offset + 0.3);
-        });
+        if (!ringToneCtx) return 0;
+        return preset.play(ringToneCtx, ringToneCtx.currentTime);
       };
-      ring();
-      ringToneTimer = setInterval(ring, 1600);
+      const len = ring();
+      if (len > 0) ringToneTimer = setInterval(ring, Math.max(1.6, len + 0.6) * 1000);
     } catch (e) {}
   }
 

@@ -164,7 +164,20 @@
         <button id="enable-alarm-btn">Bildirimleri Etkinleştir</button>
         <button id="test-push-btn" class="ghost">Test bildirimi gönder</button>
         <p id="alarm-msg"></p>
-        <p class="app-version">Sürüm: 11</p>
+        <p class="app-version">Sürüm: 12</p>
+        <hr>
+        <label>Bildirim sesleri</label>
+        <p class="hint">Uygulama açıkken çalan sesler. Uygulama kapalıyken telefonun kendi bildirim sesi çalar.</p>
+        <label for="message-sound-select">Mesaj alarmı</label>
+        <div class="sound-row">
+          <select id="message-sound-select"></select>
+          <button id="message-sound-preview" class="ghost" title="Dinle">▶</button>
+        </div>
+        <label for="call-sound-select">Arama alarmı</label>
+        <div class="sound-row">
+          <select id="call-sound-select"></select>
+          <button id="call-sound-preview" class="ghost" title="Dinle">▶</button>
+        </div>
         <hr>
         <label>Bekleyen Referanslar</label>
         <ul id="pending-referrals-list"></ul>
