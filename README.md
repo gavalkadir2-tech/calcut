@@ -56,3 +56,11 @@ için "Alarm" görünümlü, sesli ve titreşimli bildirim gelir. Firebase'in
 
 Her cihazda bir kez "Bildirimleri Etkinleştir" demek yeterli; hesaptan çıkınca
 o cihaz bildirim listesinden silinir.
+
+## Firestore güvenlik kuralları
+
+Kurallar `firestore.rules` dosyasında tutulur; Firebase konsolundaki kurallar
+bu dosyayla aynı olmalı. Değiştirince ya Firebase konsolunda
+**Firestore → Kurallar** sekmesine dosyanın içeriğini yapıştırıp **Yayınla**'ya
+bas, ya da Firebase CLI ile `firebase deploy --only firestore:rules` çalıştır
+(`firebase.json` bu dosyayı gösteriyor).

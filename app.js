@@ -319,6 +319,67 @@
     renderCalc();
   }
 
+  /* ---------------- Biometric vault layer (Android app) ----------------
+     In the Android app, biometrics can protect the vault itself, not just
+     gate it. The PIN still opens the outer blob (so the calculator's
+     as-you-type unlock and the duress PIN work unchanged), but the session
+     inside it (private key and all) is then encrypted again with a secret
+     only a fingerprint can release: { bioLayer: { iv, data } }. See
+     BiometricKeyPlugin.java. */
+
+  const STORAGE_BIO_SEALED = "calcut_vault_bio_sealed";
+  let currentBioKey = null;
+  let lastBioError = null;
+
+  function biometricKeyPlugin() {
+    const cap = window.Capacitor;
+    if (!cap || !cap.isNativePlatform || !cap.isNativePlatform()) return null;
+    return (cap.Plugins && cap.Plugins.BiometricKey) || null;
+  }
+
+  function bioKeyFromSecret(secretB64) {
+    return crypto.subtle.importKey("raw", b64decode(secretB64), { name: "AES-GCM" }, false, ["encrypt", "decrypt"]);
+  }
+
+  // What goes into the PIN-encrypted blob: the session itself, or the
+  // session encrypted again with the biometric key when that is on.
+  async function sealSession(data) {
+    if (!currentBioKey) return data;
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const ciphertext = await crypto.subtle.encrypt(
+      { name: "AES-GCM", iv }, currentBioKey, new TextEncoder().encode(JSON.stringify(data))
+    );
+    return { bioLayer: { iv: b64encode(iv.buffer), data: b64encode(ciphertext) } };
+  }
+
+  async function openBioLayer(layer) {
+    const plugin = biometricKeyPlugin();
+    const sealed = localStorage.getItem(STORAGE_BIO_SEALED);
+    if (!plugin || !sealed) throw new Error("Bu cihazda biyometrik anahtar yok.");
+    const { secret } = await plugin.unlock({ sealed });
+    const key = await bioKeyFromSecret(secret);
+    const plain = await crypto.subtle.decrypt(
+      { name: "AES-GCM", iv: new Uint8Array(b64decode(layer.iv)) }, key, b64decode(layer.data)
+    );
+    currentBioKey = key;
+    return JSON.parse(new TextDecoder().decode(plain));
+  }
+
+  function bioFailText() {
+    if (lastBioError && lastBioError.code === "invalidated") {
+      return "Parmak izi kayıtların değiştiği için biyometrik anahtar geçersiz oldu. " +
+        "\"PIN'i unuttum\" ile sıfırlayıp hesabına yeniden giriş yap; mesajların hesabında duruyor.";
+    }
+    return "Biyometrik doğrulama başarısız.";
+  }
+
+  function forgetBiometricKey() {
+    localStorage.removeItem(STORAGE_BIO_SEALED);
+    currentBioKey = null;
+    const plugin = biometricKeyPlugin();
+    if (plugin) plugin.remove().catch(() => {});
+  }
+
   async function verifyBiometricIfEnabled() {
     const credIdB64 = localStorage.getItem(STORAGE_BIOMETRIC);
     if (!credIdB64 || !window.PublicKeyCredential) return true;
@@ -426,17 +487,17 @@
       privateKeyJwk,
       publicKeyJwk,
     };
-    await saveLocalBlob(currentLocalKey, localSessionData).catch(() => {});
+    await saveLocalBlob(currentLocalKey, await sealSession(localSessionData)).catch(() => {});
   }
 
   async function clearPersistedSession() {
     localSessionData = {};
     if (currentLocalKey) {
-      await saveLocalBlob(currentLocalKey, {}).catch(() => {});
+      await saveLocalBlob(currentLocalKey, await sealSession({})).catch(() => {});
     }
   }
 
-  // Returns "real" | "duress" | "fail". The real vault is always tried
+  // Returns "real" | "duress" | "fail" | "biofail". The real vault is always tried
   // first; only on a real-PIN mismatch do we check the duress PIN, so a
   // duress PIN can never accidentally shadow the real one.
   async function attemptUnlock(pin) {
@@ -447,14 +508,27 @@
       localSessionData = {};
       return "real";
     }
+    let outer;
     try {
-      localSessionData = await loadLocalBlob(key);
-      currentLocalKey = key;
-      return "real";
+      outer = await loadLocalBlob(key);
     } catch (e) {
       if (await tryDuressPin(pin)) return "duress";
       return "fail";
     }
+    // The PIN is right; a biometric layer still needs the fingerprint.
+    if (outer && outer.bioLayer) {
+      try {
+        localSessionData = await openBioLayer(outer.bioLayer);
+      } catch (e) {
+        lastBioError = e;
+        return "biofail";
+      }
+    } else {
+      currentBioKey = null;
+      localSessionData = outer;
+    }
+    currentLocalKey = key;
+    return "real";
   }
 
   function openDuressScreen() {
@@ -472,7 +546,7 @@
   async function tryAutoUnlock(pin) {
     if (!vaultExists() && !duressPinExists()) return false; // require explicit setup via triple-tap gesture first
     const mode = await attemptUnlock(pin);
-    if (mode === "fail") return false;
+    if (mode === "fail" || mode === "biofail") return false;
     calcView.classList.add("hidden");
     vaultView.classList.remove("hidden");
     if (mode === "duress") {
@@ -496,6 +570,8 @@
     } else if (mode === "duress") {
       errorEl.textContent = "";
       openDuressScreen();
+    } else if (mode === "biofail") {
+      errorEl.textContent = bioFailText();
     } else {
       errorEl.textContent = "Yanlış PIN.";
     }
@@ -510,6 +586,7 @@
     localStorage.removeItem(STORAGE_BLOB);
     localStorage.removeItem(STORAGE_SALT);
     localStorage.removeItem(STORAGE_BIOMETRIC);
+    forgetBiometricKey();
     clearDuressPin();
     openVaultLockScreen();
   });
@@ -1686,7 +1763,7 @@
       return;
     }
     const newKey = await deriveLocalKey(newPin);
-    await saveLocalBlob(newKey, localSessionData || {});
+    await saveLocalBlob(newKey, await sealSession(localSessionData || {}));
     currentLocalKey = newKey;
     msgEl.textContent = "PIN güncellendi.";
     document.getElementById("new-pin-input").value = "";
@@ -1733,6 +1810,26 @@
 
   document.getElementById("enable-biometric-btn").addEventListener("click", async () => {
     const msgEl = document.getElementById("biometric-msg");
+    const bioPlugin = biometricKeyPlugin();
+    if (bioPlugin) {
+      try {
+        const { available } = await bioPlugin.available();
+        if (!available) {
+          msgEl.textContent = "Bu telefonda kayıtlı güçlü bir parmak izi/yüz tanıma yok. Önce telefon ayarlarından ekle.";
+          return;
+        }
+        if (!currentLocalKey) return;
+        const { secret, sealed } = await bioPlugin.enroll();
+        currentBioKey = await bioKeyFromSecret(secret);
+        localStorage.setItem(STORAGE_BIO_SEALED, sealed);
+        await saveLocalBlob(currentLocalKey, await sealSession(localSessionData || {}));
+        renderBiometricButtons();
+        msgEl.textContent = "Biyometrik kilit açıldı: kasayı açmak için artık PIN'in yanında parmak izin de gerekiyor.";
+      } catch (e) {
+        msgEl.textContent = "Biyometrik kayıt başarısız: " + e.message;
+      }
+      return;
+    }
     if (!window.PublicKeyCredential) {
       msgEl.textContent = "Bu cihaz/tarayıcı biyometrik onayı desteklemiyor.";
       return;
@@ -1761,13 +1858,22 @@
   });
 
   function renderBiometricButtons() {
-    const enabled = !!localStorage.getItem(STORAGE_BIOMETRIC);
+    const enabled = biometricKeyPlugin()
+      ? !!localStorage.getItem(STORAGE_BIO_SEALED)
+      : !!localStorage.getItem(STORAGE_BIOMETRIC);
     document.getElementById("enable-biometric-btn").classList.toggle("hidden", enabled);
     document.getElementById("disable-biometric-btn").classList.toggle("hidden", !enabled);
   }
 
-  document.getElementById("disable-biometric-btn").addEventListener("click", () => {
+  document.getElementById("disable-biometric-btn").addEventListener("click", async () => {
     if (!confirm("Biyometrik onay kaldırılsın mı? Kilit yalnızca PIN ile açılacak.")) return;
+    if (biometricKeyPlugin()) {
+      if (!currentLocalKey) return;
+      // Re-save the session without the biometric layer before dropping the key.
+      currentBioKey = null;
+      await saveLocalBlob(currentLocalKey, localSessionData || {});
+      forgetBiometricKey();
+    }
     localStorage.removeItem(STORAGE_BIOMETRIC);
     renderBiometricButtons();
     document.getElementById("biometric-msg").textContent = "Biyometrik onay kaldırıldı.";
@@ -1878,6 +1984,7 @@
     localStorage.removeItem(STORAGE_BLOB);
     localStorage.removeItem(STORAGE_SALT);
     localStorage.removeItem(STORAGE_BIOMETRIC);
+    forgetBiometricKey();
     clearDuressPin();
     closeVaultToCalculator();
   });
@@ -3061,6 +3168,7 @@
             ts: d.ts ? d.ts.toMillis() : Date.now(),
             read: !!d.read,
             expiresAtMillis,
+            chunked: d.chunked || null,
             deleted: false,
             edited: !!d.edited,
             reactions: d.reactions || {},
@@ -3136,17 +3244,47 @@
     container.appendChild(document.createTextNode(text.slice(cursor)));
   }
 
+  // Large ciphertexts (photos, files) don't fit Firestore's ~1MiB document
+  // cap, so sendEncryptedTo splits them over chunk documents in the same
+  // messages collection: { from, chunkOf, idx, data }, ids "<group>_<idx>".
+  // Chunk documents have no "ts", so every ts-ordered query skips them; the
+  // message itself carries chunked: { conv, id, n } instead of ciphertext.
+  const CHUNK_CHARS = 700 * 1024;
+  const chunkedPlainCache = new Map(); // chunk group id -> decrypted text
+
+  function chunkRef(chunked, idx) {
+    return fbDb.collection("conversations").doc(chunked.conv).collection("messages").doc(chunked.id + "_" + idx);
+  }
+
+  async function readChunkedCiphertext(chunked) {
+    const parts = await Promise.all(
+      Array.from({ length: chunked.n }, (_, i) => chunkRef(chunked, i).get())
+    );
+    if (parts.some(p => !p.exists)) throw new Error("missing chunk");
+    return parts.map(p => p.data().data).join("");
+  }
+
+  async function deleteChunks(chunked) {
+    if (!chunked) return;
+    await Promise.all(Array.from({ length: chunked.n }, (_, i) => chunkRef(chunked, i).delete().catch(() => {})));
+    chunkedPlainCache.delete(chunked.id);
+  }
+
   async function decryptMessage(d) {
+    if (d.chunked && chunkedPlainCache.has(d.chunked.id)) return chunkedPlainCache.get(d.chunked.id);
     const wrapped = d.wrappedKeys && d.wrappedKeys[myUid];
     if (!wrapped) throw new Error("no key for me");
     const rawAes = await crypto.subtle.decrypt({ name: "RSA-OAEP" }, myPrivateKey, b64decode(wrapped));
     const aesKey = await crypto.subtle.importKey("raw", rawAes, { name: "AES-GCM" }, false, ["decrypt"]);
+    const ciphertext = d.chunked ? await readChunkedCiphertext(d.chunked) : d.ciphertext;
     const plain = await crypto.subtle.decrypt(
       { name: "AES-GCM", iv: new Uint8Array(b64decode(d.iv)) },
       aesKey,
-      b64decode(d.ciphertext)
+      b64decode(ciphertext)
     );
-    return new TextDecoder().decode(plain);
+    const text = new TextDecoder().decode(plain);
+    if (d.chunked) chunkedPlainCache.set(d.chunked.id, text);
+    return text;
   }
 
   function renderMessages(msgs) {
@@ -3365,6 +3503,8 @@
       try {
         await fbDb.collection("conversations").doc(activeConvId).collection("messages")
           .doc(delBtn.dataset.msgId).update({ deleted: true, deletedAt: firebase.firestore.FieldValue.serverTimestamp() });
+        const deletedMsg = currentMessages.find(m => m.id === delBtn.dataset.msgId);
+        if (deletedMsg) await deleteChunks(deletedMsg.chunked);
       } catch (e2) {
         alert("Silinemedi: " + e2.message);
       }
@@ -3497,19 +3637,38 @@
 
     const conv = conversations.get(convId);
     const disappearingSeconds = conv ? (conv.disappearingSeconds || 0) : 0;
+    const expiresAt = disappearingSeconds > 0
+      ? firebase.firestore.Timestamp.fromMillis(Date.now() + disappearingSeconds * 1000)
+      : null;
+    const messagesCol = fbDb.collection("conversations").doc(convId).collection("messages");
+    const ciphertextB64 = b64encode(ciphertext);
     const msgData = {
       from: myUid,
       type,
       iv: b64encode(iv.buffer),
-      ciphertext: b64encode(ciphertext),
       wrappedKeys,
       ts: firebase.firestore.FieldValue.serverTimestamp(),
       read: false,
     };
-    if (disappearingSeconds > 0) {
-      msgData.expiresAt = firebase.firestore.Timestamp.fromMillis(Date.now() + disappearingSeconds * 1000);
+    if (expiresAt) msgData.expiresAt = expiresAt;
+    if (ciphertextB64.length > CHUNK_CHARS) {
+      // Chunks go first, so a reader never sees the message without them.
+      const chunked = { conv: convId, id: messagesCol.doc().id, n: Math.ceil(ciphertextB64.length / CHUNK_CHARS) };
+      // A batch is capped at 10MiB, so write a few chunks at a time.
+      for (let i = 0; i < chunked.n; i += 4) {
+        const batch = fbDb.batch();
+        for (let j = i; j < Math.min(i + 4, chunked.n); j++) {
+          const chunk = { from: myUid, chunkOf: chunked.id, idx: j, data: ciphertextB64.slice(j * CHUNK_CHARS, (j + 1) * CHUNK_CHARS) };
+          if (expiresAt) chunk.expiresAt = expiresAt; // purged along with the message
+          batch.set(chunkRef(chunked, j), chunk);
+        }
+        await batch.commit();
+      }
+      msgData.chunked = chunked;
+    } else {
+      msgData.ciphertext = ciphertextB64;
     }
-    const msgRef = await fbDb.collection("conversations").doc(convId).collection("messages").add(msgData);
+    const msgRef = await messagesCol.add(msgData);
     if (type !== "call") requestPush({ kind: "message", convId, msgId: msgRef.id });
     const convUpdate = { updatedAt: firebase.firestore.FieldValue.serverTimestamp() };
     otherUids.forEach(u => { convUpdate[`unreadCount.${u}`] = firebase.firestore.FieldValue.increment(1); });
@@ -3539,12 +3698,12 @@
     photoInput.value = "";
     if (!file) return;
     const isImage = file.type.startsWith("image/");
-    // Firestore caps a document at ~1MiB, and base64 + JSON wrapping + E2E
-    // encryption overhead all inflate the stored size well past the raw
-    // file size, so the caps here are much smaller than that limit.
-    const maxSize = isImage ? 3 * 1024 * 1024 : 500 * 1024;
+    // Large payloads are split over chunk documents (see CHUNK_CHARS), so
+    // this only bounds upload time and storage; base64 and encryption make
+    // the stored size about 1.8x the file.
+    const maxSize = 10 * 1024 * 1024;
     if (file.size > maxSize) {
-      alert(isImage ? "Fotoğraf çok büyük (maks 3MB)." : "Dosya çok büyük (maks 500KB).");
+      alert(isImage ? "Fotoğraf çok büyük (maks 10MB)." : "Dosya çok büyük (maks 10MB).");
       return;
     }
     const reader = new FileReader();
