@@ -1,0 +1,114 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isConversationParticipant(conversationId) {
+      return isSignedIn() &&
+        request.auth.uid in get(/databases/$(database)/documents/conversations/$(conversationId)).data.participants;
+    }
+
+    // ---------------- users ----------------
+    match /users/{userId} {
+      allow read: if isSignedIn();
+
+      allow create: if isSignedIn() && request.auth.uid == userId &&
+        request.resource.data.blocked == {} &&
+        (
+          (
+            request.resource.data.referredBy != null &&
+            request.resource.data.status == "pending" &&
+            get(/databases/$(database)/documents/users/$(request.resource.data.referredBy)).data.status == "approved"
+          ) ||
+          (
+            request.resource.data.referredBy == null &&
+            request.resource.data.status == "approved" &&
+            !exists(/databases/$(database)/documents/meta/bootstrap)
+          )
+        );
+
+      allow update: if isSignedIn() && (
+        (request.auth.uid == userId &&
+         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['nickname', 'blocked'])) ||
+        (request.auth.uid == resource.data.referredBy &&
+         resource.data.status == "pending" &&
+         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status']) &&
+         request.resource.data.status == "approved")
+      );
+
+      allow delete: if isSignedIn() &&
+        request.auth.uid == resource.data.referredBy &&
+        resource.data.status == "pending";
+    }
+
+    // ---------------- meta/bootstrap (one-time gate, never editable) ----------------
+    match /meta/bootstrap {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() &&
+        request.resource.data.uid == request.auth.uid &&
+        !exists(/databases/$(database)/documents/meta/bootstrap);
+      allow update, delete: if false;
+    }
+
+    // ---------------- conversations ----------------
+    match /conversations/{conversationId} {
+      allow read: if isSignedIn() && request.auth.uid in resource.data.participants;
+
+      allow create: if isSignedIn() &&
+        request.auth.uid in request.resource.data.participants &&
+        request.resource.data.participants.size() >= 2 &&
+        request.resource.data.participants.size() <= 20;
+
+      allow update: if isSignedIn() && request.auth.uid in resource.data.participants &&
+        request.resource.data.diff(resource.data).affectedKeys()
+          .hasOnly(['unreadCount', 'typing', 'updatedAt', 'participantNicknames', 'disappearingSeconds', 'muted']);
+
+      allow delete: if isSignedIn() && request.auth.uid in resource.data.participants;
+
+      // ---------------- messages ----------------
+      // Also holds the chunk documents of large photos/files ({ from, chunkOf,
+      // idx, data }, see sendEncryptedTo in app.js); the create rule covers them.
+      match /messages/{messageId} {
+        allow read: if isConversationParticipant(conversationId);
+
+        allow create: if isConversationParticipant(conversationId) &&
+          request.resource.data.from == request.auth.uid;
+
+        allow update: if isConversationParticipant(conversationId) && (
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['read']) ||
+          (resource.data.from == request.auth.uid &&
+           request.resource.data.diff(resource.data).affectedKeys()
+             .hasOnly(['deleted', 'deletedAt', 'edited', 'editedAt', 'ciphertext', 'iv', 'wrappedKeys'])) ||
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['reactions'])
+        );
+
+        allow delete: if isConversationParticipant(conversationId);
+      }
+    }
+
+    // ---------------- calls ----------------
+    match /calls/{callId} {
+      allow read: if isSignedIn() &&
+        (request.auth.uid == resource.data.from || request.auth.uid == resource.data.to);
+
+      allow create: if isSignedIn() && request.auth.uid == request.resource.data.from;
+
+      allow update: if isSignedIn() &&
+        (request.auth.uid == resource.data.from || request.auth.uid == resource.data.to);
+
+      match /callerCandidates/{candidateId} {
+        allow read, create: if isSignedIn() &&
+          (request.auth.uid == get(/databases/$(database)/documents/calls/$(callId)).data.from ||
+           request.auth.uid == get(/databases/$(database)/documents/calls/$(callId)).data.to);
+      }
+      match /calleeCandidates/{candidateId} {
+        allow read, create: if isSignedIn() &&
+          (request.auth.uid == get(/databases/$(database)/documents/calls/$(callId)).data.from ||
+           request.auth.uid == get(/databases/$(database)/documents/calls/$(callId)).data.to);
+      }
+    }
+  }
+}

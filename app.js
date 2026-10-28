@@ -3061,6 +3061,7 @@
             ts: d.ts ? d.ts.toMillis() : Date.now(),
             read: !!d.read,
             expiresAtMillis,
+            chunked: d.chunked || null,
             deleted: false,
             edited: !!d.edited,
             reactions: d.reactions || {},
@@ -3136,17 +3137,47 @@
     container.appendChild(document.createTextNode(text.slice(cursor)));
   }
 
+  // Large ciphertexts (photos, files) don't fit Firestore's ~1MiB document
+  // cap, so sendEncryptedTo splits them over chunk documents in the same
+  // messages collection: { from, chunkOf, idx, data }, ids "<group>_<idx>".
+  // Chunk documents have no "ts", so every ts-ordered query skips them; the
+  // message itself carries chunked: { conv, id, n } instead of ciphertext.
+  const CHUNK_CHARS = 700 * 1024;
+  const chunkedPlainCache = new Map(); // chunk group id -> decrypted text
+
+  function chunkRef(chunked, idx) {
+    return fbDb.collection("conversations").doc(chunked.conv).collection("messages").doc(chunked.id + "_" + idx);
+  }
+
+  async function readChunkedCiphertext(chunked) {
+    const parts = await Promise.all(
+      Array.from({ length: chunked.n }, (_, i) => chunkRef(chunked, i).get())
+    );
+    if (parts.some(p => !p.exists)) throw new Error("missing chunk");
+    return parts.map(p => p.data().data).join("");
+  }
+
+  async function deleteChunks(chunked) {
+    if (!chunked) return;
+    await Promise.all(Array.from({ length: chunked.n }, (_, i) => chunkRef(chunked, i).delete().catch(() => {})));
+    chunkedPlainCache.delete(chunked.id);
+  }
+
   async function decryptMessage(d) {
+    if (d.chunked && chunkedPlainCache.has(d.chunked.id)) return chunkedPlainCache.get(d.chunked.id);
     const wrapped = d.wrappedKeys && d.wrappedKeys[myUid];
     if (!wrapped) throw new Error("no key for me");
     const rawAes = await crypto.subtle.decrypt({ name: "RSA-OAEP" }, myPrivateKey, b64decode(wrapped));
     const aesKey = await crypto.subtle.importKey("raw", rawAes, { name: "AES-GCM" }, false, ["decrypt"]);
+    const ciphertext = d.chunked ? await readChunkedCiphertext(d.chunked) : d.ciphertext;
     const plain = await crypto.subtle.decrypt(
       { name: "AES-GCM", iv: new Uint8Array(b64decode(d.iv)) },
       aesKey,
-      b64decode(d.ciphertext)
+      b64decode(ciphertext)
     );
-    return new TextDecoder().decode(plain);
+    const text = new TextDecoder().decode(plain);
+    if (d.chunked) chunkedPlainCache.set(d.chunked.id, text);
+    return text;
   }
 
   function renderMessages(msgs) {
@@ -3365,6 +3396,8 @@
       try {
         await fbDb.collection("conversations").doc(activeConvId).collection("messages")
           .doc(delBtn.dataset.msgId).update({ deleted: true, deletedAt: firebase.firestore.FieldValue.serverTimestamp() });
+        const deletedMsg = currentMessages.find(m => m.id === delBtn.dataset.msgId);
+        if (deletedMsg) await deleteChunks(deletedMsg.chunked);
       } catch (e2) {
         alert("Silinemedi: " + e2.message);
       }
@@ -3497,19 +3530,38 @@
 
     const conv = conversations.get(convId);
     const disappearingSeconds = conv ? (conv.disappearingSeconds || 0) : 0;
+    const expiresAt = disappearingSeconds > 0
+      ? firebase.firestore.Timestamp.fromMillis(Date.now() + disappearingSeconds * 1000)
+      : null;
+    const messagesCol = fbDb.collection("conversations").doc(convId).collection("messages");
+    const ciphertextB64 = b64encode(ciphertext);
     const msgData = {
       from: myUid,
       type,
       iv: b64encode(iv.buffer),
-      ciphertext: b64encode(ciphertext),
       wrappedKeys,
       ts: firebase.firestore.FieldValue.serverTimestamp(),
       read: false,
     };
-    if (disappearingSeconds > 0) {
-      msgData.expiresAt = firebase.firestore.Timestamp.fromMillis(Date.now() + disappearingSeconds * 1000);
+    if (expiresAt) msgData.expiresAt = expiresAt;
+    if (ciphertextB64.length > CHUNK_CHARS) {
+      // Chunks go first, so a reader never sees the message without them.
+      const chunked = { conv: convId, id: messagesCol.doc().id, n: Math.ceil(ciphertextB64.length / CHUNK_CHARS) };
+      // A batch is capped at 10MiB, so write a few chunks at a time.
+      for (let i = 0; i < chunked.n; i += 4) {
+        const batch = fbDb.batch();
+        for (let j = i; j < Math.min(i + 4, chunked.n); j++) {
+          const chunk = { from: myUid, chunkOf: chunked.id, idx: j, data: ciphertextB64.slice(j * CHUNK_CHARS, (j + 1) * CHUNK_CHARS) };
+          if (expiresAt) chunk.expiresAt = expiresAt; // purged along with the message
+          batch.set(chunkRef(chunked, j), chunk);
+        }
+        await batch.commit();
+      }
+      msgData.chunked = chunked;
+    } else {
+      msgData.ciphertext = ciphertextB64;
     }
-    const msgRef = await fbDb.collection("conversations").doc(convId).collection("messages").add(msgData);
+    const msgRef = await messagesCol.add(msgData);
     if (type !== "call") requestPush({ kind: "message", convId, msgId: msgRef.id });
     const convUpdate = { updatedAt: firebase.firestore.FieldValue.serverTimestamp() };
     otherUids.forEach(u => { convUpdate[`unreadCount.${u}`] = firebase.firestore.FieldValue.increment(1); });
@@ -3539,12 +3591,12 @@
     photoInput.value = "";
     if (!file) return;
     const isImage = file.type.startsWith("image/");
-    // Firestore caps a document at ~1MiB, and base64 + JSON wrapping + E2E
-    // encryption overhead all inflate the stored size well past the raw
-    // file size, so the caps here are much smaller than that limit.
-    const maxSize = isImage ? 3 * 1024 * 1024 : 500 * 1024;
+    // Large payloads are split over chunk documents (see CHUNK_CHARS), so
+    // this only bounds upload time and storage; base64 and encryption make
+    // the stored size about 1.8x the file.
+    const maxSize = 10 * 1024 * 1024;
     if (file.size > maxSize) {
-      alert(isImage ? "Fotoğraf çok büyük (maks 3MB)." : "Dosya çok büyük (maks 500KB).");
+      alert(isImage ? "Fotoğraf çok büyük (maks 10MB)." : "Dosya çok büyük (maks 10MB).");
       return;
     }
     const reader = new FileReader();
