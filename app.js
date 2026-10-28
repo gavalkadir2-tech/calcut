@@ -1789,6 +1789,7 @@
     leaveComposer();
     hideActionSheet();
     closeImageViewer();
+    forgetLargeFiles();
     showingArchived = false;
     currentLocalKey = null;
     currentBioKey = null;
@@ -3614,6 +3615,7 @@
             read: !!d.read,
             expiresAtMillis,
             chunked: d.chunked || null,
+            wrappedKey: (d.wrappedKeys && d.wrappedKeys[myUid]) || null,
             deleted: false,
             edited: !!d.edited,
             reactions: d.reactions || {},
@@ -3749,14 +3751,15 @@
     if (!wrapped) throw new Error("no key for me");
     const rawAes = await crypto.subtle.decrypt({ name: "RSA-OAEP" }, myPrivateKey, b64decode(wrapped));
     const aesKey = await crypto.subtle.importKey("raw", rawAes, { name: "AES-GCM" }, false, ["decrypt"]);
-    const ciphertext = d.chunked ? await readChunkedCiphertext(d.chunked) : d.ciphertext;
+    // Binary (large file) chunks are only fetched on tap; the message itself holds the metadata.
+    const ciphertext = d.chunked && !d.chunked.bin ? await readChunkedCiphertext(d.chunked) : d.ciphertext;
     const plain = await crypto.subtle.decrypt(
       { name: "AES-GCM", iv: new Uint8Array(b64decode(d.iv)) },
       aesKey,
       b64decode(ciphertext)
     );
     const text = new TextDecoder().decode(plain);
-    if (d.chunked) chunkedPlainCache.set(d.chunked.id, text);
+    if (d.chunked && !d.chunked.bin) chunkedPlainCache.set(d.chunked.id, text);
     return text;
   }
 
@@ -3919,17 +3922,27 @@
         div.appendChild(audio);
       } else if (m.file) {
         const mime = m.file.mime || "";
-        if (mime.startsWith("video/") || mime.startsWith("audio/")) {
+        // Large files (chunked bytes) play from a local blob URL once downloaded.
+        const fileUrl = m.file.binary ? largeFileUrls.get(m.id) : m.file.dataUrl;
+        if (fileUrl && (mime.startsWith("video/") || mime.startsWith("audio/"))) {
           const media = document.createElement(mime.startsWith("video/") ? "video" : "audio");
           media.controls = true;
           media.preload = "metadata";
           media.playsInline = true;
-          media.src = m.file.dataUrl;
+          media.src = fileUrl;
           div.appendChild(media);
+        }
+        if (m.file.binary && !fileUrl) {
+          const dl = document.createElement("button");
+          dl.className = "large-dl";
+          dl.dataset.msgId = m.id;
+          dl.textContent = (mime.startsWith("video/") ? "▶ Videoyu aç" : "⬇ İndir") +
+            (m.file.size ? " · " + formatFileSize(m.file.size) : "");
+          div.appendChild(dl);
         }
         const link = document.createElement("a");
         link.className = "file-attachment";
-        link.href = m.file.dataUrl;
+        link.href = fileUrl || "#";
         link.download = m.file.name || "dosya";
         const icon = document.createElement("span");
         icon.className = "file-icon";
@@ -4129,6 +4142,31 @@
     showActionSheet(m.text ? m.text.slice(0, 80) : messageSnippet(m), actions);
   }
 
+  const largeFileUrls = new Map(); // msg id -> blob: URL of a downloaded large file
+  const largeFileLoading = new Set();
+
+  async function openLargeFile(msgId, btn) {
+    const m = currentMessages.find(x => x.id === msgId);
+    if (!m || !m.chunked || !m.wrappedKey || largeFileLoading.has(msgId)) return;
+    largeFileLoading.add(msgId);
+    try {
+      const blob = await downloadLargeFile(m.wrappedKey, m.chunked, m.file.mime, p => {
+        btn.textContent = "İndiriliyor… %" + Math.round(p * 100);
+      });
+      largeFileUrls.set(msgId, URL.createObjectURL(blob));
+      renderMessages(currentMessages);
+    } catch (e) {
+      btn.textContent = "İndirilemedi, tekrar dene";
+    } finally {
+      largeFileLoading.delete(msgId);
+    }
+  }
+
+  function forgetLargeFiles() {
+    largeFileUrls.forEach(url => URL.revokeObjectURL(url));
+    largeFileUrls.clear();
+  }
+
   // Opening a view-once photo shows it full screen once; closing the viewer
   // deletes the message (and its chunks) for both sides.
   async function openViewOnce(msgId) {
@@ -4159,6 +4197,16 @@
         e.preventDefault();
         updatePlugin.openExternal({ url: link.href }).catch(() => {});
       }
+      return;
+    }
+    const largeDl = e.target.closest(".large-dl");
+    if (largeDl) {
+      openLargeFile(largeDl.dataset.msgId, largeDl);
+      return;
+    }
+    const fileLink = e.target.closest(".file-attachment");
+    if (fileLink && fileLink.getAttribute("href") === "#") {
+      e.preventDefault(); // a large file not downloaded yet
       return;
     }
     const viewOnce = e.target.closest(".msg-bubble.them .view-once");
@@ -4250,6 +4298,14 @@
         await sendEncryptedTo(targetConvId, otherUids, msg.text, "text");
       } else if (msg.type === "image") {
         await sendEncryptedTo(targetConvId, otherUids, msg.image, "image");
+      } else if (msg.type === "file" && msg.file.binary) {
+        const url = largeFileUrls.get(msg.id);
+        if (!url) {
+          alert("Büyük bir dosyayı iletmeden önce bir kez açman gerekiyor.");
+          return;
+        }
+        const blob = await (await fetch(url)).blob();
+        await sendLargeFileTo(targetConvId, otherUids, new File([blob], msg.file.name || "dosya", { type: msg.file.mime || "" }));
       } else if (msg.type === "file") {
         await sendEncryptedTo(targetConvId, otherUids, JSON.stringify(msg.file), "file");
       } else if (msg.type === "audio") {
@@ -4277,28 +4333,15 @@
     if (!convId || !otherUids || !otherUids.length) return;
     // Blocking only applies to 1:1 threads; groups don't expose a block UI.
     if (otherUids.length === 1 && myBlocked[otherUids[0]]) return;
-    const otherPublicKeys = await Promise.all(otherUids.map(u => getPublicKeyForUid(u)));
-    if (otherPublicKeys.some(k => !k)) {
-      alert("Bir alıcının açık anahtarı bulunamadı.");
-      return;
-    }
-    const aesKey = await crypto.subtle.generateKey({ name: "AES-GCM", length: 256 }, true, ["encrypt", "decrypt"]);
-    const rawAes = await crypto.subtle.exportKey("raw", aesKey);
+    const key = await makeMessageKey(otherUids);
+    if (!key) return;
+    const { aesKey, wrappedKeys } = key;
     const iv = crypto.getRandomValues(new Uint8Array(12));
     const ciphertext = await crypto.subtle.encrypt(
       { name: "AES-GCM", iv }, aesKey, new TextEncoder().encode(payloadText)
     );
-    const myWrapped = await wrapAesKeyForPublicKey(rawAes, myPublicKey);
-    const wrappedKeys = { [myUid]: myWrapped };
-    for (let i = 0; i < otherUids.length; i++) {
-      wrappedKeys[otherUids[i]] = await wrapAesKeyForPublicKey(rawAes, otherPublicKeys[i]);
-    }
 
-    const conv = conversations.get(convId);
-    const disappearingSeconds = conv ? (conv.disappearingSeconds || 0) : 0;
-    const expiresAt = disappearingSeconds > 0
-      ? firebase.firestore.Timestamp.fromMillis(Date.now() + disappearingSeconds * 1000)
-      : null;
+    const expiresAt = messageExpiry(convId);
     const messagesCol = fbDb.collection("conversations").doc(convId).collection("messages");
     const ciphertextB64 = b64encode(ciphertext);
     const msgData = {
@@ -4329,10 +4372,124 @@
       msgData.ciphertext = ciphertextB64;
     }
     const msgRef = await messagesCol.add(msgData);
+    await afterMessageSent(convId, otherUids, msgRef, type);
+  }
+
+  // A fresh AES key for one message, wrapped for me and every recipient.
+  async function makeMessageKey(otherUids) {
+    const otherPublicKeys = await Promise.all(otherUids.map(u => getPublicKeyForUid(u)));
+    if (otherPublicKeys.some(k => !k)) {
+      alert("Bir alıcının açık anahtarı bulunamadı.");
+      return null;
+    }
+    const aesKey = await crypto.subtle.generateKey({ name: "AES-GCM", length: 256 }, true, ["encrypt", "decrypt"]);
+    const rawAes = await crypto.subtle.exportKey("raw", aesKey);
+    const wrappedKeys = { [myUid]: await wrapAesKeyForPublicKey(rawAes, myPublicKey) };
+    for (let i = 0; i < otherUids.length; i++) {
+      wrappedKeys[otherUids[i]] = await wrapAesKeyForPublicKey(rawAes, otherPublicKeys[i]);
+    }
+    return { aesKey, wrappedKeys };
+  }
+
+  function messageExpiry(convId) {
+    const conv = conversations.get(convId);
+    const disappearingSeconds = conv ? (conv.disappearingSeconds || 0) : 0;
+    return disappearingSeconds > 0
+      ? firebase.firestore.Timestamp.fromMillis(Date.now() + disappearingSeconds * 1000)
+      : null;
+  }
+
+  async function afterMessageSent(convId, otherUids, msgRef, type) {
     if (type !== "call") requestPush({ kind: "message", convId, msgId: msgRef.id });
     const convUpdate = { updatedAt: firebase.firestore.FieldValue.serverTimestamp() };
     otherUids.forEach(u => { convUpdate[`unreadCount.${u}`] = firebase.firestore.FieldValue.increment(1); });
     await fbDb.collection("conversations").doc(convId).update(convUpdate);
+  }
+
+  /* ---------------- Large files (videos) ----------------
+     Big files are never turned into one base64 string: the file is read in
+     BIN_CHUNK_BYTES slices, each encrypted on its own (same message key,
+     a per-chunk IV) and stored as Firestore bytes, so memory holds only a
+     few chunks and storage is ~1x the file instead of ~1.8x. The message
+     carries only the encrypted name/type/size, and chunked: { conv, id, n,
+     bin: true, iv }. Recipients download on tap (downloadLargeFile). */
+
+  const BIN_CHUNK_BYTES = 900 * 1024;
+  const LARGE_FILE_MAX = 200 * 1024 * 1024;
+
+  // Chunk i's IV: the message's base IV with its last 4 bytes XOR i, so
+  // no two chunks share an IV under the same key.
+  function chunkIv(baseIv, i) {
+    const iv = new Uint8Array(baseIv);
+    const view = new DataView(iv.buffer);
+    view.setUint32(8, view.getUint32(8) ^ i);
+    return iv;
+  }
+
+  async function sendLargeFileTo(convId, otherUids, file, extraFields, onProgress) {
+    if (!convId || !otherUids || !otherUids.length) return;
+    if (otherUids.length === 1 && myBlocked[otherUids[0]]) return;
+    const key = await makeMessageKey(otherUids);
+    if (!key) return;
+    const { aesKey, wrappedKeys } = key;
+    const metaIv = crypto.getRandomValues(new Uint8Array(12));
+    const meta = await crypto.subtle.encrypt({ name: "AES-GCM", iv: metaIv }, aesKey,
+      new TextEncoder().encode(JSON.stringify({ name: file.name, mime: file.type, size: file.size, binary: true })));
+    const baseIv = crypto.getRandomValues(new Uint8Array(12));
+    const messagesCol = fbDb.collection("conversations").doc(convId).collection("messages");
+    const chunked = {
+      conv: convId, id: messagesCol.doc().id, n: Math.max(1, Math.ceil(file.size / BIN_CHUNK_BYTES)),
+      bin: true, iv: b64encode(baseIv.buffer),
+    };
+    const expiresAt = messageExpiry(convId);
+    // Chunks go first, so a reader never sees the message without them;
+    // a few per batch keeps each request well under Firestore's 10MiB.
+    for (let i = 0; i < chunked.n; i += 4) {
+      const batch = fbDb.batch();
+      for (let j = i; j < Math.min(i + 4, chunked.n); j++) {
+        const plain = await file.slice(j * BIN_CHUNK_BYTES, (j + 1) * BIN_CHUNK_BYTES).arrayBuffer();
+        const enc = await crypto.subtle.encrypt({ name: "AES-GCM", iv: chunkIv(baseIv, j) }, aesKey, plain);
+        const chunk = { from: myUid, chunkOf: chunked.id, idx: j, bin: firebase.firestore.Blob.fromUint8Array(new Uint8Array(enc)) };
+        if (expiresAt) chunk.expiresAt = expiresAt;
+        batch.set(chunkRef(chunked, j), chunk);
+      }
+      await batch.commit();
+      if (onProgress) onProgress(Math.min(i + 4, chunked.n) / chunked.n);
+    }
+    const msgData = {
+      from: myUid,
+      type: "file",
+      iv: b64encode(metaIv.buffer),
+      ciphertext: b64encode(meta),
+      wrappedKeys,
+      chunked,
+      ts: firebase.firestore.FieldValue.serverTimestamp(),
+      read: false,
+    };
+    if (expiresAt) msgData.expiresAt = expiresAt;
+    if (extraFields) Object.assign(msgData, extraFields);
+    const msgRef = await messagesCol.add(msgData);
+    await afterMessageSent(convId, otherUids, msgRef, "file");
+  }
+
+  // Downloads and decrypts a large file's chunks into a Blob.
+  async function downloadLargeFile(wrappedKey, chunked, mime, onProgress) {
+    const rawAes = await crypto.subtle.decrypt({ name: "RSA-OAEP" }, myPrivateKey, b64decode(wrappedKey));
+    const aesKey = await crypto.subtle.importKey("raw", rawAes, { name: "AES-GCM" }, false, ["decrypt"]);
+    const baseIv = new Uint8Array(b64decode(chunked.iv));
+    const type = mime || "application/octet-stream";
+    // Grown chunk by chunk rather than from one array of parts: the browser
+    // can keep a big Blob on disk, so memory doesn't hold the file twice.
+    let blob = new Blob([], { type });
+    for (let i = 0; i < chunked.n; i++) {
+      const snap = await chunkRef(chunked, i).get();
+      if (!snap.exists) throw new Error("eksik parça");
+      const enc = snap.data().bin.toUint8Array();
+      const part = await crypto.subtle.decrypt({ name: "AES-GCM", iv: chunkIv(baseIv, i) }, aesKey, enc);
+      blob = new Blob([blob, part], { type });
+      if (onProgress) onProgress((i + 1) / chunked.n);
+    }
+    return blob;
   }
 
   document.getElementById("message-send-btn").addEventListener("click", sendMessage);
@@ -4387,6 +4544,8 @@
     sendPickedFiles(files);
   }));
 
+  const uploadStatusEl = document.getElementById("upload-status");
+
   // opts.viewOnce: send photos as view-once (opened once, then deleted).
   async function sendPickedFiles(files, opts) {
     opts = opts || {};
@@ -4400,15 +4559,25 @@
     // and encrypted, and stored at ~1.8x its size in Firestore's 1GiB free
     // quota, so there is a cap rather than none.
     const maxSize = 50 * 1024 * 1024;
-    const tooBig = files.filter(f => f.size > maxSize);
-    const toSend = files.filter(f => f.size <= maxSize);
+    // Videos and other big files go through the chunked-bytes path, which
+    // allows much larger files (LARGE_FILE_MAX) without the memory cost.
+    const isLarge = f => !f.type.startsWith("image/") && (f.type.startsWith("video/") || f.size > 2 * 1024 * 1024);
+    const limitOf = f => (isLarge(f) && !opts.viewOnce ? LARGE_FILE_MAX : maxSize);
+    const tooBig = files.filter(f => f.size > limitOf(f));
+    const toSend = files.filter(f => f.size <= limitOf(f));
     let replyFields = takeReplyFields();
     const failed = [];
     for (const file of toSend) {
       const isImage = file.type.startsWith("image/");
       try {
         const dataUrl = await readAsDataUrl(file);
-        if (isImage) {
+        if (!isImage && !opts.viewOnce && isLarge(file)) {
+          await sendLargeFileTo(activeConvId, activeOtherUids, file, replyFields, p => {
+            uploadStatusEl.textContent = file.name + " gönderiliyor… %" + Math.round(p * 100);
+            uploadStatusEl.classList.remove("hidden");
+          });
+          uploadStatusEl.classList.add("hidden");
+        } else if (isImage) {
           const fields = opts.viewOnce ? { ...(replyFields || {}), viewOnce: true } : replyFields;
           await sendEncrypted(await shrinkPhoto(dataUrl, file.type), "image", fields);
         } else if (opts.viewOnce) {
@@ -4423,7 +4592,8 @@
       }
     }
     const problems = [];
-    if (tooBig.length) problems.push("50MB'tan büyük olduğu için gönderilmedi: " + tooBig.map(f => f.name).join(", "));
+    uploadStatusEl.classList.add("hidden");
+    if (tooBig.length) problems.push("Boyut sınırını aştığı için gönderilmedi (fotoğraf 50MB, video/dosya 200MB): " + tooBig.map(f => f.name).join(", "));
     if (failed.length) problems.push("Gönderilemedi: " + failed.join(", "));
     if (problems.length) alert(problems.join("\n"));
   }
