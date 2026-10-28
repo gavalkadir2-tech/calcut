@@ -14,7 +14,9 @@ için "Alarm" görünümlü, sesli ve titreşimli bildirim gelir. Firebase'in
   internet sağlayıcıları `*.workers.dev` ve `*.pages.dev` adreslerini engelliyor.
 - `sw.js`: Push'u alıp bildirimi gösterir. Arama çalarken 8 saniyede bir
   yeniden çalar, cevapsız kalırsa "Cevapsız" olur. Bildirime dokununca uygulama
-  açılır; PIN girildikten sonra hâlâ çalan arama ekrana gelir (arama 45 sn çalar).
+  açılır ve hâlâ çalan arama, hesap makinesi ekranının üstünde alarm olarak
+  çıkar: *Durdur* ile şifre girmeden açılır (arama 45 sn çalar). Mesajlar yine
+  kilitli kalır; onlar için gizli kod ve PIN gerekir.
 
 ### Bir kerelik kurulum
 
