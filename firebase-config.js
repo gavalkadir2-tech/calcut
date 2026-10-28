@@ -21,5 +21,6 @@ window.FCM_VAPID_KEY = "BE6LNp9930MgkDdY3n1e8yBbGnAbZ_5CregfzuLVsXZ-HI-UM9GIco3a
 // some Turkish ISPs block *.workers.dev. Only list addresses you own — the
 // app sends the user's Firebase ID token to them. Empty = no background push.
 window.PUSH_URLS = [
+  "https://calcut-bildirim.pages.dev",
   "https://calcut-bildirim.gavalkadir2.workers.dev",
 ];
