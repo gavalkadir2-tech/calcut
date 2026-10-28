@@ -1100,7 +1100,16 @@
     const unsub = fbDb.collection("conversations").doc(convId).collection("messages")
       .orderBy("ts", "desc").limit(1)
       .onSnapshot(async snap => {
-        if (snap.empty) return;
+        if (snap.empty) {
+          // Messages were cleared but the conversation (contact) stays listed.
+          const conv = conversations.get(convId);
+          if (conv && conv.lastPreview) {
+            conv.lastPreview = "";
+            conv.lastIsMissedCall = false;
+            if (!threadListPanel.classList.contains("hidden")) renderThreadList();
+          }
+          return;
+        }
         const d = snap.docs[0].data();
         let preview;
         let lastIsMissedCall = false;
@@ -3407,19 +3416,26 @@
 
   document.getElementById("thread-delete-btn").addEventListener("click", async () => {
     if (!activeConvId) return;
-    if (!confirm("Bu sohbeti silmek istediğinize emin misiniz? (Karşı tarafta da silinir)")) return;
+    if (!confirm("Bu sohbetteki tüm mesajlar silinsin mi? (Karşı tarafta da silinir, kişi listende kalır)")) return;
     const convId = activeConvId;
-    if (messagesUnsub) { messagesUnsub(); messagesUnsub = null; }
-    const msgsSnap = await fbDb.collection("conversations").doc(convId).collection("messages").get();
-    const batch = fbDb.batch();
-    msgsSnap.docs.forEach(d => batch.delete(d.ref));
-    batch.delete(fbDb.collection("conversations").doc(convId));
-    await batch.commit();
-    activeConvId = null;
-    activeOtherUid = null;
-    activeOtherUids = [];
-    activeIsGroup = false;
-    showThreadList();
+    // Only the messages go; the conversation doc stays so the contact remains
+    // in both people's lists and can be messaged again.
+    try {
+      const convRef = fbDb.collection("conversations").doc(convId);
+      const msgsSnap = await convRef.collection("messages").get();
+      // Firestore batches are capped at 500 writes.
+      for (let i = 0; i < msgsSnap.docs.length; i += 450) {
+        const batch = fbDb.batch();
+        msgsSnap.docs.slice(i, i + 450).forEach(d => batch.delete(d.ref));
+        await batch.commit();
+      }
+      const conv = conversations.get(convId);
+      const convUpdate = {};
+      ((conv && conv.participants) || [myUid]).forEach(u => { convUpdate[`unreadCount.${u}`] = 0; });
+      await convRef.update(convUpdate).catch(() => {});
+    } catch (e) {
+      alert("Sohbet silinemedi: " + e.message);
+    }
   });
 
 })();
