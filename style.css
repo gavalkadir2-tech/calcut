@@ -638,6 +638,18 @@ button.danger { background: var(--danger); color: #fff; }
 #call-screen.alarm-mode .call-btn.accept { background: var(--accent); color: #111; }
 #call-screen.alarm-mode .call-btn.reject { background: #2c2c2e; }
 .app-version { color: #666; font-size: 12px; margin: 4px 0 0; }
+/* A newer Android build is available (see checkForAppUpdate). */
+#settings-btn.has-update { position: relative; }
+#settings-btn.has-update::after {
+  content: "";
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+}
 #thread-list li.missed-call .thread-preview { color: #ff6b6b; }
 .sound-row { display: flex; gap: 8px; align-items: center; }
 .sound-row select {

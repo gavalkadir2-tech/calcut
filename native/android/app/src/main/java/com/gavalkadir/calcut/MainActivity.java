@@ -18,7 +18,11 @@ public class MainActivity extends BridgeActivity {
     public void onCreate(Bundle savedInstanceState) {
         registerPlugin(AudioRoutePlugin.class);
         registerPlugin(NativePushPlugin.class);
+        registerPlugin(AppUpdatePlugin.class);
         super.onCreate(savedInstanceState);
+        // No screenshots or screen recording, and a blank preview in the
+        // recent-apps list, so messages never leak out of the app.
+        getWindow().setFlags(WindowManager.LayoutParams.FLAG_SECURE, WindowManager.LayoutParams.FLAG_SECURE);
         applyLaunchIntent(getIntent());
     }
 

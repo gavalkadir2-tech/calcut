@@ -17,12 +17,12 @@ jobs:
       run:
         working-directory: native
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
+      - uses: actions/checkout@v6
+      - uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: "21"
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: "22"
           cache: npm
@@ -55,7 +55,7 @@ jobs:
             ./gradlew assembleDebug --no-daemon
             cp app/build/outputs/apk/debug/app-debug.apk hesap-makinesi.apk
           fi
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: hesap-makinesi-apk
           path: native/android/hesap-makinesi.apk
@@ -67,7 +67,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # The app reads "versionCode=N" from these notes to offer updates (app.js).
+          notes="main dalının son hali. versionCode=${{ github.run_number }}"
           gh release view android-test >/dev/null 2>&1 || gh release create android-test \
-            --prerelease --title "Android deneme sürümü" \
-            --notes "main dalının son hali."
+            --prerelease --title "Android deneme sürümü" --notes "$notes"
           gh release upload android-test hesap-makinesi.apk --clobber
+          gh release edit android-test --notes "$notes"

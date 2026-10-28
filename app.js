@@ -1091,6 +1091,55 @@
     return { error: lastError };
   }
 
+  // ---- Android app updates. The app is installed from an APK, so nothing
+  // updates it; the release notes carry "versionCode=N" (see the workflow) and
+  // a dot on the settings button points to the download when N is newer.
+  const APP_RELEASE_API = "https://api.github.com/repos/gavalkadir2-tech/calcut/releases/tags/android-test";
+  const APP_APK_URL = "https://github.com/gavalkadir2-tech/calcut/releases/download/android-test/hesap-makinesi.apk";
+  let appUpdate = null; // { current, latest } once checked
+
+  function appUpdatePlugin() {
+    const cap = window.Capacitor;
+    if (!cap || !cap.isNativePlatform || !cap.isNativePlatform()) return null;
+    return (cap.Plugins && cap.Plugins.AppUpdate) || null;
+  }
+
+  async function checkForAppUpdate() {
+    const plugin = appUpdatePlugin();
+    if (!plugin) return;
+    try {
+      const { versionCode } = await plugin.getVersion();
+      const res = await fetch(APP_RELEASE_API, { headers: { Accept: "application/vnd.github+json" } });
+      if (!res.ok) return;
+      const m = /versionCode=(\d+)/.exec((await res.json()).body || "");
+      appUpdate = { current: versionCode, latest: m ? Number(m[1]) : null };
+      document.getElementById("settings-btn").classList.toggle("has-update", isAppUpdateAvailable());
+      renderAppUpdate();
+    } catch (e) {
+      console.error("app update check error", e);
+    }
+  }
+
+  function isAppUpdateAvailable() {
+    return !!(appUpdate && appUpdate.latest && appUpdate.latest > appUpdate.current);
+  }
+
+  function renderAppUpdate() {
+    if (!appUpdatePlugin()) return;
+    document.getElementById("app-update-section").classList.remove("hidden");
+    const msgEl = document.getElementById("app-update-msg");
+    const available = isAppUpdateAvailable();
+    document.getElementById("app-update-btn").classList.toggle("hidden", !available);
+    if (!appUpdate) msgEl.textContent = "Kontrol ediliyor...";
+    else if (available) msgEl.textContent = "Yeni sürüm var (" + appUpdate.latest + "). Bu cihazdaki: " + appUpdate.current + ".";
+    else msgEl.textContent = "Uygulama güncel (" + appUpdate.current + ").";
+  }
+
+  document.getElementById("app-update-btn").addEventListener("click", () => {
+    const plugin = appUpdatePlugin();
+    if (plugin) plugin.openDownload({ url: APP_APK_URL }).catch(() => {});
+  });
+
   // Once the call is answered/rejected in the app, drop the ringing system notification.
   function closeCallNotifications() {
     const np = nativePush();
@@ -1118,6 +1167,7 @@
     listenToConversations();
     listenForIncomingCalls();
     registerPushToken().catch(err => console.error("push token register error", err));
+    checkForAppUpdate();
     resetInactivityTimer();
     // Refresh the blocked list in case it changed on another device.
     fbDb.collection("users").doc(myUid).get().then(doc => {
@@ -1529,6 +1579,7 @@
     document.getElementById("nickname-change-msg").textContent = "";
     document.getElementById("new-nickname-input").value = "";
     document.getElementById("duress-pin-msg").textContent = "";
+    renderAppUpdate();
     document.getElementById("duress-pin-input").value = "";
     document.getElementById("backup-msg").textContent = "";
     loadPendingReferrals();
