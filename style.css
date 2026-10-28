@@ -636,3 +636,10 @@ button.danger { background: var(--danger); color: #fff; }
   margin-bottom: 10px;
 }
 .settings-body .sound-row button { width: 52px; }
+#call-security { margin-top: 8px; }
+#call-security.hidden { display: none; }
+#call-security p { margin: 2px 0; }
+.call-security-title { color: #8fd18f; font-size: 13px; }
+#call-security-code { font-size: 28px; letter-spacing: 6px; }
+.call-security-hint { color: #888; font-size: 12px; max-width: 260px; }
+#call-screen.video-active #call-security p { text-shadow: 0 1px 4px rgba(0,0,0,0.8); }

@@ -164,7 +164,7 @@
         <button id="enable-alarm-btn">Bildirimleri Etkinleştir</button>
         <button id="test-push-btn" class="ghost">Test bildirimi gönder</button>
         <p id="alarm-msg"></p>
-        <p class="app-version">Sürüm: 12</p>
+        <p class="app-version">Sürüm: 13</p>
         <hr>
         <label>Bildirim sesleri</label>
         <p class="hint">Uygulama açıkken çalan sesler. Uygulama kapalıyken telefonun kendi bildirim sesi çalar.</p>
@@ -209,6 +209,11 @@
   <h2 id="call-nickname">@kullanıcı</h2>
   <p id="call-status">Aranıyor...</p>
   <p id="call-timer" class="hidden">00:00</p>
+  <div id="call-security" class="hidden">
+    <p class="call-security-title">🔒 Uçtan uca şifreli</p>
+    <p id="call-security-code"></p>
+    <p class="call-security-hint">Karşı taraftaki kodla aynıysa görüşmeyi kimse dinlemiyor.</p>
+  </div>
   <p id="call-error" class="error"></p>
   <div id="call-actions-incoming" class="hidden">
     <button id="call-accept-btn" class="call-btn accept">Kabul Et</button>
