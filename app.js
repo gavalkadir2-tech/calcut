@@ -1299,6 +1299,8 @@
           preview = "📷 Fotoğraf";
         } else if (d.type === "file") {
           preview = "📄 Dosya";
+        } else if (d.type === "audio") {
+          preview = "🎤 Sesli mesaj";
         } else if (d.type === "call") {
           const raw = await decryptMessage(d).catch(() => null);
           try {
@@ -1583,6 +1585,7 @@
     myPublicKey = null;
     // Nothing that can decrypt the vault, and nothing already decrypted,
     // stays in memory or on the page while locked; unlocking re-derives it.
+    leaveComposer();
     currentLocalKey = null;
     currentBioKey = null;
     localSessionData = null;
@@ -2118,6 +2121,7 @@
         let text;
         if (m.type === "image") text = "📷 Fotoğraf";
         else if (m.type === "file") text = "📄 Dosya";
+        else if (m.type === "audio") text = "🎤 Sesli mesaj";
         else if (m.type === "call") text = "📞 Arama kaydı";
         else text = m.content + (m.edited ? " (düzenlendi)" : "");
         line.appendChild(document.createTextNode(text));
@@ -2141,6 +2145,7 @@
   async function openConversation(convId, otherUid, otherNickname, extra) {
     extra = extra || {};
     closeThreadSearch();
+    leaveComposer();
     activeConvId = convId;
     activeIsGroup = !!extra.isGroup;
     activeOtherUid = activeIsGroup ? null : otherUid;
@@ -2164,6 +2169,7 @@
       messageInput.disabled = false;
       document.getElementById("message-send-btn").disabled = false;
       attachPhotoBtn.disabled = false;
+      document.getElementById("voice-btn").disabled = false;
       threadBlockedBanner.classList.add("hidden");
     } else {
       await getPublicKeyForUid(otherUid);
@@ -2188,6 +2194,7 @@
     messageInput.disabled = isBlocked;
     document.getElementById("message-send-btn").disabled = isBlocked;
     attachPhotoBtn.disabled = isBlocked;
+    document.getElementById("voice-btn").disabled = isBlocked;
     document.getElementById("thread-call-btn").disabled = isBlocked;
     document.getElementById("thread-video-call-btn").disabled = isBlocked;
   }
@@ -3170,8 +3177,10 @@
             type: d.type,
             from: d.from === myUid ? "me" : "them",
             fromNickname,
-            text: (d.type === "image" || d.type === "file" || d.type === "call") ? null : plain,
+            text: (d.type === "image" || d.type === "file" || d.type === "call" || d.type === "audio") ? null : plain,
             image: d.type === "image" ? plain : null,
+            audio: d.type === "audio" ? plain : null,
+            replyTo: d.replyTo || null,
             file,
             call,
             ts: d.ts ? d.ts.toMillis() : Date.now(),
@@ -3296,6 +3305,72 @@
     return text;
   }
 
+  /* ---------------- Replies ----------------
+     A reply stores only the replied-to message's id (replyTo, outside the
+     encryption: an id reveals nothing). The quote is built locally from the
+     already-decrypted copy, so it can never show anything the reader
+     couldn't already read. */
+
+  function messageSnippet(m) {
+    if (!m) return "Mesaj bulunamadı";
+    if (m.deleted) return "Bu mesaj silindi";
+    if (m.image) return "📷 Fotoğraf";
+    if (m.audio) return "🎤 Sesli mesaj";
+    if (m.file) return "📄 " + (m.file.name || "Dosya");
+    if (m.call) return "📞 Arama";
+    return m.text || "";
+  }
+
+  function messageSenderName(m) {
+    if (!m) return "";
+    if (m.from === "me") return "Sen";
+    if (m.fromNickname) return "@" + m.fromNickname;
+    const conv = conversations.get(activeConvId);
+    return conv && conv.otherNickname ? "@" + conv.otherNickname : "";
+  }
+
+  function renderQuote(original, id) {
+    const quote = document.createElement("span");
+    quote.className = "msg-quote";
+    quote.dataset.quoteOf = id;
+    const sender = document.createElement("span");
+    sender.className = "msg-quote-sender";
+    sender.textContent = messageSenderName(original);
+    const text = document.createElement("span");
+    text.className = "msg-quote-text";
+    text.textContent = messageSnippet(original);
+    quote.appendChild(sender);
+    quote.appendChild(text);
+    return quote;
+  }
+
+  let replyingToId = null;
+  const replyBar = document.getElementById("reply-bar");
+
+  function startReply(msgId) {
+    const m = currentMessages.find(x => x.id === msgId);
+    if (!m) return;
+    replyingToId = msgId;
+    document.getElementById("reply-bar-sender").textContent = messageSenderName(m);
+    document.getElementById("reply-bar-snippet").textContent = messageSnippet(m);
+    replyBar.classList.remove("hidden");
+    messageInput.focus();
+  }
+
+  function cancelReply() {
+    replyingToId = null;
+    replyBar.classList.add("hidden");
+  }
+
+  // Extra message fields for the next send; consumes the pending reply.
+  function takeReplyFields() {
+    const fields = replyingToId ? { replyTo: replyingToId } : null;
+    cancelReply();
+    return fields;
+  }
+
+  document.getElementById("reply-bar-cancel").addEventListener("click", cancelReply);
+
   function renderMessages(msgs) {
     messageListEl.innerHTML = "";
     const query = searchQuery.trim();
@@ -3347,10 +3422,17 @@
         senderLabel.textContent = "@" + m.fromNickname;
         div.appendChild(senderLabel);
       }
+      if (m.replyTo) div.appendChild(renderQuote(msgs.find(q => q.id === m.replyTo), m.replyTo));
       if (m.image) {
         const img = document.createElement("img");
         img.src = m.image;
         div.appendChild(img);
+      } else if (m.audio) {
+        const audio = document.createElement("audio");
+        audio.controls = true;
+        audio.preload = "metadata";
+        audio.src = m.audio;
+        div.appendChild(audio);
       } else if (m.file) {
         const link = document.createElement("a");
         link.className = "file-attachment";
@@ -3415,7 +3497,13 @@
       reactBtn.textContent = "🙂";
       reactBtn.dataset.msgId = m.id;
       metaRow.appendChild(reactBtn);
-      if (m.type === "text" || m.type === "image" || m.type === "file") {
+      const replyBtn = document.createElement("button");
+      replyBtn.className = "msg-action msg-reply-btn";
+      replyBtn.textContent = "↩";
+      replyBtn.title = "Yanıtla";
+      replyBtn.dataset.msgId = m.id;
+      metaRow.appendChild(replyBtn);
+      if (m.type === "text" || m.type === "image" || m.type === "file" || m.type === "audio") {
         const fwdBtn = document.createElement("button");
         fwdBtn.className = "msg-action msg-forward-btn";
         fwdBtn.textContent = "➡️";
@@ -3499,6 +3587,26 @@
     const badge = e.target.closest(".msg-reaction-badge");
     if (badge && badge.classList.contains("mine")) {
       await setMyReaction(activeConvId, badge.dataset.msgId, badge.dataset.emoji);
+      return;
+    }
+    const replyBtn = e.target.closest(".msg-reply-btn");
+    if (replyBtn) {
+      startReply(replyBtn.dataset.msgId);
+      return;
+    }
+    const quote = e.target.closest(".msg-quote");
+    if (quote) {
+      const target = messageListEl.querySelector('.msg-bubble[data-msg-id="' + CSS.escape(quote.dataset.quoteOf) + '"]');
+      if (target) {
+        target.scrollIntoView({ behavior: "smooth", block: "center" });
+        target.classList.remove("flash");
+        void target.offsetWidth; // restart the animation
+        target.classList.add("flash");
+      }
+      return;
+    }
+    if (e.target.tagName === "IMG" && e.target.closest(".msg-bubble")) {
+      openImageViewer(e.target.src);
       return;
     }
     const fwdBtn = e.target.closest(".msg-forward-btn");
@@ -3614,6 +3722,8 @@
         await sendEncryptedTo(targetConvId, otherUids, msg.image, "image");
       } else if (msg.type === "file") {
         await sendEncryptedTo(targetConvId, otherUids, JSON.stringify(msg.file), "file");
+      } else if (msg.type === "audio") {
+        await sendEncryptedTo(targetConvId, otherUids, msg.audio, "audio");
       }
     } catch (e) {
       alert("İletilemedi: " + e.message);
@@ -3625,14 +3735,15 @@
     return b64encode(wrapped);
   }
 
-  async function sendEncrypted(payloadText, type) {
+  async function sendEncrypted(payloadText, type, extraFields) {
     // Capture these locally: the user may navigate away from the conversation
     // (clearing activeConvId/activeOtherUids) while this async send is still
     // in flight, and the write below must still target the right thread.
-    return sendEncryptedTo(activeConvId, activeOtherUids, payloadText, type);
+    return sendEncryptedTo(activeConvId, activeOtherUids, payloadText, type, extraFields);
   }
 
-  async function sendEncryptedTo(convId, otherUids, payloadText, type) {
+  // extraFields: unencrypted metadata stored on the message, e.g. { replyTo }.
+  async function sendEncryptedTo(convId, otherUids, payloadText, type, extraFields) {
     if (!convId || !otherUids || !otherUids.length) return;
     // Blocking only applies to 1:1 threads; groups don't expose a block UI.
     if (otherUids.length === 1 && myBlocked[otherUids[0]]) return;
@@ -3669,6 +3780,7 @@
       read: false,
     };
     if (expiresAt) msgData.expiresAt = expiresAt;
+    if (extraFields) Object.assign(msgData, extraFields);
     if (ciphertextB64.length > CHUNK_CHARS) {
       // Chunks go first, so a reader never sees the message without them.
       const chunked = { conv: convId, id: messagesCol.doc().id, n: Math.ceil(ciphertextB64.length / CHUNK_CHARS) };
@@ -3704,7 +3816,7 @@
     if (!text) return;
     messageInput.value = "";
     try {
-      await sendEncrypted(text, "text");
+      await sendEncrypted(text, "text", takeReplyFields());
     } catch (e) {
       alert("Mesaj gönderilemedi: " + e.message);
     }
@@ -3724,23 +3836,163 @@
       alert(isImage ? "Fotoğraf çok büyük (maks 10MB)." : "Dosya çok büyük (maks 10MB).");
       return;
     }
-    const reader = new FileReader();
-    reader.onload = async () => {
+    const replyFields = takeReplyFields();
+    try {
+      const dataUrl = await readAsDataUrl(file);
+      if (isImage) {
+        await sendEncrypted(await shrinkPhoto(dataUrl, file.type), "image", replyFields);
+      } else {
+        const payload = JSON.stringify({ name: file.name, mime: file.type, size: file.size, dataUrl });
+        await sendEncrypted(payload, "file", replyFields);
+      }
+    } catch (e) {
+      alert("Dosya gönderilemedi: " + e.message);
+    }
+  });
+
+  function readAsDataUrl(blob) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = () => reject(reader.error);
+      reader.readAsDataURL(blob);
+    });
+  }
+
+  // Phone photos are often 3-8MB; like WhatsApp, send them scaled to at
+  // most PHOTO_MAX_SIDE px as JPEG, which looks the same on a phone and
+  // sends several times faster. GIFs (animation) and photos that are
+  // already small enough go as they are.
+  const PHOTO_MAX_SIDE = 1600;
+
+  async function shrinkPhoto(dataUrl, mime) {
+    if (mime === "image/gif") return dataUrl;
+    try {
+      const img = await new Promise((resolve, reject) => {
+        const i = new Image();
+        i.onload = () => resolve(i);
+        i.onerror = () => reject(new Error("decode"));
+        i.src = dataUrl;
+      });
+      const scale = Math.min(1, PHOTO_MAX_SIDE / Math.max(img.naturalWidth, img.naturalHeight));
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.round(img.naturalWidth * scale);
+      canvas.height = Math.round(img.naturalHeight * scale);
+      canvas.getContext("2d").drawImage(img, 0, 0, canvas.width, canvas.height);
+      const jpeg = canvas.toDataURL("image/jpeg", 0.82);
+      return jpeg.length < dataUrl.length ? jpeg : dataUrl;
+    } catch (e) {
+      return dataUrl; // a format the browser can't draw (e.g. HEIC): send the original
+    }
+  }
+
+  /* ---------------- Voice messages ---------------- */
+
+  const VOICE_MAX_MS = 5 * 60 * 1000;
+  const inputRow = document.querySelector(".message-input-row");
+  const voiceTimerEl = document.getElementById("voice-timer");
+  let voiceRecorder = null;
+  let voiceChunks = [];
+  let voiceStartedAt = 0;
+  let voiceTick = null;
+  let voiceSendOnStop = false;
+
+  function voiceMimeType() {
+    if (!window.MediaRecorder) return null;
+    // Opus in WebM on Android/Chrome, AAC in MP4 on iPhone/Safari.
+    return ["audio/webm;codecs=opus", "audio/webm", "audio/mp4", "audio/aac"]
+      .find(t => MediaRecorder.isTypeSupported(t)) || "";
+  }
+
+  function formatVoiceTime(ms) {
+    const sec = Math.floor(ms / 1000);
+    return Math.floor(sec / 60) + ":" + String(sec % 60).padStart(2, "0");
+  }
+
+  async function startVoiceRecording() {
+    const mimeType = voiceMimeType();
+    if (mimeType === null) {
+      alert("Bu cihaz ses kaydını desteklemiyor.");
+      return;
+    }
+    let stream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch (e) {
+      alert("Mikrofon erişimi reddedildi veya kullanılamıyor.");
+      return;
+    }
+    voiceChunks = [];
+    voiceSendOnStop = false;
+    voiceRecorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+    voiceRecorder.ondataavailable = e => { if (e.data && e.data.size) voiceChunks.push(e.data); };
+    voiceRecorder.onstop = async () => {
+      stream.getTracks().forEach(t => t.stop());
+      const send = voiceSendOnStop;
+      const blob = new Blob(voiceChunks, { type: voiceRecorder.mimeType || mimeType || "audio/webm" });
+      voiceRecorder = null;
+      voiceChunks = [];
+      endVoiceUi();
+      if (!send || !blob.size) return;
       try {
-        if (isImage) {
-          await sendEncrypted(reader.result, "image");
-        } else {
-          const payload = JSON.stringify({ name: file.name, mime: file.type, size: file.size, dataUrl: reader.result });
-          await sendEncrypted(payload, "file");
-        }
+        await sendEncrypted(await readAsDataUrl(blob), "audio", takeReplyFields());
       } catch (e) {
-        alert("Dosya gönderilemedi: " + e.message);
+        alert("Sesli mesaj gönderilemedi: " + e.message);
       }
     };
-    reader.readAsDataURL(file);
+    voiceRecorder.start();
+    voiceStartedAt = Date.now();
+    voiceTimerEl.textContent = "0:00";
+    inputRow.classList.add("recording");
+    voiceTick = setInterval(() => {
+      const elapsed = Date.now() - voiceStartedAt;
+      voiceTimerEl.textContent = formatVoiceTime(elapsed);
+      if (elapsed >= VOICE_MAX_MS) stopVoiceRecording(true);
+    }, 250);
+  }
+
+  function stopVoiceRecording(send) {
+    if (!voiceRecorder || voiceRecorder.state === "inactive") return;
+    voiceSendOnStop = send;
+    voiceRecorder.stop();
+  }
+
+  // Leaving a chat (or locking) drops a pending reply and discards a recording.
+  function leaveComposer() {
+    cancelReply();
+    stopVoiceRecording(false);
+  }
+
+  function endVoiceUi() {
+    clearInterval(voiceTick);
+    voiceTick = null;
+    inputRow.classList.remove("recording");
+  }
+
+  document.getElementById("voice-btn").addEventListener("click", startVoiceRecording);
+  document.getElementById("voice-send-btn").addEventListener("click", () => stopVoiceRecording(true));
+  document.getElementById("voice-cancel-btn").addEventListener("click", () => stopVoiceRecording(false));
+
+  /* ---------------- Full-screen photo viewer ---------------- */
+
+  const imageViewer = document.getElementById("image-viewer");
+
+  function openImageViewer(src) {
+    document.getElementById("image-viewer-img").src = src;
+    const download = document.getElementById("image-viewer-download");
+    download.href = src;
+    download.download = "foto" + (src.startsWith("data:image/png") ? ".png" : ".jpg");
+    imageViewer.classList.remove("hidden");
+  }
+
+  imageViewer.addEventListener("click", (e) => {
+    if (e.target.closest("#image-viewer-download")) return;
+    imageViewer.classList.add("hidden");
+    document.getElementById("image-viewer-img").src = "";
   });
 
   document.getElementById("thread-back-btn").addEventListener("click", () => {
+    leaveComposer();
     if (messagesUnsub) { messagesUnsub(); messagesUnsub = null; }
     stopTypingListener();
     closeThreadSearch();

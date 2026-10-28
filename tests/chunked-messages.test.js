@@ -50,7 +50,7 @@ async function load() {
     true, ["encrypt", "decrypt"]);
   const firebase = { firestore: { FieldValue: { serverTimestamp: () => "TS", increment: () => 1 }, Timestamp: { fromMillis: m => m } } };
   const code =
-    extract("  const CHUNK_CHARS", "  function renderMessages(") +
+    extract("  const CHUNK_CHARS", "  /* ---------------- Replies") +
     extract("  async function wrapAesKeyForPublicKey(", "  async function sendEncrypted(payloadText") +
     extract("  async function sendEncryptedTo(", "  document.getElementById(\"message-send-btn\")");
   const api = new Function("fbDb", "firebase", "env",
@@ -87,3 +87,13 @@ for (const [label, size, chunked] of [["1 KB", 1024, false], ["600 KB", 600 * 10
     }
   });
 }
+
+test("a reply stores only the replied-to id, unencrypted, next to the ciphertext", async () => {
+  const { api, store } = await load();
+  await api.sendEncryptedTo("conv1", ["other"], "evet, yarın", "text", { replyTo: "msg42" });
+  const message = [...store.values()].find(d => d.ts);
+  assert.strictEqual(message.replyTo, "msg42");
+  assert.strictEqual(message.from, "me");
+  assert.ok(!JSON.stringify(message).includes("yarın")); // the text itself stays encrypted
+  assert.strictEqual(await api.decryptMessage(message), "evet, yarın");
+});
