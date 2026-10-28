@@ -20,6 +20,7 @@ public class MainActivity extends BridgeActivity {
         registerPlugin(NativePushPlugin.class);
         registerPlugin(AppUpdatePlugin.class);
         registerPlugin(BiometricKeyPlugin.class);
+        registerPlugin(AlarmSoundPlugin.class);
         super.onCreate(savedInstanceState);
         // No screenshots or screen recording, and a blank preview in the
         // recent-apps list, so messages never leak out of the app.
