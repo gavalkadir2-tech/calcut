@@ -193,10 +193,10 @@ button.danger { background: var(--danger); color: #fff; }
   display: flex;
   flex-wrap: wrap;
   justify-content: center;
-  gap: 6px;
+  gap: 4px;
   margin-bottom: 12px;
 }
-#thread-detail-panel .thread-actions button { flex: 1 1 0; min-width: 40px; max-width: 56px; padding: 8px 0; }
+#thread-detail-panel .thread-actions button { flex: 1 1 0; min-width: 34px; max-width: 56px; padding: 8px 0; }
 #thread-typing { margin: 0; font-size: 12px; color: var(--accent); font-style: italic; }
 .header-actions { display: flex; gap: 8px; }
 .header-actions button, #thread-delete-btn, #thread-back-btn {
@@ -370,6 +370,9 @@ button.danger { background: var(--danger); color: #fff; }
 .message-input-row { display: flex; gap: 8px; padding-top: 10px; }
 .message-input-row input {
   flex: 1;
+  /* Inputs have an intrinsic min width; without this the row overflows on
+     narrow phones and pushes the send button off screen. */
+  min-width: 0;
   background: #1c1f26;
   border: 1px solid #333;
   color: #fff;
@@ -384,6 +387,7 @@ button.danger { background: var(--danger); color: #fff; }
   border-radius: 20px;
   padding: 0 18px;
   cursor: pointer;
+  flex-shrink: 0;
 }
 
 .settings-body { display: flex; flex-direction: column; overflow-y: auto; }
