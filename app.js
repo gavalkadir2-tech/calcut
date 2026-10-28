@@ -1035,7 +1035,8 @@
     if (messagesUnsub) { messagesUnsub(); messagesUnsub = null; }
     if (disappearingCheckInterval) { clearInterval(disappearingCheckInterval); disappearingCheckInterval = null; }
     stopTypingListener();
-    stopListeningForIncomingCalls();
+    // The incoming-call listener deliberately keeps running while locked (it
+    // follows the Firebase sign-in, see listenForIncomingCalls); it stops on sign-out.
     endCall(null);
     lastMessageUnsubs.forEach(unsub => unsub());
     lastMessageUnsubs.clear();
@@ -1368,6 +1369,7 @@
 
   function autoLockNow() {
     if (!isVaultUnlockedView()) return;
+    if (activeCallId) return; // locking would hang up the call (screen off mid-call)
     lockVault();
   }
 
@@ -2529,10 +2531,28 @@
     }
   }
 
-  function listenForIncomingCalls() {
+  /* Incoming calls ring and can be answered ("Durdur") as soon as the app is
+     open, even on the calculator screen while the vault is locked: no 1923=+
+     gesture or PIN. Answering only needs the signed-in Firebase account (kept
+     on the device by Firebase), not the message keys, so messages stay locked.
+     The listener follows the sign-in state rather than the vault. */
+  let incomingCallsUid = null;
+
+  function listenForIncomingCalls(uid) {
+    uid = uid || myUid || (fbAuth.currentUser && fbAuth.currentUser.uid);
+    if (!uid) return;
+    if (incomingCallsUnsub && incomingCallsUid === uid) return; // already listening
     if (incomingCallsUnsub) incomingCallsUnsub();
+    incomingCallsUid = uid;
+    if (!myPrivateKey) {
+      // Locked: the blocked list normally comes with the unlocked session.
+      fbDb.collection("users").doc(uid).get().then(doc => {
+        const data = doc.data();
+        if (data && !myPrivateKey) myBlocked = data.blocked || {};
+      }).catch(() => {});
+    }
     incomingCallsUnsub = fbDb.collection("calls")
-      .where("to", "==", myUid)
+      .where("to", "==", uid)
       .where("status", "==", "ringing")
       .onSnapshot(snap => {
         snap.docChanges().forEach(change => {
@@ -2548,8 +2568,14 @@
       }, () => {});
   }
 
+  fbAuth.onAuthStateChanged(user => {
+    if (user) listenForIncomingCalls(user.uid);
+    else stopListeningForIncomingCalls();
+  });
+
   function stopListeningForIncomingCalls() {
     if (incomingCallsUnsub) { incomingCallsUnsub(); incomingCallsUnsub = null; }
+    incomingCallsUid = null;
     if (incomingCallDocUnsub) { incomingCallDocUnsub(); incomingCallDocUnsub = null; }
     currentIncomingCall = null;
   }
