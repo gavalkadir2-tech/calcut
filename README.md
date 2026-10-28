@@ -6,8 +6,7 @@ Uygulama kapalıyken (ya da telefon kilitliyken) yeni mesaj ve gelen arama
 için "Alarm" görünümlü, sesli ve titreşimli bildirim gelir. Firebase'in
 ücretsiz (Spark) planında çalışır; kredi kartı gerekmez.
 
-- `worker/push-worker.js`: Cloudflare'in ücretsiz Worker'ında çalışan küçük
-  sunucu. Uygulama mesaj gönderince / arama başlatınca buna haber verir; Worker
+- `worker/_worker.js`: Cloudflare'de (ücretsiz) çalışan küçük sunucu. Uygulama mesaj gönderince / arama başlatınca buna haber verir; Worker
   gönderenin gerçekten o kişi olduğunu Firestore'dan doğrulayıp alıcının
   cihazlarına Firebase Cloud Messaging (FCM) ile push gönderir.
 - `sw.js`: Push'u alıp bildirimi gösterir. Arama çalarken 8 saniyede bir
@@ -20,20 +19,24 @@ için "Alarm" görünümlü, sesli ve titreşimli bildirim gelir. Firebase'in
 2. **Servis hesabı anahtarı:** Firebase konsolu → Proje ayarları →
    *Hizmet hesapları (Service accounts)* → "Yeni özel anahtar oluştur" →
    bir `.json` dosyası iner. Bu dosya gizlidir, kimseyle paylaşma, GitHub'a koyma.
-3. **Cloudflare Worker:**
-   1. https://dash.cloudflare.com adresinden ücretsiz hesap aç (kart istemez).
-   2. *Workers & Pages* → *Create* → *Create Worker* → ad: `calcut-push` → *Deploy*.
-   3. *Edit code* → içindekini tamamen sil, `worker/push-worker.js` dosyasının
-      tamamını yapıştır → *Deploy*.
-   4. Worker → *Settings* → *Variables and Secrets* → *Add* → Tür: **Secret**,
-      Ad: `SERVICE_ACCOUNT`, Değer: 2. adımda inen `.json` dosyasının
-      tüm içeriği → *Deploy*.
-   5. Worker'ın adresini kopyala (ör. `https://calcut-push.ADIN.workers.dev`) ve
-      `firebase-config.js` içindeki `window.PUSH_URL` alanına yapıştır.
+3. **Cloudflare Pages (bildirim sunucusu):** Bazı Türk internet sağlayıcıları
+   `*.workers.dev` adreslerini engellediği için sunucu `*.pages.dev` üzerinde
+   çalıştırılır. GitHub'a bağlı olduğu için kod güncellenince kendiliğinden yayınlanır.
+   1. https://dash.cloudflare.com → *Workers & Pages* → *Create* → **Pages** sekmesi →
+      *Import an existing Git repository* → `gavalkadir2-tech/calcut` → *Begin setup*.
+   2. Project name: `calcut-bildirim` · Production branch: `main` ·
+      Framework preset: *None* · Build command: **boş** ·
+      Build output directory: **`worker`** → *Save and Deploy*.
+   3. Proje → *Settings* → *Variables and Secrets* → *Add* → Tür: **Secret**,
+      Ad: `SERVICE_ACCOUNT`, Değer: 2. adımda inen `.json` dosyasının tüm içeriği → *Save*.
+   4. *Deployments* → en üstteki dağıtım → *⋯* → *Retry deployment* (secret'ın
+      devreye girmesi için).
+   5. Proje adresini (ör. `https://calcut-bildirim.pages.dev`) VPN'siz açınca
+      `"method not allowed"` yazmalı. Bu adresi `firebase-config.js` içindeki
+      `window.PUSH_URLS` listesinin başına ekle. Sadece kendi adreslerini ekle:
+      uygulama bu adreslere kullanıcının giriş anahtarını gönderir.
 4. **Firestore kuralı gerekmez:** Cihaz anahtarları (`users/{uid}.fcmTokens`)
-   Worker tarafından servis hesabıyla kaydedilir. Worker kodu her
-   güncellendiğinde Cloudflare'de *Edit code* ile yeniden yapıştırılıp
-   *Deploy* edilmelidir.
+   sunucu tarafından servis hesabıyla kaydedilir.
 5. Siteyi her zamanki gibi HTTPS üzerinden yayınla.
 
 ### Telefonda

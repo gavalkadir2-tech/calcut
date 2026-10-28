@@ -1,4 +1,9 @@
-// calcut push Worker (Cloudflare Workers, free plan).
+// calcut push Worker (Cloudflare, free plan).
+//
+// Runs as-is either as a Worker (paste into "Edit code") or as a Cloudflare
+// Pages project in advanced mode: a Pages project connected to this repo with
+// build output directory "worker" serves this _worker.js. Pages (*.pages.dev)
+// matters because some Turkish ISPs block *.workers.dev.
 //
 // The app POSTs here after sending a message or while a call is ringing:
 //   { kind: "message", convId, msgId } | { kind: "call" | "call-missed", callId }

@@ -50,7 +50,7 @@ self.addEventListener("fetch", (event) => {
 });
 
 /* ---------------- Background push (FCM) ----------------
-   The push Worker (worker/push-worker.js) sends data-only pushes:
+   The push Worker (worker/_worker.js) sends data-only pushes:
    { kind: "message" | "call" | "call-missed", media? }. They arrive here
    even when the app/browser is closed. Text is disguised as an alarm, the
    same way the in-app notification is, and never names the sender. */
