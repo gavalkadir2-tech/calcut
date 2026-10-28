@@ -1,0 +1,23 @@
+name: Tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+      - name: Syntax check
+        run: |
+          for f in app.js sw.js firebase-config.js native/copy-web.js; do node --check "$f"; done
+          # _worker.js is an ES module, Code.gs is Apps Script (plain JS).
+          node --input-type=module --check < worker/_worker.js
+          node -e 'new Function(require("fs").readFileSync("apps-script/Code.gs", "utf8"))'
+      - name: Unit tests
+        run: node --test tests/*.test.js
