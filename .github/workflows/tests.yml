@@ -21,3 +21,23 @@ jobs:
           node -e 'new Function(require("fs").readFileSync("apps-script/Code.gs", "utf8"))'
       - name: Unit tests
         run: node --test tests/*.test.js
+
+  firestore-rules:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: tests/firestore-rules
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: tests/firestore-rules/package-lock.json
+      - run: npm ci
+      - name: Rules tests (Firestore emulator)
+        run: npm test

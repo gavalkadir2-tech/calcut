@@ -756,3 +756,51 @@ button.danger { background: var(--danger); color: #fff; }
 #call-security-code { font-size: 28px; letter-spacing: 6px; }
 .call-security-hint { color: #888; font-size: 12px; max-width: 260px; }
 #call-screen.video-active #call-security p { text-shadow: 0 1px 4px rgba(0,0,0,0.8); }
+
+/* Profile photos: a photo when the user set one, else their initial on a colour. */
+.avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background-size: cover;
+  background-position: center;
+  color: #fff;
+  background-color: #2a2e37;
+  font-weight: 600;
+  width: 40px;
+  height: 40px;
+  font-size: 17px;
+}
+.avatar.small { width: 30px; height: 30px; font-size: 13px; }
+.avatar.large { width: 72px; height: 72px; font-size: 28px; }
+.avatar.hidden { display: none; }
+#thread-list li.has-avatar { flex-direction: row; align-items: center; gap: 12px; }
+.thread-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.thread-title-row { display: flex; align-items: center; justify-content: center; gap: 8px; min-width: 0; }
+.thread-title-row h2 { min-width: 0; flex: 0 1 auto; }
+#thread-presence { margin: 0; font-size: 12px; color: #888; }
+#thread-typing:not(.hidden) ~ #thread-presence { display: none; }
+.profile-photo-row { display: flex; align-items: center; gap: 16px; margin: 6px 0; }
+.profile-photo-actions { display: flex; flex-direction: column; gap: 6px; flex: 1; }
+.settings-body .toggle-row { display: flex; align-items: center; gap: 10px; margin: 10px 0 8px; min-height: 24px; font-size: 14px; line-height: 1.3; color: var(--panel-fg); }
+.settings-body .toggle-row input { width: 20px; height: 20px; padding: 0; margin: 0; flex-shrink: 0; }
+
+/* Attach menu: camera or gallery. */
+#attach-menu {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+#attach-menu.hidden { display: none; }
+#attach-menu button {
+  flex: 1;
+  background: #1c1f26;
+  border: 1px solid #333;
+  color: var(--panel-fg);
+  border-radius: 10px;
+  padding: 10px;
+  font-size: 15px;
+  cursor: pointer;
+}

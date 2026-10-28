@@ -104,8 +104,12 @@
       <div class="vault-header">
         <button id="thread-back-btn" class="ghost">←</button>
         <div class="thread-header-titles">
-          <h2 id="thread-title">Sohbet</h2>
+          <div class="thread-title-row">
+            <span id="thread-avatar" class="avatar small hidden"></span>
+            <h2 id="thread-title">Sohbet</h2>
+          </div>
           <p id="thread-typing" class="hidden">yazıyor...</p>
+          <p id="thread-presence" class="hidden"></p>
         </div>
       </div>
       <div class="thread-actions">
@@ -126,6 +130,10 @@
         <button id="thread-unblock-btn">Engeli Kaldır</button>
       </div>
       <div id="message-list"></div>
+      <div id="attach-menu" class="hidden">
+        <button id="attach-camera-btn">📷 Kamera</button>
+        <button id="attach-gallery-btn">🖼️ Galeri / Dosya</button>
+      </div>
       <div id="reply-bar" class="hidden">
         <div class="reply-bar-text">
           <span id="reply-bar-sender"></span>
@@ -136,6 +144,7 @@
       <div class="message-input-row">
         <button id="attach-photo-btn" title="Dosya ekle">📎</button>
         <input id="photo-input" type="file" multiple class="hidden">
+        <input id="camera-input" type="file" accept="image/*" capture="environment" class="hidden">
         <input id="message-input" type="text" placeholder="Mesaj yaz...">
         <button id="voice-btn" title="Sesli mesaj kaydet">🎤</button>
         <button id="message-send-btn">Gönder</button>
@@ -154,6 +163,22 @@
         <h2>Ayarlar</h2>
       </div>
       <div class="settings-body">
+        <label>Profil fotoğrafı</label>
+        <div class="profile-photo-row">
+          <span id="my-avatar" class="avatar large"></span>
+          <div class="profile-photo-actions">
+            <button id="avatar-pick-btn">Fotoğraf Seç</button>
+            <button id="avatar-remove-btn" class="ghost">Kaldır</button>
+          </div>
+        </div>
+        <input id="avatar-input" type="file" accept="image/*" class="hidden">
+        <p id="avatar-msg"></p>
+        <label class="toggle-row">
+          <input id="presence-toggle" type="checkbox" checked>
+          <span>Çevrimiçi ve son görülme bilgimi göster</span>
+        </label>
+        <p class="hint">Kapatırsan başkalarının çevrimiçi ve son görülme bilgisini de göremezsin.</p>
+        <hr>
         <label>Görünen Kullanıcı Adını Değiştir</label>
         <input id="new-nickname-input" type="text" placeholder="Yeni kullanıcı adı">
         <button id="change-nickname-btn">Kullanıcı Adını Değiştir</button>
@@ -181,7 +206,7 @@
         <button id="enable-alarm-btn">Bildirimleri Etkinleştir</button>
         <button id="test-push-btn" class="ghost">Test bildirimi gönder</button>
         <p id="alarm-msg"></p>
-        <p class="app-version">Sürüm: 25</p>
+        <p class="app-version">Sürüm: 26</p>
         <div id="app-update-section" class="hidden">
           <hr>
           <label>Uygulama güncellemesi</label>

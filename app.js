@@ -1244,6 +1244,7 @@
     showThreadList();
     listenToConversations();
     listenForIncomingCalls();
+    startPresence();
     registerPushToken().catch(err => console.error("push token register error", err));
     checkForAppUpdate();
     resetInactivityTimer();
@@ -1266,6 +1267,7 @@
     if (messagesUnsub) { messagesUnsub(); messagesUnsub = null; }
     if (disappearingCheckInterval) { clearInterval(disappearingCheckInterval); disappearingCheckInterval = null; }
     stopTypingListener();
+    stopPresence();
     // The incoming-call listener deliberately keeps running while locked (it
     // follows the Firebase sign-in, see listenForIncomingCalls); it stops on sign-out.
     endCall(null);
@@ -1514,15 +1516,27 @@
     list.forEach(conv => {
       const li = document.createElement("li");
       if (conv.unread > 0) li.classList.add("unread");
+      li.classList.add("has-avatar");
       li.innerHTML = `
-        <div class="thread-row">
-          <span class="thread-name"></span>
-          <span class="thread-time"></span>
-        </div>
-        <div class="thread-row">
-          <span class="thread-preview"></span>
-          <span class="thread-badge hidden">0</span>
+        <span class="avatar"></span>
+        <div class="thread-body">
+          <div class="thread-row">
+            <span class="thread-name"></span>
+            <span class="thread-time"></span>
+          </div>
+          <div class="thread-row">
+            <span class="thread-preview"></span>
+            <span class="thread-badge hidden">0</span>
+          </div>
         </div>`;
+      const avatarEl = li.querySelector(".avatar");
+      if (conv.isGroup) {
+        avatarEl.textContent = "👥";
+        avatarEl.style.backgroundColor = "#2a2e37";
+      } else {
+        watchProfile(conv.otherUid);
+        paintAvatar(avatarEl, conv.otherUid, conv.otherNickname);
+      }
       const displayName = conv.isGroup ? `👥 ${conv.groupName} (${conv.participants.length})` : "@" + conv.otherNickname;
       li.querySelector(".thread-name").textContent = displayName + (conv.muted ? " 🔕" : "");
       if (pins.includes(conv.id)) {
@@ -1708,6 +1722,7 @@
     } else {
       clearTimeout(backgroundTimer);
       resetInactivityTimer();
+      writeLastSeen();
     }
   });
 
@@ -1734,6 +1749,8 @@
     document.getElementById("nickname-change-msg").textContent = "";
     document.getElementById("new-nickname-input").value = "";
     document.getElementById("duress-pin-msg").textContent = "";
+    document.getElementById("avatar-msg").textContent = "";
+    renderMyProfile();
     renderAppUpdate();
     document.getElementById("duress-pin-input").value = "";
     document.getElementById("backup-msg").textContent = "";
@@ -2231,6 +2248,8 @@
     if (activeIsGroup) {
       await Promise.all(activeOtherUids.map(u => getPublicKeyForUid(u)));
       threadTypingEl.classList.add("hidden");
+      clearInterval(presenceTick);
+      renderThreadHeaderProfile(); // groups show no avatar or presence
       // Not gated by updateBlockUi() for a group, so reset explicitly.
       messageInput.disabled = false;
       document.getElementById("message-send-btn").disabled = false;
@@ -2240,6 +2259,7 @@
     } else {
       await getPublicKeyForUid(otherUid);
       listenToTyping(convId, otherUid);
+      startThreadPresence();
       updateBlockUi();
     }
     listenToMessages(convId);
@@ -3196,6 +3216,215 @@
     }).catch(() => {});
   }
 
+  /* ---------------- Profiles: photo and online / last seen ----------------
+     Stored on users/{uid} (readable by every signed-in user, like WhatsApp's
+     "everyone" setting): avatar (a small JPEG data URL), lastSeen (a server
+     timestamp refreshed every minute while the messenger is open) and
+     hidePresence. As in WhatsApp, hiding your own presence also hides
+     everyone else's from you. Needs the users rule in firestore.rules. */
+
+  const PRESENCE_HEARTBEAT_MS = 60 * 1000;
+  const PRESENCE_ONLINE_MS = 75 * 1000; // a missed heartbeat or two still counts as online
+  const AVATAR_SIDE = 128;
+  const AVATAR_RE = /^data:image\/jpeg;base64,[A-Za-z0-9+/=]+$/;
+  const profiles = new Map(); // uid -> { avatar, lastSeen, hidePresence }
+  const profileUnsubs = new Map();
+  let presenceHeartbeat = null;
+  let presenceTick = null;
+  let myPresenceKnown = false;
+  let threadListRenderQueued = false;
+
+  function myHidePresence() {
+    const me = profiles.get(myUid);
+    return !!(me && me.hidePresence);
+  }
+
+  function watchProfile(uid) {
+    if (!uid || profileUnsubs.has(uid)) return;
+    const unsub = fbDb.collection("users").doc(uid).onSnapshot(doc => {
+      const d = doc.data() || {};
+      profiles.set(uid, {
+        // Only our own JPEG data URLs: anything else (e.g. a remote URL that
+        // would reveal the viewer's IP) is ignored.
+        avatar: typeof d.avatar === "string" && AVATAR_RE.test(d.avatar) ? d.avatar : null,
+        lastSeen: d.lastSeen && d.lastSeen.toMillis ? d.lastSeen.toMillis() : null,
+        hidePresence: !!d.hidePresence,
+      });
+      onProfileChanged(uid);
+    }, () => {});
+    profileUnsubs.set(uid, unsub);
+  }
+
+  function onProfileChanged(uid) {
+    if (uid === myUid) {
+      renderMyProfile();
+      if (!myPresenceKnown) {
+        myPresenceKnown = true;
+        writeLastSeen();
+      }
+    }
+    if (activeConvId && !activeIsGroup && (uid === activeOtherUid || uid === myUid)) renderThreadHeaderProfile();
+    if (!threadListPanel.classList.contains("hidden") && !threadListRenderQueued) {
+      threadListRenderQueued = true;
+      requestAnimationFrame(() => { threadListRenderQueued = false; renderThreadList(); });
+    }
+  }
+
+  function startPresence() {
+    stopPresence();
+    myPresenceKnown = false;
+    watchProfile(myUid); // its first snapshot tells whether to write lastSeen
+    presenceHeartbeat = setInterval(writeLastSeen, PRESENCE_HEARTBEAT_MS);
+  }
+
+  function stopPresence() {
+    clearInterval(presenceHeartbeat);
+    presenceHeartbeat = null;
+    clearInterval(presenceTick);
+    presenceTick = null;
+    profileUnsubs.forEach(unsub => unsub());
+    profileUnsubs.clear();
+    profiles.clear();
+    myPresenceKnown = false;
+  }
+
+  function writeLastSeen() {
+    if (!myUid || !myPresenceKnown || myHidePresence() || document.hidden) return;
+    fbDb.collection("users").doc(myUid)
+      .update({ lastSeen: firebase.firestore.FieldValue.serverTimestamp() }).catch(() => {});
+  }
+
+  function presenceText(uid) {
+    const p = profiles.get(uid);
+    if (!p || !p.lastSeen || p.hidePresence || myHidePresence()) return null;
+    if (Date.now() - p.lastSeen < PRESENCE_ONLINE_MS) return "çevrimiçi";
+    const seen = new Date(p.lastSeen);
+    const time = seen.toLocaleTimeString("tr-TR", { hour: "2-digit", minute: "2-digit" });
+    const today = new Date();
+    const yesterday = new Date(today.getFullYear(), today.getMonth(), today.getDate() - 1);
+    let day;
+    if (seen.toDateString() === today.toDateString()) day = "bugün";
+    else if (seen.toDateString() === yesterday.toDateString()) day = "dün";
+    else day = seen.toLocaleDateString("tr-TR", { day: "2-digit", month: "2-digit" });
+    return "son görülme: " + day + " " + time;
+  }
+
+  function avatarColor(uid) {
+    let h = 0;
+    for (const ch of String(uid || "")) h = (h * 31 + ch.charCodeAt(0)) % 360;
+    return "hsl(" + h + ", 45%, 42%)";
+  }
+
+  function paintAvatar(el, uid, name) {
+    const p = profiles.get(uid);
+    if (p && p.avatar) {
+      el.style.backgroundImage = 'url("' + p.avatar + '")';
+      el.style.backgroundColor = "";
+      el.textContent = "";
+    } else {
+      el.style.backgroundImage = "";
+      el.style.backgroundColor = avatarColor(uid);
+      el.textContent = String(name || "?").replace(/^@/, "").charAt(0).toUpperCase() || "?";
+    }
+  }
+
+  const threadAvatarEl = document.getElementById("thread-avatar");
+  const threadPresenceEl = document.getElementById("thread-presence");
+
+  function renderThreadHeaderProfile() {
+    if (!activeConvId || activeIsGroup || !activeOtherUid) {
+      threadAvatarEl.classList.add("hidden");
+      threadPresenceEl.classList.add("hidden");
+      return;
+    }
+    const conv = conversations.get(activeConvId);
+    threadAvatarEl.classList.remove("hidden");
+    paintAvatar(threadAvatarEl, activeOtherUid, conv && conv.otherNickname);
+    const text = presenceText(activeOtherUid);
+    threadPresenceEl.textContent = text || "";
+    threadPresenceEl.classList.toggle("hidden", !text);
+  }
+
+  function startThreadPresence() {
+    clearInterval(presenceTick);
+    if (activeOtherUid && !activeIsGroup) watchProfile(activeOtherUid);
+    renderThreadHeaderProfile();
+    // "çevrimiçi" turns into "son görülme" by time alone, so re-check.
+    presenceTick = setInterval(renderThreadHeaderProfile, 30 * 1000);
+  }
+
+  function renderMyProfile() {
+    const el = document.getElementById("my-avatar");
+    if (el && myUid) paintAvatar(el, myUid, myNickname);
+    const p = profiles.get(myUid);
+    document.getElementById("avatar-remove-btn").classList.toggle("hidden", !(p && p.avatar));
+    document.getElementById("presence-toggle").checked = !myHidePresence();
+  }
+
+  function profileSaveError(e) {
+    return e && e.code === "permission-denied"
+      ? "Kaydedilemedi: Firestore kurallarının güncellenmesi gerekiyor (README > Firestore güvenlik kuralları)."
+      : "Kaydedilemedi: " + (e && e.message);
+  }
+
+  // Centre-crops to a square and scales to AVATAR_SIDE, as a small JPEG.
+  async function makeAvatar(file) {
+    const dataUrl = await readAsDataUrl(file);
+    const img = await new Promise((resolve, reject) => {
+      const i = new Image();
+      i.onload = () => resolve(i);
+      i.onerror = () => reject(new Error("bu fotoğraf açılamadı"));
+      i.src = dataUrl;
+    });
+    const side = Math.min(img.naturalWidth, img.naturalHeight);
+    const canvas = document.createElement("canvas");
+    canvas.width = canvas.height = AVATAR_SIDE;
+    canvas.getContext("2d").drawImage(img,
+      (img.naturalWidth - side) / 2, (img.naturalHeight - side) / 2, side, side,
+      0, 0, AVATAR_SIDE, AVATAR_SIDE);
+    return canvas.toDataURL("image/jpeg", 0.8);
+  }
+
+  const avatarInput = document.getElementById("avatar-input");
+  document.getElementById("avatar-pick-btn").addEventListener("click", () => avatarInput.click());
+  avatarInput.addEventListener("change", async () => {
+    const file = avatarInput.files[0];
+    avatarInput.value = "";
+    if (!file) return;
+    const msgEl = document.getElementById("avatar-msg");
+    try {
+      const avatar = await makeAvatar(file);
+      await fbDb.collection("users").doc(myUid).update({ avatar });
+      msgEl.textContent = "Profil fotoğrafı güncellendi.";
+    } catch (e) {
+      msgEl.textContent = profileSaveError(e);
+    }
+  });
+  document.getElementById("avatar-remove-btn").addEventListener("click", async () => {
+    const msgEl = document.getElementById("avatar-msg");
+    try {
+      await fbDb.collection("users").doc(myUid).update({ avatar: firebase.firestore.FieldValue.delete() });
+      msgEl.textContent = "Profil fotoğrafı kaldırıldı.";
+    } catch (e) {
+      msgEl.textContent = profileSaveError(e);
+    }
+  });
+  document.getElementById("presence-toggle").addEventListener("change", async (e) => {
+    const show = e.target.checked;
+    const msgEl = document.getElementById("avatar-msg");
+    try {
+      await fbDb.collection("users").doc(myUid).update({
+        hidePresence: !show,
+        // Hiding also removes the last timestamp, so it isn't left behind.
+        lastSeen: show ? firebase.firestore.FieldValue.serverTimestamp() : firebase.firestore.FieldValue.delete(),
+      });
+      msgEl.textContent = show ? "Çevrimiçi bilgin artık görünüyor." : "Çevrimiçi bilgin gizlendi.";
+    } catch (err) {
+      e.target.checked = !show;
+      msgEl.textContent = profileSaveError(err);
+    }
+  });
+
   let disappearingCheckInterval = null;
 
   function listenToMessages(convId) {
@@ -3888,15 +4117,32 @@
     }
   }
 
-  attachPhotoBtn.addEventListener("click", () => photoInput.click());
+  // 📎 opens a small menu: take a photo with the camera, or pick from the
+  // gallery/files. The camera input has capture="environment", which opens
+  // the camera directly on phones (and in the Android app).
+  const attachMenu = document.getElementById("attach-menu");
+  const cameraInput = document.getElementById("camera-input");
+  attachPhotoBtn.addEventListener("click", () => attachMenu.classList.toggle("hidden"));
+  document.getElementById("attach-camera-btn").addEventListener("click", () => {
+    attachMenu.classList.add("hidden");
+    cameraInput.click();
+  });
+  document.getElementById("attach-gallery-btn").addEventListener("click", () => {
+    attachMenu.classList.add("hidden");
+    photoInput.click();
+  });
   // Several photos/files can be picked at once (like WhatsApp's gallery
   // picker); they go one after another, in the order picked, and only the
   // first carries a pending reply.
   const MAX_FILES_PER_SEND = 30;
 
-  photoInput.addEventListener("change", async () => {
-    const files = Array.from(photoInput.files || []);
-    photoInput.value = "";
+  [photoInput, cameraInput].forEach(input => input.addEventListener("change", () => {
+    const files = Array.from(input.files || []);
+    input.value = "";
+    sendPickedFiles(files);
+  }));
+
+  async function sendPickedFiles(files) {
     if (!files.length) return;
     if (files.length > MAX_FILES_PER_SEND) {
       alert("Tek seferde en fazla " + MAX_FILES_PER_SEND + " dosya seçebilirsin.");
@@ -3930,7 +4176,7 @@
     if (tooBig.length) problems.push("50MB'tan büyük olduğu için gönderilmedi: " + tooBig.map(f => f.name).join(", "));
     if (failed.length) problems.push("Gönderilemedi: " + failed.join(", "));
     if (problems.length) alert(problems.join("\n"));
-  });
+  }
 
   function readAsDataUrl(blob) {
     return new Promise((resolve, reject) => {
@@ -4042,6 +4288,7 @@
   // Leaving a chat (or locking) drops a pending reply and discards a recording.
   function leaveComposer() {
     cancelReply();
+    attachMenu.classList.add("hidden");
     stopVoiceRecording(false);
   }
 
@@ -4075,6 +4322,7 @@
 
   document.getElementById("thread-back-btn").addEventListener("click", () => {
     leaveComposer();
+    clearInterval(presenceTick);
     if (messagesUnsub) { messagesUnsub(); messagesUnsub = null; }
     stopTypingListener();
     closeThreadSearch();
