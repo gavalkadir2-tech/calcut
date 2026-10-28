@@ -1,7 +1,12 @@
 (() => {
   "use strict";
 
-  if ("serviceWorker" in navigator) {
+  // The Android app (native/) bundles these files itself, so it needs no
+  // offline cache, and a service worker there would sit in front of the
+  // app's own file server.
+  const IS_NATIVE_APP = !!(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform());
+
+  if ("serviceWorker" in navigator && !IS_NATIVE_APP) {
     window.addEventListener("load", () => {
       navigator.serviceWorker.register("sw.js").catch(() => {});
     });
@@ -2411,6 +2416,14 @@
           document.body.appendChild(remoteAudioEl);
         }
         remoteAudioEl.srcObject = event.streams[0];
+        // The WebView may pick its own output once remote audio starts, so
+        // re-apply the chosen route in the Android app.
+        const nativeRoute = nativeAudioRoute();
+        if (nativeRoute) {
+          setTimeout(() => {
+            if (pc === peerConnection) nativeRoute.setSpeaker({ on: isSpeakerOn }).catch(() => {});
+          }, 500);
+        }
       }
     };
     pc.onconnectionstatechange = () => {
@@ -2612,6 +2625,8 @@
     isSpeakerOn = false;
     callSpeakerBtn.classList.remove("active");
     callSpeakerBtn.textContent = "Hoparlör";
+    const nativeRoute = nativeAudioRoute();
+    if (nativeRoute) nativeRoute.endCall().catch(() => {});
 
     const role = activeCallRole;
     const wasVideo = isVideoCall;
@@ -2766,10 +2781,24 @@
     }
   }
 
+  // In the Android app (native/), a native plugin can do what the web page
+  // can't: put the call in communication mode and pick the earpiece.
+  function nativeAudioRoute() {
+    const cap = window.Capacitor;
+    if (!cap || !cap.isNativePlatform || !cap.isNativePlatform()) return null;
+    return (cap.Plugins && cap.Plugins.AudioRoute) || null;
+  }
+
   async function resetAudioRouting() {
     isSpeakerOn = false;
     callSpeakerBtn.classList.remove("active");
     callSpeakerBtn.textContent = "Hoparlör";
+    const nativeRoute = nativeAudioRoute();
+    if (nativeRoute) {
+      callSpeakerBtn.classList.remove("hidden");
+      await nativeRoute.startCall({ speaker: false }).catch(() => {});
+      return;
+    }
     callSpeakerBtn.classList.toggle("hidden", !SINK_ID_SUPPORTED);
     if (SINK_ID_SUPPORTED) {
       const routes = await findAudioOutputRoutes();
@@ -2787,6 +2816,18 @@
   }
 
   callSpeakerBtn.addEventListener("click", async () => {
+    const nativeRoute = nativeAudioRoute();
+    if (nativeRoute) {
+      const res = await nativeRoute.setSpeaker({ on: !isSpeakerOn }).catch(() => null);
+      if (!res || !res.ok) {
+        callErrorEl.textContent = "Ses çıkışı değiştirilemedi" + (res ? " (" + res.device + ")" : "") + ".";
+        return;
+      }
+      isSpeakerOn = !isSpeakerOn;
+      callSpeakerBtn.classList.toggle("active", isSpeakerOn);
+      callSpeakerBtn.textContent = isSpeakerOn ? "Kulaklık" : "Hoparlör";
+      return;
+    }
     if (!SINK_ID_SUPPORTED) return;
     isSpeakerOn = !isSpeakerOn;
     const ok = await applySinkId(isSpeakerOn ? (speakerSinkId || "") : (earpieceSinkId || ""));
