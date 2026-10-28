@@ -624,3 +624,15 @@ button.danger { background: var(--danger); color: #fff; }
 #call-screen.alarm-mode .call-btn.reject { background: #2c2c2e; }
 .app-version { color: #666; font-size: 12px; margin: 4px 0 0; }
 #thread-list li.missed-call .thread-preview { color: #ff6b6b; }
+.sound-row { display: flex; gap: 8px; align-items: center; }
+.sound-row select {
+  flex: 1;
+  background: #1c1f26;
+  border: 1px solid #333;
+  color: #fff;
+  padding: 12px 14px;
+  border-radius: 8px;
+  font-size: 16px;
+  margin-bottom: 10px;
+}
+.settings-body .sound-row button { width: 52px; }
