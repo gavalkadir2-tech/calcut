@@ -191,12 +191,12 @@ button.danger { background: var(--danger); color: #fff; }
 #thread-detail-panel .vault-header { margin-bottom: 8px; }
 .thread-actions {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   justify-content: center;
   gap: 4px;
   margin-bottom: 12px;
 }
-#thread-detail-panel .thread-actions button { flex: 1 1 0; min-width: 34px; max-width: 56px; padding: 8px 0; }
+#thread-detail-panel .thread-actions button { flex: 1 1 0; min-width: 0; max-width: 48px; padding: 6px 0; font-size: 14px; border-radius: 8px; }
 #thread-typing { margin: 0; font-size: 12px; color: var(--accent); font-style: italic; }
 .header-actions { display: flex; gap: 8px; }
 .header-actions button, #thread-delete-btn, #thread-back-btn {
