@@ -1,0 +1,8 @@
+{
+  "appId": "com.gavalkadir.calcut",
+  "appName": "Hesap Makinesi",
+  "webDir": "www",
+  "android": {
+    "allowMixedContent": false
+  }
+}
