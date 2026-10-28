@@ -1025,6 +1025,7 @@
         if (snap.empty) return;
         const d = snap.docs[0].data();
         let preview;
+        let lastIsMissedCall = false;
         if (d.deleted) {
           preview = "Bu mesaj silindi";
         } else if (d.type === "image") {
@@ -1036,6 +1037,7 @@
           try {
             const cd = raw ? JSON.parse(raw) : null;
             preview = cd ? callLogText(d.from === myUid, cd.outcome, cd.duration || 0, cd.media) : "📞 Arama";
+            lastIsMissedCall = !!cd && isMissedIncomingCall(d.from === myUid, cd.outcome);
           } catch (e) {
             preview = "📞 Arama";
           }
@@ -1052,6 +1054,7 @@
           else if (conv.isGroup) prefix = (conv.participantNicknames[d.from] || "?") + ": ";
         }
         conv.lastPreview = prefix + preview;
+        conv.lastIsMissedCall = lastIsMissedCall;
         conv.lastTs = d.ts ? d.ts.toMillis() : Date.now();
         if (!threadListPanel.classList.contains("hidden")) renderThreadList();
       }, err => {
@@ -1103,6 +1106,7 @@
             updatedAt: d.updatedAt ? d.updatedAt.toMillis() : 0,
             unread,
             lastPreview: existing.lastPreview || "",
+            lastIsMissedCall: !!existing.lastIsMissedCall,
             lastTs: existing.lastTs || 0,
             disappearingSeconds: d.disappearingSeconds || 0,
             muted,
@@ -1137,14 +1141,24 @@
     return mm + ":" + String(ss).padStart(2, "0");
   }
 
+  // The call log entry is written by the caller, so fromMe = I placed the call.
   function callLogText(fromMe, outcome, duration, media) {
     const dirWord = fromMe ? "Giden" : "Gelen";
     const icon = media === "video" ? "📹" : "📞";
-    if (outcome === "completed") return `${icon} ${dirWord} arama · ${formatCallDuration(duration)}`;
-    if (outcome === "missed") return "📵 Cevapsız arama";
+    const kind = media === "video" ? "görüntülü arama" : "arama";
+    if (outcome === "completed") return `${icon} ${dirWord} ${kind} · ${formatCallDuration(duration)}`;
+    if (outcome === "missed" || outcome === "canceled") {
+      // For the person being called, an unanswered call is a missed call
+      // whether the caller gave up or it timed out.
+      return fromMe ? `${icon} Giden ${kind} · Yanıtlanmadı` : `📵 Cevapsız ${kind}`;
+    }
     if (outcome === "rejected") return fromMe ? "📵 Arama reddedildi" : "📵 Aramayı reddettiniz";
-    if (outcome === "canceled") return "📵 Arama iptal edildi";
     return `${icon} Arama`;
+  }
+
+  // Missed incoming calls are highlighted in red, in the chat and the thread list.
+  function isMissedIncomingCall(fromMe, outcome) {
+    return !fromMe && (outcome === "missed" || outcome === "canceled");
   }
 
   function formatThreadTime(ts) {
@@ -1187,6 +1201,7 @@
         li.querySelector(".thread-preview").textContent = "🚫 Engellendi";
       } else {
         li.querySelector(".thread-preview").textContent = conv.lastPreview || "Aç ve sohbet et";
+        if (conv.lastIsMissedCall) li.classList.add("missed-call");
       }
       if (conv.unread > 0) {
         const badge = li.querySelector(".thread-badge");
@@ -2000,7 +2015,8 @@
 
   async function logCallToConversation(convId, otherUid, outcome, durationSec, media) {
     try {
-      await sendEncryptedTo(convId, otherUid, JSON.stringify({ outcome, duration: durationSec, media }), "call");
+      // sendEncryptedTo takes a list of recipients (group chat support).
+      await sendEncryptedTo(convId, [otherUid], JSON.stringify({ outcome, duration: durationSec, media }), "call");
     } catch (e) {}
   }
 
@@ -2830,7 +2846,7 @@
       }
       if (m.call) {
         const callDiv = document.createElement("div");
-        const missedOrRejected = m.call.outcome === "missed" || m.call.outcome === "rejected";
+        const missedOrRejected = isMissedIncomingCall(m.from === "me", m.call.outcome) || m.call.outcome === "rejected";
         callDiv.className = "msg-bubble call-log" + (missedOrRejected ? " call-missed" : "");
         const span = document.createElement("span");
         span.textContent = callLogText(m.from === "me", m.call.outcome, m.call.duration || 0, m.call.media);
