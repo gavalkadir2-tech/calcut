@@ -2133,6 +2133,7 @@
   };
 
   function resetCallUi() {
+    callSecurityEl.classList.add("hidden");
     callActionsIncoming.classList.add("hidden");
     callActionsActive.classList.add("hidden");
     callActionsOutgoing.classList.add("hidden");
@@ -2252,6 +2253,37 @@
     callActionsOutgoing.classList.remove("hidden");
   }
 
+  /* ---- Call security code. Voice/video is DTLS-SRTP encrypted end to end,
+     but the keys' fingerprints travel in the SDP through Firestore, so someone
+     able to rewrite the call doc could sit in the middle. Both sides derive 4
+     emoji from the two fingerprints (sorted, so both get the same code); if
+     the people on the call read out matching codes, nobody is in between. */
+  const SECURITY_EMOJI = [
+    "🐶", "🐱", "🐭", "🐰", "🦊", "🐻", "🐼", "🐨", "🐯", "🦁", "🐮", "🐷", "🐸", "🐵", "🐔", "🐧",
+    "🐦", "🦆", "🦉", "🐴", "🦄", "🐝", "🦋", "🐌", "🐢", "🐙", "🐬", "🐳", "🦀", "🐠", "🌵", "🌲",
+    "🌻", "🌹", "🍄", "🌙", "⭐", "🔥", "🌈", "❄️", "🍎", "🍋", "🍉", "🍇", "🍓", "🍒", "🥕", "🌽",
+    "🍕", "🍩", "🎂", "☕", "⚽", "🏀", "🎸", "🎲", "🚗", "🚲", "✈️", "🚀", "⛵", "🏠", "🔑", "🎁",
+  ];
+  const callSecurityEl = document.getElementById("call-security");
+  const callSecurityCodeEl = document.getElementById("call-security-code");
+
+  function sdpFingerprint(sdp) {
+    const m = /a=fingerprint:(\S+) ([0-9A-Fa-f:]+)/.exec(sdp || "");
+    return m ? (m[1] + " " + m[2]).toUpperCase() : null;
+  }
+
+  async function showCallSecurityCode(pc) {
+    callSecurityEl.classList.add("hidden");
+    if (!pc || !pc.localDescription || !pc.remoteDescription || !crypto.subtle) return;
+    const a = sdpFingerprint(pc.localDescription.sdp);
+    const b = sdpFingerprint(pc.remoteDescription.sdp);
+    if (!a || !b) return;
+    const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode([a, b].sort().join("|"))));
+    if (pc !== peerConnection) return; // call ended meanwhile
+    callSecurityCodeEl.textContent = Array.from(digest.slice(0, 4)).map(x => SECURITY_EMOJI[x % 64]).join(" ");
+    callSecurityEl.classList.remove("hidden");
+  }
+
   function showActiveCallUi(nickname) {
     exitAlarmMode();
     applyCallVideoUi();
@@ -2273,6 +2305,7 @@
     } else {
       resetAudioRouting();
     }
+    showCallSecurityCode(peerConnection).catch(() => {});
     callStartedAt = Date.now();
     clearInterval(callTimerInterval);
     callTimerInterval = setInterval(() => {
