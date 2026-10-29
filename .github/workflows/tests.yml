@@ -4,6 +4,7 @@ on:
   pull_request:
   push:
     branches: [main]
+  workflow_dispatch:
 
 jobs:
   test:
@@ -15,7 +16,7 @@ jobs:
           node-version: "22"
       - name: Syntax check
         run: |
-          for f in app.js sw.js firebase-config.js native/copy-web.js; do node --check "$f"; done
+          for f in app.js sw.js firebase-config.js native/copy-web.js tools/deploy-firestore-rules.js; do node --check "$f"; done
           # _worker.js is an ES module, Code.gs is Apps Script (plain JS).
           node --input-type=module --check < worker/_worker.js
           node -e 'new Function(require("fs").readFileSync("apps-script/Code.gs", "utf8"))'
@@ -41,3 +42,26 @@ jobs:
       - run: npm ci
       - name: Rules tests (Firestore emulator)
         run: npm test
+
+  # Publishes firestore.rules to Firebase after the rules tests pass on main
+  # (or when run by hand from the Actions tab). Needs the repository secret
+  # FIREBASE_SERVICE_ACCOUNT (the Firebase service account JSON); without it
+  # this job only prints a note.
+  deploy-firestore-rules:
+    needs: [test, firestore-rules]
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+      - name: Publish firestore.rules
+        env:
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+        run: |
+          if [ -z "$FIREBASE_SERVICE_ACCOUNT" ]; then
+            echo "::notice::FIREBASE_SERVICE_ACCOUNT secret is not set, so the rules were not published."
+            exit 0
+          fi
+          node tools/deploy-firestore-rules.js
