@@ -3288,6 +3288,8 @@
     // The callee has no listener on this specific call doc yet (that only
     // starts on accept), so without this, if the caller cancels or times out
     // while it's still ringing, this screen would stay stuck forever.
+    // Tells the caller it is ringing here ("Çalıyor...").
+    fbDb.collection("calls").doc(callId).update({ ringing: true }).catch(() => {});
     if (incomingCallDocUnsub) incomingCallDocUnsub();
     incomingCallDocUnsub = fbDb.collection("calls").doc(callId).onSnapshot(snap => {
       const d = snap.data();
@@ -3310,6 +3312,21 @@
     callNicknameEl.textContent = "@" + nickname;
     callStatusEl.textContent = isVideoCall ? "Görüntülü arıyor..." : "Aranıyor...";
     callActionsOutgoing.classList.remove("hidden");
+  }
+
+  // Like WhatsApp: "Aranıyor..." until the call reaches the other phone,
+  // then "Çalıyor...". It has reached it when their app shows the call
+  // (it sets ringing on the call doc) or the push server delivered the
+  // call notification to at least one of their devices.
+  function showRemoteRinging(callId) {
+    if (callId !== activeCallId || activeCallRole !== "caller" || callWasConnected) return;
+    callStatusEl.textContent = isVideoCall ? "Görüntülü · Çalıyor..." : "Çalıyor...";
+  }
+
+  function ringPush(callId) {
+    requestPush({ kind: "call", callId }).then(r => {
+      if (r && r.data && r.data.sent > 0) showRemoteRinging(callId);
+    });
   }
 
   /* ---- Call security code. Voice/video is DTLS-SRTP encrypted end to end,
@@ -3476,6 +3493,7 @@
     callDocUnsub = fbDb.collection("calls").doc(callId).onSnapshot(async snap => {
       const data = snap.data();
       if (!data || callId !== activeCallId) return;
+      if (activeCallRole === "caller" && data.status === "ringing" && data.ringing) showRemoteRinging(callId);
       if (activeCallRole === "caller" && data.status === "accepted" && data.answer &&
           peerConnection && !peerConnection.currentRemoteDescription) {
         clearTimeout(callTimeoutTimer);
@@ -3554,14 +3572,14 @@
       listenToCallDoc(activeCallId);
       listenToRemoteCandidates(activeCallId, "calleeCandidates");
 
-      requestPush({ kind: "call", callId: callDocRef.id });
+      ringPush(callDocRef.id);
       callRingPushTimer = setInterval(() => {
         if (activeCallId !== callDocRef.id || callWasConnected) {
           clearInterval(callRingPushTimer);
           callRingPushTimer = null;
           return;
         }
-        requestPush({ kind: "call", callId: callDocRef.id });
+        ringPush(callDocRef.id);
       }, 8000);
 
       callTimeoutTimer = setTimeout(() => {

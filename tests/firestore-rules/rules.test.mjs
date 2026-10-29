@@ -178,6 +178,13 @@ test("status: viewers add only themselves; only the author deletes", async () =>
   await assertSucceeds(deleteDoc(doc(as("alice"), "statuses/s1")));
 });
 
+test("callee marks an incoming call as ringing; others can't", async () => {
+  await seed();
+  await env.withSecurityRulesDisabled(ctx => setDoc(doc(ctx.firestore(), "calls/k1"), { from: "alice", to: "bob", status: "ringing" }));
+  await assertSucceeds(updateDoc(doc(as("bob"), "calls/k1"), { ringing: true }));
+  await assertFails(updateDoc(doc(as("carol"), "calls/k1"), { ringing: false }));
+});
+
 test.after(async () => { await env.cleanup(); });
 
 test("read receipts setting: own, bool only", async () => {
