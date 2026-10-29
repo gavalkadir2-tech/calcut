@@ -1758,7 +1758,8 @@
       watchProfile(c.otherUid);
       paintAvatar(li.querySelector(".avatar"), c.otherUid, c.otherNickname);
       li.querySelector(".thread-name").textContent = "@" + c.otherNickname;
-      li.querySelector(".thread-preview").textContent = blocked ? "🚫 Engellendi" : (presenceText(c.otherUid) || "");
+      li.querySelector(".thread-preview").textContent = blocked ? "🚫 Engellendi"
+        : [aboutOf(c.otherUid), presenceText(c.otherUid)].filter(Boolean).join(" · ");
       if (!blocked) {
         [["📞", false, "Sesli ara"], ["📹", true, "Görüntülü ara"]].forEach(([icon, video, title]) => {
           const b = document.createElement("button");
@@ -2109,12 +2110,14 @@
   async function startConversationWith(otherUid, otherNickname) {
     const convId = convIdFor(myUid, otherUid);
     if (!conversations.has(convId)) {
-      await fbDb.collection("conversations").doc(convId).set({
+      const data = {
         participants: [myUid, otherUid],
         participantNicknames: { [myUid]: myNickname, [otherUid]: otherNickname },
         unreadCount: { [myUid]: 0, [otherUid]: 0 },
         updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
-      }, { merge: true });
+      };
+      if (defaultDisappearingSeconds()) data.disappearingSeconds = defaultDisappearingSeconds();
+      await fbDb.collection("conversations").doc(convId).set(data, { merge: true });
     }
     openConversation(convId, otherUid, otherNickname);
   }
@@ -2190,6 +2193,7 @@
         createdBy: myUid,
         admins: [myUid],
         updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+        ...(defaultDisappearingSeconds() ? { disappearingSeconds: defaultDisappearingSeconds() } : {}),
       });
       document.getElementById("new-group-modal").classList.add("hidden");
       openConversation(convRef.id, null, null, { isGroup: true, groupName, participants });
@@ -2202,7 +2206,8 @@
     stopAllLiveLocations(); // while the keys are still there to write the last update
     forgetSearchAndLiveData();
     closePhotoEditor(null);
-    ["sticker-picker", "broadcast-modal", "chat-unlock-modal"].forEach(id => document.getElementById(id).classList.add("hidden"));
+    closeQrModal();
+    ["sticker-picker", "broadcast-modal", "chat-unlock-modal", "contact-picker-modal"].forEach(id => document.getElementById(id).classList.add("hidden"));
     stopAllMessengerListeners();
     myPrivateKey = null;
     myPublicKey = null;
@@ -2852,7 +2857,11 @@
       if (conv.isGroup) return;
       conv.participants.forEach(u => { if (u !== myUid && !myBlocked[u]) uids.add(u); });
     });
-    return [...uids].slice(0, 500);
+    const privacy = statusPrivacy();
+    let list = [...uids];
+    if (privacy.mode === "except") list = list.filter(u => !privacy.uids.includes(u));
+    if (privacy.mode === "only") list = list.filter(u => privacy.uids.includes(u));
+    return list.slice(0, 500);
   }
 
   function nicknameOf(uid) {
@@ -2961,6 +2970,7 @@
     showActionSheet("Yeni durum (24 saat)", [
       { label: "✏️ Yazı", run: addTextStatus },
       { label: "🖼️ Fotoğraf", run: () => document.getElementById("status-photo-input").click() },
+      { label: "🔒 Durum gizliliği", run: showStatusPrivacyMenu },
     ]);
   }
 
@@ -3125,6 +3135,7 @@
     }
     const mine = s.from === myUid;
     document.getElementById("status-bottom").classList.toggle("hidden", !mine);
+    statusReplyEl.classList.toggle("hidden", mine);
     if (mine) {
       const n = Object.keys(s.viewers).length;
       document.getElementById("status-viewers-btn").textContent = "👁 " + n + " görüntüleme";
@@ -4355,6 +4366,7 @@
         lastSeen: d.lastSeen && d.lastSeen.toMillis ? d.lastSeen.toMillis() : null,
         hidePresence: !!d.hidePresence,
         hideReadReceipts: !!d.hideReadReceipts,
+        about: typeof d.about === "string" ? d.about.slice(0, 140) : "",
       });
       onProfileChanged(uid);
     }, () => {});
@@ -4474,6 +4486,9 @@
     document.getElementById("avatar-remove-btn").classList.toggle("hidden", !(p && p.avatar));
     document.getElementById("presence-toggle").checked = !myHidePresence();
     document.getElementById("read-receipts-toggle").checked = !myHideReadReceipts();
+    const aboutInput = document.getElementById("about-input");
+    if (document.activeElement !== aboutInput) aboutInput.value = aboutOf(myUid);
+    defaultDisappearingEl.value = String(defaultDisappearingSeconds());
   }
 
   function profileSaveError(e) {
@@ -4888,12 +4903,20 @@
     q.className = "poll-question";
     q.textContent = "📊 " + (m.poll.question || "");
     box.appendChild(q);
-    const votes = Object.values(m.votes || {}).filter(v => Number.isInteger(v));
-    const total = votes.length;
+    // A vote is one option index, or a list of them in a multiple-choice poll.
+    const choices = Object.values(m.votes || {}).map(pollChoices).filter(c => c.length);
+    const mineChoices = pollChoices((m.votes || {})[myUid]);
+    const total = choices.length;
+    if (m.poll.multi) {
+      const hint = document.createElement("span");
+      hint.className = "poll-total";
+      hint.textContent = "Birden fazla seçebilirsin";
+      box.appendChild(hint);
+    }
     (m.poll.options || []).forEach((opt, idx) => {
-      const count = votes.filter(v => v === idx).length;
+      const count = choices.filter(c => c.includes(idx)).length;
       const btn = document.createElement("button");
-      btn.className = "poll-opt" + (m.votes && m.votes[myUid] === idx ? " mine" : "");
+      btn.className = "poll-opt" + (mineChoices.includes(idx) ? " mine" : "");
       btn.dataset.msgId = m.id;
       btn.dataset.idx = String(idx);
       const bar = document.createElement("span");
@@ -4901,7 +4924,7 @@
       bar.style.width = (total ? Math.round(count / total * 100) : 0) + "%";
       const label = document.createElement("span");
       label.className = "poll-opt-label";
-      label.textContent = (m.votes && m.votes[myUid] === idx ? "✓ " : "") + opt;
+      label.textContent = (mineChoices.includes(idx) ? "✓ " : "") + opt;
       const c = document.createElement("span");
       c.className = "poll-opt-count";
       c.textContent = String(count);
@@ -4910,18 +4933,30 @@
     });
     const t = document.createElement("span");
     t.className = "poll-total";
-    t.textContent = total + " oy";
+    t.textContent = total + (m.poll.multi ? " kişi oy verdi" : " oy");
     box.appendChild(t);
     return box;
+  }
+
+  function pollChoices(v) {
+    if (Number.isInteger(v)) return [v];
+    return Array.isArray(v) ? v.filter(Number.isInteger) : [];
   }
 
   async function votePoll(msgId, idx) {
     const m = currentMessages.find(x => x.id === msgId);
     if (!m) return;
-    const same = m.votes && m.votes[myUid] === idx;
+    const mine = pollChoices((m.votes || {})[myUid]);
+    let value;
+    if (m.poll && m.poll.multi) {
+      const next = mine.includes(idx) ? mine.filter(i => i !== idx) : [...mine, idx].sort((a, b) => a - b);
+      value = next.length ? next : firebase.firestore.FieldValue.delete();
+    } else {
+      value = mine.length === 1 && mine[0] === idx ? firebase.firestore.FieldValue.delete() : idx;
+    }
     try {
       await fbDb.collection("conversations").doc(activeConvId).collection("messages").doc(msgId).update({
-        [`votes.${myUid}`]: same ? firebase.firestore.FieldValue.delete() : idx,
+        [`votes.${myUid}`]: value,
       });
     } catch (e) {
       alert(e && e.code === "permission-denied"
@@ -5061,6 +5096,12 @@
         const img = document.createElement("img");
         img.src = m.image;
         div.appendChild(img);
+      } else if (m.audio && m.viewOnce) {
+        const vo = document.createElement("span");
+        vo.className = "view-once";
+        vo.dataset.msgId = m.id;
+        vo.textContent = m.from === "me" ? "🎤 Tek seferlik sesli mesaj" : "🎤 Tek seferlik sesli mesaj · dinlemek için dokun";
+        div.appendChild(vo);
       } else if (m.audio) {
         div.appendChild(renderVoiceMessage(m));
       } else if (m.file) {
@@ -5341,9 +5382,14 @@
 
   // Opening a view-once photo shows it full screen once; closing the viewer
   // deletes the message (and its chunks) for both sides.
-  async function openViewOnce(msgId) {
+  async function openViewOnce(msgId, el) {
     const m = currentMessages.find(x => x.id === msgId);
-    if (!m || !m.image || m.from === "me") return;
+    if (!m || m.from === "me") return;
+    if (m.audio && el) {
+      playViewOnceAudio(m, el);
+      return;
+    }
+    if (!m.image) return;
     openImageViewer(m.image, {
       viewOnce: true,
       onClose: async () => {
@@ -5405,7 +5451,7 @@
     }
     const viewOnce = e.target.closest(".msg-bubble.them .view-once");
     if (viewOnce) {
-      openViewOnce(viewOnce.dataset.msgId);
+      openViewOnce(viewOnce.dataset.msgId, viewOnce);
       return;
     }
     const quote = e.target.closest(".msg-quote");
@@ -5726,6 +5772,7 @@
   document.getElementById("attach-poll-btn").addEventListener("click", () => {
     attachMenu.classList.add("hidden");
     document.getElementById("poll-question").value = "";
+    document.getElementById("poll-multi").checked = false;
     const opts = document.getElementById("poll-options");
     opts.innerHTML = "";
     for (let i = 0; i < 2; i++) addPollOptionInput();
@@ -5752,7 +5799,9 @@
     }
     pollModal.classList.add("hidden");
     try {
-      await sendEncrypted(JSON.stringify({ question, options }), "poll", takeReplyFields());
+      const poll = { question, options };
+      if (document.getElementById("poll-multi").checked) poll.multi = true;
+      await sendEncrypted(JSON.stringify(poll), "poll", takeReplyFields());
     } catch (e) {
       alert("Anket gönderilemedi: " + e.message);
     }
@@ -6270,7 +6319,8 @@
     if (!archived) actions.push({ label: pinned ? "📌 Sabitlemeyi kaldır" : "📌 Sabitle", run: () => togglePin(convId) });
     actions.push({ label: archived ? "🗄️ Arşivden çıkar" : "🗄️ Arşivle", run: () => toggleArchive(convId) });
     actions.push({ label: "🗑 Sohbeti sil", danger: true, run: () => askDeleteChat(conv) });
-    showActionSheet(activeIsGroup ? conv.groupName : "@" + conv.otherNickname, actions);
+    const about = activeIsGroup ? "" : aboutOf(conv.otherUid);
+    showActionSheet(activeIsGroup ? conv.groupName : "@" + conv.otherNickname + (about ? " · " + about : ""), actions);
   }
 
   /* ---------------- Wallpapers ---------------- */
@@ -7174,6 +7224,280 @@
     clearGlobalSearch();
   }
 
+  /* ---------------- "Hakkımda" (about) ---------------- */
+
+  function aboutOf(uid) {
+    const p = profiles.get(uid);
+    return (p && p.about) || "";
+  }
+
+  document.getElementById("about-save").addEventListener("click", async () => {
+    const msgEl = document.getElementById("avatar-msg");
+    const about = document.getElementById("about-input").value.trim().slice(0, 140);
+    try {
+      await fbDb.collection("users").doc(myUid).update({
+        about: about || firebase.firestore.FieldValue.delete(),
+      });
+      msgEl.textContent = about ? "Hakkımda kaydedildi." : "Hakkımda silindi.";
+    } catch (e) {
+      msgEl.textContent = profileSaveError(e);
+    }
+  });
+
+  /* ---------------- Default timer for new chats ---------------- */
+
+  const defaultDisappearingEl = document.getElementById("default-disappearing");
+
+  function defaultDisappearingSeconds() {
+    const v = localSessionData && Number(localSessionData.defaultDisappearing);
+    return [86400, 604800, 7776000].includes(v) ? v : 0;
+  }
+
+  defaultDisappearingEl.addEventListener("change", async () => {
+    if (!localSessionData || !currentLocalKey) return;
+    localSessionData.defaultDisappearing = Number(defaultDisappearingEl.value) || 0;
+    await saveLocalPrefs();
+  });
+
+  /* ---------------- QR codes: show mine, scan someone's ----------------
+     The code is "calcut-kisi:<uid>:<nickname>"; scanning looks the user up
+     by uid (so a renamed user is still found) and opens a chat. Scanning
+     needs the browser's BarcodeDetector (Chrome / Android). */
+
+  const QR_PREFIX = "calcut-kisi:";
+  const qrModal = document.getElementById("qr-modal");
+  const qrVideo = document.getElementById("qr-video");
+  let qrStream = null;
+  let qrTimer = null;
+
+  function parseContactQr(text) {
+    const m = /^calcut-kisi:([A-Za-z0-9]{1,128})(?::(.*))?$/.exec((text || "").trim());
+    return m ? { uid: m[1], nickname: m[2] || "" } : null;
+  }
+
+  function stopQrScan() {
+    clearInterval(qrTimer);
+    qrTimer = null;
+    if (qrStream) qrStream.getTracks().forEach(t => t.stop());
+    qrStream = null;
+    qrVideo.srcObject = null;
+    qrVideo.classList.add("hidden");
+  }
+
+  function closeQrModal() {
+    stopQrScan();
+    qrModal.classList.add("hidden");
+  }
+
+  document.getElementById("qr-close").addEventListener("click", closeQrModal);
+
+  document.getElementById("my-qr-btn").addEventListener("click", () => {
+    if (!myUid || typeof qrcode !== "function") return;
+    const qr = qrcode(0, "M");
+    qr.addData(QR_PREFIX + myUid + ":" + myNickname, "Byte");
+    qr.make();
+    document.getElementById("qr-title").textContent = "QR kodum · @" + myNickname;
+    document.getElementById("qr-code").innerHTML = qr.createSvgTag({ cellSize: 6, margin: 4, scalable: true });
+    document.getElementById("qr-hint").textContent = "Karşındaki kişi calcut'ta + → \"QR kod okut\" ile bunu okutunca seninle sohbet açılır.";
+    qrModal.classList.remove("hidden");
+  });
+
+  async function onContactQr(text) {
+    const c = parseContactQr(text);
+    if (!c) return false;
+    closeQrModal();
+    if (c.uid === myUid) {
+      alert("Bu senin kendi QR kodun.");
+      return true;
+    }
+    await openContactChat(c.uid);
+    return true;
+  }
+
+  document.getElementById("qr-scan-btn").addEventListener("click", async () => {
+    document.getElementById("new-thread-modal").classList.add("hidden");
+    if (!("BarcodeDetector" in window)) {
+      alert("Bu cihaz QR kod okutmayı desteklemiyor. Kişinin kullanıcı adını yazarak ekleyebilirsin.");
+      return;
+    }
+    let detector;
+    try {
+      detector = new BarcodeDetector({ formats: ["qr_code"] });
+      qrStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
+    } catch (e) {
+      stopQrScan();
+      alert("Kamera açılamadı.");
+      return;
+    }
+    document.getElementById("qr-title").textContent = "QR kod okut";
+    document.getElementById("qr-code").innerHTML = "";
+    document.getElementById("qr-hint").textContent = "Kamerayı kişinin QR koduna tut.";
+    qrVideo.srcObject = qrStream;
+    qrVideo.classList.remove("hidden");
+    qrModal.classList.remove("hidden");
+    await qrVideo.play().catch(() => {});
+    let busy = false;
+    qrTimer = setInterval(async () => {
+      if (busy || !qrStream) return;
+      busy = true;
+      try {
+        const codes = await detector.detect(qrVideo);
+        for (const code of codes) {
+          if (await onContactQr(code.rawValue)) return;
+        }
+      } catch (e) { /* keep trying */ }
+      busy = false;
+    }, 400);
+  });
+
+  /* ---------------- Picking contacts (status privacy) ---------------- */
+
+  function pickContacts(title, preselected) {
+    const modal = document.getElementById("contact-picker-modal");
+    const list = document.getElementById("contact-picker-list");
+    document.getElementById("contact-picker-title").textContent = title;
+    list.innerHTML = "";
+    broadcastContacts().forEach(c => {
+      const label = document.createElement("label");
+      label.className = "toggle-row";
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.value = c.uid;
+      cb.checked = preselected.includes(c.uid);
+      const span = document.createElement("span");
+      span.textContent = "@" + c.nickname;
+      label.append(cb, span);
+      list.appendChild(label);
+    });
+    modal.classList.remove("hidden");
+    return new Promise(resolve => {
+      const ok = document.getElementById("contact-picker-ok");
+      const cancel = document.getElementById("contact-picker-cancel");
+      const done = result => {
+        modal.classList.add("hidden");
+        ok.removeEventListener("click", onOk);
+        cancel.removeEventListener("click", onCancel);
+        resolve(result);
+      };
+      const onOk = () => done([...list.querySelectorAll("input:checked")].map(cb => cb.value));
+      const onCancel = () => done(null);
+      ok.addEventListener("click", onOk);
+      cancel.addEventListener("click", onCancel);
+    });
+  }
+
+  /* ---------------- Status privacy ----------------
+     Who a new status is encrypted for: all contacts, all except some, or
+     only some. Kept on this device (localSessionData.statusPrivacy). */
+
+  function statusPrivacy() {
+    const p = localSessionData && localSessionData.statusPrivacy;
+    if (!p || !["except", "only"].includes(p.mode) || !Array.isArray(p.uids)) return { mode: "all", uids: [] };
+    return p;
+  }
+
+  async function setStatusPrivacy(p) {
+    if (!localSessionData || !currentLocalKey) return;
+    localSessionData.statusPrivacy = p;
+    await saveLocalPrefs();
+  }
+
+  function showStatusPrivacyMenu() {
+    const p = statusPrivacy();
+    const mark = mode => (p.mode === mode ? "✓ " : "");
+    showActionSheet("Durumumu kimler görsün? (yeni durumlar için)", [
+      { label: mark("all") + "Tüm kişilerim", run: () => setStatusPrivacy({ mode: "all", uids: [] }) },
+      { label: mark("except") + "Kişilerim, şunlar hariç…", run: async () => {
+        const uids = await pickContacts("Durumunu görmeyecek kişiler", p.mode === "except" ? p.uids : []);
+        if (uids) await setStatusPrivacy({ mode: "except", uids });
+      } },
+      { label: mark("only") + "Yalnızca şunlarla paylaş…", run: async () => {
+        const uids = await pickContacts("Durumunu görecek kişiler", p.mode === "only" ? p.uids : []);
+        if (uids) await setStatusPrivacy({ mode: "only", uids });
+      } },
+    ]);
+  }
+
+  /* ---------------- Replying to / reacting to a status ----------------
+     Goes as a normal message into the 1:1 chat with its author, quoting
+     what the status was. */
+
+  const statusReplyEl = document.getElementById("status-reply");
+  const statusReplyInput = document.getElementById("status-reply-input");
+
+  async function replyToStatus(text) {
+    const s = statusQueue[statusIndex];
+    if (!s || s.from === myUid || !text) return;
+    const plain = statusPlain.get(s.id);
+    const what = plain && plain.kind === "image" ? "📷 Fotoğraf" + (plain.text ? ": " + plain.text : "")
+      : plain ? String(plain.text || "").slice(0, 80) : "Durum";
+    const convId = convIdFor(myUid, s.from);
+    try {
+      if (!conversations.has(convId)) {
+        await fbDb.collection("conversations").doc(convId).set({
+          participants: [myUid, s.from],
+          participantNicknames: { [myUid]: myNickname, [s.from]: nicknameOf(s.from) },
+          unreadCount: { [myUid]: 0, [s.from]: 0 },
+          updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+        }, { merge: true });
+      }
+      await sendEncryptedTo(convId, [s.from], "↩️ Durumuna yanıt (" + what + ")\n" + text, "text");
+      const sent = document.getElementById("status-time");
+      sent.textContent = "Gönderildi ✓";
+    } catch (e) {
+      alert("Yanıt gönderilemedi: " + e.message);
+    }
+  }
+
+  statusReplyInput.addEventListener("focus", () => clearTimeout(statusTimer));
+  statusReplyInput.addEventListener("keydown", e => {
+    if (e.key === "Enter") document.getElementById("status-reply-send").click();
+  });
+  document.getElementById("status-reply-send").addEventListener("click", async () => {
+    const text = statusReplyInput.value.trim();
+    if (!text) return;
+    statusReplyInput.value = "";
+    statusReplyInput.blur();
+    await replyToStatus(text);
+    statusTimer = setTimeout(() => showStatusAt(statusIndex + 1), 1500);
+  });
+  statusReplyEl.querySelectorAll(".status-reactions button").forEach(b => b.addEventListener("click", async () => {
+    clearTimeout(statusTimer);
+    b.classList.add("sent");
+    await replyToStatus(b.dataset.emoji);
+    setTimeout(() => b.classList.remove("sent"), 800);
+    statusTimer = setTimeout(() => showStatusAt(statusIndex + 1), 1500);
+  }));
+
+  /* ---------------- View-once voice messages ---------------- */
+
+  let voiceOnce = false;
+  const voiceOnceBtn = document.getElementById("voice-preview-once");
+  voiceOnceBtn.addEventListener("click", () => {
+    voiceOnce = !voiceOnce;
+    voiceOnceBtn.classList.toggle("active", voiceOnce);
+    voiceOnceBtn.title = voiceOnce ? "Tek seferlik: açık" : "Tek seferlik";
+  });
+
+  // Plays once, then deletes the message (and its chunks) for both sides.
+  function playViewOnceAudio(m, el) {
+    const convId = activeConvId;
+    const audio = new Audio(m.audio);
+    let done = false;
+    const finish = async () => {
+      if (done) return;
+      done = true;
+      try {
+        await fbDb.collection("conversations").doc(convId).collection("messages").doc(m.id).delete();
+        await deleteChunks(m.chunked);
+      } catch (e) {}
+    };
+    el.textContent = "🎤 Çalınıyor… (bittiğinde silinir)";
+    audio.addEventListener("ended", finish);
+    audio.addEventListener("error", () => { el.textContent = "🎤 Çalınamadı"; });
+    audio.play().catch(() => { el.textContent = "🎤 Çalınamadı, tekrar dokun"; });
+  }
+
   const viewOnceInput = document.getElementById("viewonce-input");
   document.getElementById("attach-viewonce-btn").addEventListener("click", () => {
     attachMenu.classList.add("hidden");
@@ -7386,6 +7710,10 @@
       voicePreviewAudio.removeAttribute("src");
     }
     voicePreviewBlob = null;
+    voiceOnce = false;
+    const onceBtn = document.getElementById("voice-preview-once");
+    onceBtn.classList.remove("active");
+    onceBtn.title = "Tek seferlik";
     voicePreview.classList.add("hidden");
     inputRow.classList.remove("previewing");
   }
@@ -7394,10 +7722,13 @@
   document.getElementById("voice-preview-delete").addEventListener("click", discardVoicePreview);
   document.getElementById("voice-preview-send").addEventListener("click", async () => {
     const blob = voicePreviewBlob;
+    const once = voiceOnce;
     discardVoicePreview();
     if (!blob) return;
     try {
-      await sendEncrypted(await readAsDataUrl(blob), "audio", takeReplyFields());
+      const fields = takeReplyFields() || {};
+      if (once) fields.viewOnce = true;
+      await sendEncrypted(await readAsDataUrl(blob), "audio", Object.keys(fields).length ? fields : null);
     } catch (e) {
       alert("Sesli mesaj gönderilemedi: " + e.message);
     }

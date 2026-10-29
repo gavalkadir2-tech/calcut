@@ -1,9 +1,10 @@
-const CACHE_NAME = "calcut-shell-v3";
+const CACHE_NAME = "calcut-shell-v4";
 const SHELL_FILES = [
   "./",
   "./index.html",
   "./app.js",
   "./style.css",
+  "./qrcode.js",
   "./manifest.json",
 ];
 

@@ -169,6 +169,7 @@
       <div id="voice-preview" class="hidden">
         <button id="voice-preview-delete" title="Kaydı sil">🗑</button>
         <audio id="voice-preview-audio" controls preload="metadata"></audio>
+        <button id="voice-preview-once" title="Tek seferlik">1️⃣</button>
         <button id="voice-preview-send">Gönder</button>
       </div>
       <div class="message-input-row">
@@ -215,6 +216,20 @@
           <span>Okundu bilgisi gönder (mavi tik)</span>
         </label>
         <p class="hint">Kapatırsan başkalarının okundu bilgisini de göremezsin. Sesli mesajların dinlendi bilgisi her zaman gönderilir.</p>
+        <label>Hakkımda</label>
+        <div class="about-row">
+          <input id="about-input" type="text" maxlength="140" placeholder="Örn. Meşgulüm, sadece acil aramalar">
+          <button id="about-save">Kaydet</button>
+        </div>
+        <label>Yeni sohbetlerde kaybolan mesajlar</label>
+        <select id="default-disappearing">
+          <option value="0">Kapalı</option>
+          <option value="86400">1 gün</option>
+          <option value="604800">1 hafta</option>
+          <option value="7776000">90 gün</option>
+        </select>
+        <p class="hint">Bundan sonra başlattığın sohbet ve gruplarda kaybolan mesajlar bu sürede açık gelir.</p>
+        <button id="my-qr-btn" class="ghost wide">🔳 QR kodum</button>
         <hr>
         <label>Görünen Kullanıcı Adını Değiştir</label>
         <input id="new-nickname-input" type="text" placeholder="Yeni kullanıcı adı">
@@ -243,7 +258,7 @@
         <button id="enable-alarm-btn">Bildirimleri Etkinleştir</button>
         <button id="test-push-btn" class="ghost">Test bildirimi gönder</button>
         <p id="alarm-msg"></p>
-        <p class="app-version">Sürüm: 36</p>
+        <p class="app-version">Sürüm: 37</p>
         <div id="app-update-section" class="hidden">
           <hr>
           <label>Uygulama güncellemesi</label>
@@ -370,6 +385,7 @@
       <button id="new-thread-cancel" class="ghost">İptal</button>
       <button id="new-thread-create">Ekle</button>
     </div>
+    <button id="qr-scan-btn" class="ghost wide">📷 QR kod okut</button>
     <button id="broadcast-open-btn" class="ghost wide">📢 Toplu mesaj gönder</button>
   </div>
 </div>
@@ -400,6 +416,7 @@
       <input class="poll-option-input" type="text" maxlength="100" placeholder="Seçenek 2">
     </div>
     <button id="poll-add-option" class="ghost">+ Seçenek ekle</button>
+    <label class="toggle-row"><input id="poll-multi" type="checkbox"><span>Birden fazla seçime izin ver</span></label>
     <div class="modal-actions">
       <button id="poll-cancel" class="ghost">İptal</button>
       <button id="poll-send">Gönder</button>
@@ -514,6 +531,39 @@
     <button id="status-viewers-btn"></button>
     <button id="status-delete-btn">🗑 Sil</button>
   </div>
+  <div id="status-reply" class="hidden">
+    <div class="status-reactions">
+      <button data-emoji="❤️">❤️</button><button data-emoji="😂">😂</button><button data-emoji="😮">😮</button>
+      <button data-emoji="😢">😢</button><button data-emoji="👏">👏</button><button data-emoji="🔥">🔥</button>
+    </div>
+    <div class="status-reply-row">
+      <input id="status-reply-input" type="text" maxlength="1000" placeholder="Yanıtla…">
+      <button id="status-reply-send">➤</button>
+    </div>
+  </div>
+</div>
+
+<div id="qr-modal" class="modal hidden">
+  <div class="modal-box qr-box">
+    <h3 id="qr-title">QR kodum</h3>
+    <div id="qr-code"></div>
+    <video id="qr-video" class="hidden" playsinline muted></video>
+    <p id="qr-hint" class="hint"></p>
+    <div class="modal-actions">
+      <button id="qr-close" class="ghost">Kapat</button>
+    </div>
+  </div>
+</div>
+
+<div id="contact-picker-modal" class="modal hidden">
+  <div class="modal-box">
+    <h3 id="contact-picker-title"></h3>
+    <div id="contact-picker-list"></div>
+    <div class="modal-actions">
+      <button id="contact-picker-cancel" class="ghost">İptal</button>
+      <button id="contact-picker-ok">Tamam</button>
+    </div>
+  </div>
 </div>
 <input id="status-photo-input" type="file" accept="image/*" class="hidden">
 
@@ -535,6 +585,7 @@
 <script src="https://www.gstatic.com/firebasejs/10.13.1/firebase-firestore-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.13.1/firebase-messaging-compat.js"></script>
 <script src="firebase-config.js"></script>
+<script src="qrcode.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

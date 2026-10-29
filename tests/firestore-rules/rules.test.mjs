@@ -236,3 +236,17 @@ test("joining a group with its invite code", async () => {
   await assertSucceeds(getDoc(doc(as("dave"), "conversations/g1")));
   await assertFails(updateDoc(doc(as("dave"), "conversations/c1"), { participants: arrayUnion("dave"), joinCode: code }));
 });
+
+test("about text: own, a short string", async () => {
+  await seed();
+  await assertSucceeds(updateDoc(doc(as("alice"), "users/alice"), { about: "Meşgulüm" }));
+  await assertFails(updateDoc(doc(as("alice"), "users/alice"), { about: "x".repeat(141) }));
+  await assertFails(updateDoc(doc(as("bob"), "users/alice"), { about: "hacked" }));
+  await assertSucceeds(updateDoc(doc(as("alice"), "users/alice"), { about: deleteField() }));
+});
+test("multiple-choice poll votes: a list of indexes, only your own", async () => {
+  await seed();
+  await assertSucceeds(updateDoc(doc(as("bob"), "conversations/c1/messages/p1"), { "votes.bob": [0, 2] }));
+  await assertFails(updateDoc(doc(as("bob"), "conversations/c1/messages/p1"), { "votes.bob": "çok" }));
+  await assertFails(updateDoc(doc(as("bob"), "conversations/c1/messages/p1"), { "votes.alice": [1] }));
+});
