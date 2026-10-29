@@ -4,7 +4,10 @@ const { extract } = require("./helpers");
 
 function load() {
   const src = extract("  function statusAudience() {", "  function startStatusListeners() {");
-  const ctx = { conversations: new Map(), myBlocked: {}, myUid: "me", myNickname: "ben", statusDocs: new Map() };
+  const ctx = {
+    conversations: new Map(), myBlocked: {}, myUid: "me", myNickname: "ben", statusDocs: new Map(),
+    privacy: { mode: "all", uids: [] }, statusPrivacy() { return ctx.privacy; },
+  };
   const fn = new Function("ctx", `with (ctx) { ${src}; return { statusAudience, nicknameOf, liveStatuses }; }`);
   return { ctx, ...fn(ctx) };
 }
@@ -35,4 +38,13 @@ test("liveStatuses drops expired ones and sorts oldest first", () => {
   ctx.statusDocs.set("3", { id: "3", from: "bob", ts: now - 9000, expiresAt: now - 1 });
   ctx.statusDocs.set("4", { id: "4", from: "carol", ts: now, expiresAt: now + 1000 });
   assert.deepStrictEqual(liveStatuses("bob").map(s => s.id), ["2", "1"]);
+});
+
+test("status privacy: all except some, or only some", () => {
+  const { ctx, statusAudience } = load();
+  ["bob", "carol", "dave"].forEach(u => ctx.conversations.set(u, { isGroup: false, participants: ["me", u], participantNicknames: {} }));
+  ctx.privacy = { mode: "except", uids: ["carol"] };
+  assert.deepStrictEqual(statusAudience(), ["bob", "dave"]);
+  ctx.privacy = { mode: "only", uids: ["dave", "zed"] };
+  assert.deepStrictEqual(statusAudience(), ["dave"]);
 });
