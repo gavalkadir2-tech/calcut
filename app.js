@@ -1322,6 +1322,7 @@
     lastMessageUnsubs.forEach(unsub => unsub());
     lastMessageUnsubs.clear();
     conversations.clear();
+    callHistory = null;
     previousUnread.clear();
   }
 
@@ -1359,6 +1360,7 @@
         } else if (d.type === "contact") {
           preview = "👤 Kişi";
         } else if (d.type === "call") {
+          if (threadFilter === "calls") loadCallHistory();
           const raw = await decryptMessage(d).catch(() => null);
           try {
             const cd = raw ? JSON.parse(raw) : null;
@@ -1375,6 +1377,8 @@
         // It reached this device: the sender's single ✓ becomes ✓✓.
         if (!conv.isGroup && d.from !== myUid && !d.delivered && !d.read && !d.deleted) {
           snap.docs[0].ref.update({ delivered: true }).catch(() => {});
+        } else if (conv.isGroup && d.from !== myUid && !d.deleted && !(d.deliveredTo && d.deliveredTo[myUid])) {
+          snap.docs[0].ref.update({ [`deliveredTo.${myUid}`]: firebase.firestore.FieldValue.serverTimestamp() }).catch(() => {});
         }
         // Call log previews already read naturally regardless of who placed
         // the call, so skip the usual "Sen: "/sender-name prefix for that type.
@@ -1658,25 +1662,245 @@
 
   let showingArchived = false;
 
+  /* ---------------- Read / delivered receipts ----------------
+     1:1: read / delivered flags on the message. Groups: readBy and
+     deliveredTo maps of uid -> time, each member adding only their own
+     (firestore.rules). */
+
+  const GROUP_RECEIPT_RECENT = 30;
+
+  function receiptTimes(map) {
+    const out = {};
+    if (map && typeof map === "object") {
+      Object.entries(map).forEach(([uid, t]) => { out[uid] = t && t.toMillis ? t.toMillis() : Date.now(); });
+    }
+    return out;
+  }
+
+  // "sent" | "delivered" | "read" for one of my messages.
+  function messageReceiptState(m) {
+    if (activeIsGroup) {
+      const conv = activeGroup();
+      const members = conv ? conv.participants.filter(u => u !== myUid) : [];
+      if (!members.length) return "sent";
+      const readBy = m.readBy || {};
+      const deliveredTo = m.deliveredTo || {};
+      if (members.every(u => readBy[u])) return "read";
+      if (members.every(u => readBy[u] || deliveredTo[u])) return "delivered";
+      return "sent";
+    }
+    if (m.read && !myHideReadReceipts()) return "read";
+    return m.read || m.delivered ? "delivered" : "sent";
+  }
+
+  function formatReceiptTime(t) {
+    return new Date(t).toLocaleString("tr-TR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
+  }
+
+  function showMessageInfo(m) {
+    const rows = ["🕒 Gönderildi · " + formatReceiptTime(m.ts)];
+    if (activeIsGroup) {
+      const conv = activeGroup();
+      const members = conv ? conv.participants.filter(u => u !== myUid) : [];
+      const name = u => "@" + ((conv && conv.participantNicknames[u]) || "?");
+      const readBy = m.readBy || {};
+      const deliveredTo = m.deliveredTo || {};
+      members.filter(u => readBy[u]).sort((a, b) => readBy[a] - readBy[b])
+        .forEach(u => rows.push("🔵 " + name(u) + " · okudu " + formatReceiptTime(readBy[u])));
+      members.filter(u => !readBy[u] && deliveredTo[u])
+        .forEach(u => rows.push("✓✓ " + name(u) + " · iletildi " + formatReceiptTime(deliveredTo[u])));
+      members.filter(u => !readBy[u] && !deliveredTo[u])
+        .forEach(u => rows.push("✓ " + name(u) + " · henüz ulaşmadı"));
+    } else {
+      const st = messageReceiptState(m);
+      rows.push(st === "read" ? "🔵 Okundu" : st === "delivered" ? "✓✓ İletildi" : "✓ Henüz ulaşmadı");
+      if (m.read && myHideReadReceipts()) rows.push("Okundu bilgini kapattığın için okunma görünmüyor.");
+    }
+    showActionSheet("Mesaj bilgisi", rows.map(label => ({ label, run: () => {} })));
+  }
+
+  /* ---------------- Swipe right to reply ---------------- */
+
+  const SWIPE_REPLY_PX = 60;
+
+  function attachSwipeReply(el, onSwipe) {
+    let startX = 0;
+    let startY = 0;
+    let dx = 0;
+    let tracking = false;
+    let swiping = false;
+    let swiped = false;
+    el.addEventListener("pointerdown", e => {
+      if (e.pointerType === "mouse") return;
+      tracking = true;
+      swiped = false;
+      swiping = false;
+      dx = 0;
+      startX = e.clientX;
+      startY = e.clientY;
+    });
+    el.addEventListener("pointermove", e => {
+      if (!tracking) return;
+      const mx = e.clientX - startX;
+      const my = e.clientY - startY;
+      if (!swiping) {
+        if (Math.abs(my) > 12) { tracking = false; return; } // scrolling
+        if (mx > 12) swiping = true;
+        else return;
+      }
+      dx = Math.max(0, Math.min(mx, SWIPE_REPLY_PX + 20));
+      el.style.transform = "translateX(" + dx + "px)";
+      el.classList.toggle("swipe-ready", dx >= SWIPE_REPLY_PX);
+    });
+    const end = () => {
+      if (!tracking) return;
+      tracking = false;
+      el.style.transform = "";
+      el.classList.remove("swipe-ready");
+      if (swiping && dx >= SWIPE_REPLY_PX) onSwipe();
+      swiped = swiping;
+      swiping = false;
+    };
+    ["pointerup", "pointercancel", "pointerleave"].forEach(evt => el.addEventListener(evt, end));
+    // A swipe isn't a tap: don't open the photo / link under the finger.
+    el.addEventListener("click", e => {
+      if (swiped) { e.stopImmediatePropagation(); e.preventDefault(); swiped = false; }
+    }, true);
+  }
+
+  /* ---------------- Chat list filters and the calls list ---------------- */
+
+  let threadFilter = "all";
+  let callHistory = null; // decrypted call log entries, newest first (cleared on lock)
+  let callHistoryLoading = false;
+
+  document.querySelectorAll("#thread-filters button").forEach(btn => btn.addEventListener("click", () => {
+    threadFilter = btn.dataset.filter;
+    document.querySelectorAll("#thread-filters button").forEach(b => b.classList.toggle("active", b === btn));
+    if (threadFilter === "calls") loadCallHistory();
+    renderThreadList();
+  }));
+
+  // The call log lives in each 1:1 chat as "call" messages (see
+  // logCallToConversation); gather and decrypt them on demand.
+  async function loadCallHistory() {
+    if (callHistoryLoading) return;
+    callHistoryLoading = true;
+    const convs = [...conversations.values()].filter(c => !c.isGroup && c.otherUid);
+    try {
+      const lists = await Promise.all(convs.map(async c => {
+        try {
+          const snap = await fbDb.collection("conversations").doc(c.id).collection("messages")
+            .where("type", "==", "call").get();
+          const out = [];
+          for (const doc of snap.docs) {
+            const d = doc.data();
+            if (d.deleted || (d.expiresAt && d.expiresAt.toMillis() <= Date.now())) continue;
+            if (msgFlag("hiddenMsgs", c.id, doc.id)) continue;
+            const cd = parseJson(await decryptMessage(d).catch(() => null));
+            if (!cd) continue;
+            out.push({
+              convId: c.id, otherUid: c.otherUid, otherNickname: c.otherNickname,
+              fromMe: d.from === myUid, outcome: cd.outcome, duration: cd.duration || 0, media: cd.media,
+              ts: d.ts ? d.ts.toMillis() : 0,
+            });
+          }
+          return out;
+        } catch (e) {
+          return [];
+        }
+      }));
+      if (!myUid) return; // locked meanwhile
+      callHistory = lists.flat().sort((a, b) => b.ts - a.ts).slice(0, 200);
+    } finally {
+      callHistoryLoading = false;
+    }
+    if (threadFilter === "calls") renderThreadList();
+  }
+
+  function threadMatchesFilter(conv) {
+    if (threadFilter === "unread") return conv.unread > 0;
+    if (threadFilter === "groups") return conv.isGroup;
+    return true;
+  }
+
+  function renderCallsList() {
+    if (!callHistory) {
+      const li = document.createElement("li");
+      li.className = "empty-state";
+      li.textContent = "Aramalar yükleniyor…";
+      threadListEl.appendChild(li);
+      return;
+    }
+    if (!callHistory.length) {
+      const li = document.createElement("li");
+      li.className = "empty-state";
+      li.textContent = "Henüz arama yok.";
+      threadListEl.appendChild(li);
+      return;
+    }
+    callHistory.forEach(c => {
+      const li = document.createElement("li");
+      li.className = "has-avatar call-row";
+      if (isMissedIncomingCall(c.fromMe, c.outcome)) li.classList.add("missed-call");
+      li.innerHTML = `
+        <span class="avatar"></span>
+        <div class="thread-body">
+          <div class="thread-row">
+            <span class="thread-name"></span>
+            <span class="thread-time"></span>
+          </div>
+          <div class="thread-row">
+            <span class="thread-preview"></span>
+          </div>
+        </div>
+        <button class="call-back-btn"></button>`;
+      const avatarEl = li.querySelector(".avatar");
+      watchProfile(c.otherUid);
+      paintAvatar(avatarEl, c.otherUid, c.otherNickname);
+      li.querySelector(".thread-name").textContent = "@" + c.otherNickname;
+      li.querySelector(".thread-time").textContent = formatThreadTime(c.ts);
+      li.querySelector(".thread-preview").textContent = callLogText(c.fromMe, c.outcome, c.duration, c.media);
+      const back = li.querySelector(".call-back-btn");
+      back.textContent = c.media === "video" ? "📹" : "📞";
+      back.title = c.media === "video" ? "Görüntülü ara" : "Sesli ara";
+      back.addEventListener("click", e => {
+        e.stopPropagation();
+        startCall(c.otherUid, c.otherNickname, c.media === "video");
+      });
+      li.addEventListener("click", () => openConversation(c.convId, c.otherUid, c.otherNickname));
+      threadListEl.appendChild(li);
+    });
+  }
+
   function renderThreadList() {
     threadListEl.innerHTML = "";
+    if (threadFilter === "calls") {
+      renderCallsList();
+      return;
+    }
     const pins = pinnedConvIds();
     const archived = archivedConvIds();
     const all = Array.from(conversations.values());
     const archivedCount = all.filter(c => archived.includes(c.id)).length;
     if (showingArchived && !archivedCount) showingArchived = false;
-    const list = sortThreads(all.filter(c => archived.includes(c.id) === showingArchived), pins);
-    if (showingArchived || archivedCount) {
+    const filtering = threadFilter !== "all";
+    const list = sortThreads(all.filter(c => filtering
+      ? threadMatchesFilter(c) && !archived.includes(c.id)
+      : archived.includes(c.id) === showingArchived), pins);
+    if (!filtering && (showingArchived || archivedCount)) {
       const row = document.createElement("li");
       row.className = "archive-row";
       row.textContent = showingArchived ? "← Arşivlenmiş sohbetler" : "🗄️ Arşivlenmiş (" + archivedCount + ")";
       row.addEventListener("click", () => { showingArchived = !showingArchived; renderThreadList(); });
       threadListEl.appendChild(row);
     }
-    if (!list.length && !archivedCount) {
+    if (!list.length && (filtering || !archivedCount)) {
       const li = document.createElement("li");
       li.className = "empty-state";
-      li.textContent = "Henüz sohbet yok. '+' ile bir kişinin kullanıcı adını ekle.";
+      li.textContent = threadFilter === "unread" ? "Okunmamış sohbet yok."
+        : threadFilter === "groups" ? "Henüz grup yok."
+        : "Henüz sohbet yok. '+' ile bir kişinin kullanıcı adını ekle.";
       li.style.cursor = "default";
       threadListEl.appendChild(li);
       return;
@@ -4192,7 +4416,10 @@
         const conv = conversations.get(convId);
         const rendered = [];
         const now = Date.now();
-        for (const doc of snap.docs) {
+        // Group read receipts are written only for recent messages, so opening
+        // an old group doesn't send hundreds of writes for messages from before.
+        const receiptFrom = snap.docs.length - GROUP_RECEIPT_RECENT;
+        for (const [docIdx, doc] of snap.docs.entries()) {
           const d = doc.data();
           const expiresAtMillis = d.expiresAt ? d.expiresAt.toMillis() : null;
           if (expiresAtMillis && expiresAtMillis <= now) continue; // already expired: hide, will be purged shortly
@@ -4215,6 +4442,12 @@
             if (!myHideReadReceipts()) doc.ref.update({ read: true, delivered: true }).catch(() => {});
             else if (!d.delivered) doc.ref.update({ delivered: true }).catch(() => {});
           }
+          if (activeIsGroup && d.from !== myUid && docIdx >= receiptFrom && !(d.readBy && d.readBy[myUid])) {
+            const now = firebase.firestore.FieldValue.serverTimestamp();
+            const receipt = { [`readBy.${myUid}`]: now };
+            if (!(d.deliveredTo && d.deliveredTo[myUid])) receipt[`deliveredTo.${myUid}`] = now;
+            doc.ref.update(receipt).catch(() => {});
+          }
           let file = null;
           if (d.type === "file") {
             try { file = JSON.parse(plain); } catch (e) { file = null; }
@@ -4231,6 +4464,8 @@
             text: ["image", "file", "call", "audio", "poll", "location", "contact"].includes(d.type) ? null : plain,
             contact: d.type === "contact" ? parseJson(plain) : null,
             mentions: Array.isArray(d.mentions) ? d.mentions : [],
+            readBy: receiptTimes(d.readBy),
+            deliveredTo: receiptTimes(d.deliveredTo),
             played: !!d.played,
             poll: d.type === "poll" ? parseJson(plain) : null,
             votes: d.votes || {},
@@ -4310,10 +4545,31 @@
   const LINK_RE = /\bhttps?:\/\/[^\s<>"]+[^\s<>".,:;'!?)\]]/g;
 
   // Plain text with http(s) links made tappable.
+  // WhatsApp-style formatting: *kalın*, _italik_, ~üstü çizili~, `kod`.
+  // A marker only counts at a word edge and around non-blank text, so
+  // "2*3*4" or "dosya_adi_1" stay as typed. Links are never formatted.
+  const FORMAT_RE = /(^|[\s.,!?;:'"(\[])([*_~`])(?!\s)([^\n]*?[^\s])\2(?=$|[\s.,!?;:'")\]])/;
+  const FORMAT_TAGS = { "*": "strong", "_": "em", "~": "s", "`": "code" };
+
+  function appendFormatted(container, text) {
+    const m = FORMAT_RE.exec(text);
+    if (!m) {
+      if (text) container.appendChild(document.createTextNode(text));
+      return;
+    }
+    const start = m.index + m[1].length;
+    if (start) container.appendChild(document.createTextNode(text.slice(0, start)));
+    const el = document.createElement(FORMAT_TAGS[m[2]]);
+    if (m[2] === "`") el.textContent = m[3]; // nothing is formatted inside code
+    else appendFormatted(el, m[3]);
+    container.appendChild(el);
+    appendFormatted(container, text.slice(m.index + m[0].length));
+  }
+
   function appendLinkified(container, text) {
     let cursor = 0;
     for (const match of text.matchAll(LINK_RE)) {
-      container.appendChild(document.createTextNode(text.slice(cursor, match.index)));
+      appendFormatted(container, text.slice(cursor, match.index));
       const a = document.createElement("a");
       a.className = "msg-link";
       a.href = match[0];
@@ -4323,7 +4579,7 @@
       container.appendChild(a);
       cursor = match.index + match[0].length;
     }
-    container.appendChild(document.createTextNode(text.slice(cursor)));
+    appendFormatted(container, text.slice(cursor));
   }
 
   function appendHighlightedText(container, text, query) {
@@ -4714,12 +4970,14 @@
         played.textContent = "🎧 dinlendi";
         metaRow.appendChild(played);
       }
-      if (m.from === "me" && !activeIsGroup) {
+      if (m.from === "me") {
         const tick = document.createElement("span");
         // ✓ sent, ✓✓ reached their phone, blue ✓✓ read. Like WhatsApp, with
-        // our own read receipts off we don't see theirs either.
-        tick.className = "msg-tick" + (m.read && !myHideReadReceipts() ? " read" : "");
-        tick.textContent = m.read || m.delivered ? "✓✓" : "✓";
+        // our own read receipts off we don't see theirs either (1:1 only:
+        // group receipts are always on). In a group: once everyone has.
+        const st = messageReceiptState(m);
+        tick.className = "msg-tick" + (st === "read" ? " read" : "");
+        tick.textContent = st === "sent" ? "✓" : "✓✓";
         metaRow.appendChild(tick);
       }
       div.appendChild(metaRow);
@@ -4741,6 +4999,7 @@
         div.appendChild(row);
       }
       attachLongPress(div, () => showMessageActions(m));
+      attachSwipeReply(div, () => startReply(m.id));
       messageListEl.appendChild(div);
     });
     messageListEl.scrollTop = messageListEl.scrollHeight;
@@ -4868,6 +5127,9 @@
     }
     if (m.from === "me" && m.type === "text" && !m.deleted) {
       actions.push({ label: "✎ Düzenle", run: () => promptEditMessage(m) });
+    }
+    if (m.from === "me" && !m.deleted && !m.call) {
+      actions.push({ label: "ℹ️ Bilgi", run: () => showMessageInfo(m) });
     }
     actions.push({ label: "🙈 Benden sil", danger: true, run: async () => {
       await setMsgFlag("hiddenMsgs", convId, m.id, true);
@@ -5910,6 +6172,10 @@
       voiceChunks = [];
       endVoiceUi();
       if (!send || !blob.size) return;
+      if (send === "preview") {
+        showVoicePreview(blob);
+        return;
+      }
       try {
         await sendEncrypted(await readAsDataUrl(blob), "audio", takeReplyFields());
       } catch (e) {
@@ -5933,11 +6199,49 @@
     voiceRecorder.stop();
   }
 
+  // ⏹ stops the recording without sending it, to listen to it first.
+  const voicePreview = document.getElementById("voice-preview");
+  const voicePreviewAudio = document.getElementById("voice-preview-audio");
+  let voicePreviewBlob = null;
+
+  function showVoicePreview(blob) {
+    discardVoicePreview();
+    voicePreviewBlob = blob;
+    voicePreviewAudio.src = URL.createObjectURL(blob);
+    voicePreview.classList.remove("hidden");
+    inputRow.classList.add("previewing");
+  }
+
+  function discardVoicePreview() {
+    if (voicePreviewAudio.src) {
+      voicePreviewAudio.pause();
+      URL.revokeObjectURL(voicePreviewAudio.src);
+      voicePreviewAudio.removeAttribute("src");
+    }
+    voicePreviewBlob = null;
+    voicePreview.classList.add("hidden");
+    inputRow.classList.remove("previewing");
+  }
+
+  document.getElementById("voice-stop-btn").addEventListener("click", () => stopVoiceRecording("preview"));
+  document.getElementById("voice-preview-delete").addEventListener("click", discardVoicePreview);
+  document.getElementById("voice-preview-send").addEventListener("click", async () => {
+    const blob = voicePreviewBlob;
+    discardVoicePreview();
+    if (!blob) return;
+    try {
+      await sendEncrypted(await readAsDataUrl(blob), "audio", takeReplyFields());
+    } catch (e) {
+      alert("Sesli mesaj gönderilemedi: " + e.message);
+    }
+  });
+
   // Leaving a chat (or locking) drops a pending reply and discards a recording.
   function leaveComposer() {
     cancelReply();
     attachMenu.classList.add("hidden");
     stopVoiceRecording(false);
+    discardVoicePreview();
   }
 
   function endVoiceUi() {
