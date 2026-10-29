@@ -3,7 +3,7 @@
 import test from "node:test";
 import fs from "node:fs";
 import { initializeTestEnvironment, assertSucceeds, assertFails } from "@firebase/rules-unit-testing";
-import { doc, setDoc, updateDoc, getDoc, getDocs, query, where, serverTimestamp, Timestamp, deleteField, deleteDoc, addDoc, collection } from "firebase/firestore";
+import { doc, setDoc, updateDoc, getDoc, getDocs, query, where, serverTimestamp, Timestamp, deleteField, deleteDoc, addDoc, collection, arrayUnion } from "firebase/firestore";
 
 const env = await initializeTestEnvironment({
   projectId: "demo-calcut",
@@ -219,4 +219,20 @@ test("group receipts: each member adds only their own time", async () => {
   await assertFails(updateDoc(doc(as("bob"), "conversations/g1/messages/gm1"), { "readBy.carol": serverTimestamp() }));
   await assertFails(updateDoc(doc(as("carol"), "conversations/g1/messages/gm1"), { "readBy.carol": true }));
   await assertFails(updateDoc(doc(as("alice"), "conversations/g1/messages/gm1"), { "readBy.alice": serverTimestamp() }));
+});
+
+test("joining a group with its invite code", async () => {
+  await seed();
+  const code = "abcdefghijklmnop1234";
+  await assertFails(updateDoc(doc(as("dave"), "conversations/g1"), { participants: arrayUnion("dave"), joinCode: code }));
+  await assertSucceeds(updateDoc(doc(as("alice"), "conversations/g1"), { inviteCode: code }));
+  await assertFails(updateDoc(doc(as("bob"), "conversations/g1"), { inviteCode: "x".repeat(20) }));
+  await assertFails(updateDoc(doc(as("dave"), "conversations/g1"), { participants: arrayUnion("dave"), joinCode: "wrongwrongwrongwrong" }));
+  await assertFails(updateDoc(doc(as("dave"), "conversations/g1"), { participants: arrayUnion("dave", "erin"), joinCode: code }));
+  await assertFails(updateDoc(doc(as("dave"), "conversations/g1"), { participants: arrayUnion("dave"), groupName: "x", joinCode: code }));
+  await assertSucceeds(updateDoc(doc(as("dave"), "conversations/g1"), {
+    participants: arrayUnion("dave"), "participantNicknames.dave": "dave", "unreadCount.dave": 0, joinCode: code,
+  }));
+  await assertSucceeds(getDoc(doc(as("dave"), "conversations/g1")));
+  await assertFails(updateDoc(doc(as("dave"), "conversations/c1"), { participants: arrayUnion("dave"), joinCode: code }));
 });
