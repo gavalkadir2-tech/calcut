@@ -65,6 +65,17 @@ bu dosyayla aynı olmalı. Değiştirince ya Firebase konsolunda
 bas, ya da Firebase CLI ile `firebase deploy --only firestore:rules` çalıştır
 (`firebase.json` bu dosyayı gösteriyor).
 
+**Otomatik yayınlama:** GitHub'da bir kez `FIREBASE_SERVICE_ACCOUNT` sırrı
+eklenirse, main'e her birleştirmede kural testleri geçince kurallar Firebase'e
+kendiliğinden yüklenir (`tools/deploy-firestore-rules.js`, Tests iş akışının
+`deploy-firestore-rules` işi). Kurulum:
+1. Firebase konsolu → Proje ayarları → *Hizmet hesapları* → *Yeni özel anahtar
+   oluştur* → inen `.json` dosyası (push sunucusu için oluşturduğun dosya da olur).
+2. GitHub → depo → *Settings* → *Secrets and variables* → *Actions* →
+   *New repository secret* → Ad: `FIREBASE_SERVICE_ACCOUNT`, Değer: `.json`
+   dosyasının tüm içeriği → *Add secret*.
+3. Hemen yayınlamak için: *Actions* → *Tests* → *Run workflow* (main).
+
 ## Testler
 
 `tests/` klasöründeki testler `app.js`'in gerçek kodunu (büyük dosyaların
