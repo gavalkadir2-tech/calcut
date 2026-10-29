@@ -97,6 +97,7 @@
           <button id="lock-btn" title="Kilitle">🔒</button>
         </div>
       </div>
+      <div id="status-strip"></div>
       <ul id="thread-list"></ul>
     </div>
 
@@ -135,6 +136,8 @@
         <button id="attach-camera-btn">📷 Kamera</button>
         <button id="attach-gallery-btn">🖼️ Galeri / Dosya</button>
         <button id="attach-viewonce-btn">👁️ Tek seferlik</button>
+        <button id="attach-poll-btn">📊 Anket</button>
+        <button id="attach-location-btn">📍 Konum</button>
       </div>
       <p id="upload-status" class="hidden"></p>
       <div id="reply-bar" class="hidden">
@@ -210,7 +213,7 @@
         <button id="enable-alarm-btn">Bildirimleri Etkinleştir</button>
         <button id="test-push-btn" class="ghost">Test bildirimi gönder</button>
         <p id="alarm-msg"></p>
-        <p class="app-version">Sürüm: 28</p>
+        <p class="app-version">Sürüm: 29</p>
         <div id="app-update-section" class="hidden">
           <hr>
           <label>Uygulama güncellemesi</label>
@@ -354,6 +357,59 @@
     </div>
   </div>
 </div>
+
+<div id="poll-modal" class="modal hidden">
+  <div class="modal-box">
+    <h3>Anket</h3>
+    <input id="poll-question" type="text" maxlength="200" placeholder="Soru">
+    <div id="poll-options">
+      <input class="poll-option-input" type="text" maxlength="100" placeholder="Seçenek 1">
+      <input class="poll-option-input" type="text" maxlength="100" placeholder="Seçenek 2">
+    </div>
+    <button id="poll-add-option" class="ghost">+ Seçenek ekle</button>
+    <div class="modal-actions">
+      <button id="poll-cancel" class="ghost">İptal</button>
+      <button id="poll-send">Gönder</button>
+    </div>
+  </div>
+</div>
+
+<div id="group-info-modal" class="modal hidden">
+  <div class="modal-box group-info-box">
+    <div class="group-info-head">
+      <span id="group-info-avatar" class="avatar large"></span>
+      <h3 id="group-info-name"></h3>
+    </div>
+    <div id="group-info-admin-actions">
+      <button id="group-rename-btn" class="ghost">✏️ Adı değiştir</button>
+      <button id="group-photo-btn" class="ghost">🖼️ Grup fotoğrafı</button>
+      <button id="group-add-member-btn" class="ghost">➕ Kişi ekle</button>
+    </div>
+    <input id="group-photo-input" type="file" accept="image/*" class="hidden">
+    <p id="group-info-count" class="hint"></p>
+    <ul id="group-info-members"></ul>
+    <button id="group-leave-btn" class="danger">🚪 Gruptan çık</button>
+    <button id="group-info-close" class="ghost">Kapat</button>
+  </div>
+</div>
+
+<div id="status-viewer" class="hidden">
+  <div id="status-progress"></div>
+  <div class="status-top">
+    <span id="status-author-avatar" class="avatar small"></span>
+    <div class="status-author">
+      <span id="status-author-name"></span>
+      <span id="status-time"></span>
+    </div>
+    <button id="status-close" title="Kapat">✕</button>
+  </div>
+  <div id="status-content"></div>
+  <div id="status-bottom">
+    <button id="status-viewers-btn"></button>
+    <button id="status-delete-btn">🗑 Sil</button>
+  </div>
+</div>
+<input id="status-photo-input" type="file" accept="image/*" class="hidden">
 
 <div id="action-sheet" class="hidden">
   <div class="action-sheet-box">

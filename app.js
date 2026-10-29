@@ -1271,6 +1271,7 @@
     appPanel.classList.remove("hidden");
     showThreadList();
     listenToConversations();
+    startStatusListeners();
     listenForIncomingCalls();
     startPresence();
     registerPushToken().catch(err => console.error("push token register error", err));
@@ -1296,6 +1297,7 @@
     if (disappearingCheckInterval) { clearInterval(disappearingCheckInterval); disappearingCheckInterval = null; }
     stopTypingListener();
     stopPresence();
+    stopStatusListeners();
     // The incoming-call listener deliberately keeps running while locked (it
     // follows the Firebase sign-in, see listenForIncomingCalls); it stops on sign-out.
     endCall(null);
@@ -1332,6 +1334,10 @@
           preview = "📄 Dosya";
         } else if (d.type === "audio") {
           preview = "🎤 Sesli mesaj";
+        } else if (d.type === "poll") {
+          preview = "📊 Anket";
+        } else if (d.type === "location") {
+          preview = "📍 Konum";
         } else if (d.type === "call") {
           const raw = await decryptMessage(d).catch(() => null);
           try {
@@ -1346,6 +1352,10 @@
         }
         const conv = conversations.get(convId);
         if (!conv) return;
+        // It reached this device: the sender's single ✓ becomes ✓✓.
+        if (!conv.isGroup && d.from !== myUid && !d.delivered && !d.read && !d.deleted) {
+          snap.docs[0].ref.update({ delivered: true }).catch(() => {});
+        }
         // Call log previews already read naturally regardless of who placed
         // the call, so skip the usual "Sen: "/sender-name prefix for that type.
         let prefix = "";
@@ -1384,6 +1394,11 @@
               lastMessageUnsubs.get(change.doc.id)();
               lastMessageUnsubs.delete(change.doc.id);
             }
+            // Removed from (or left) the group that is open right now.
+            if (change.doc.id === activeConvId) {
+              document.getElementById("thread-back-btn").click();
+              document.getElementById("group-info-modal").classList.add("hidden");
+            }
             return;
           }
           const d = change.doc.data();
@@ -1401,6 +1416,9 @@
             otherUids,
             isGroup,
             groupName: d.groupName || null,
+            // Older groups have no admins field: their creator is the admin.
+            admins: Array.isArray(d.admins) ? d.admins : (d.createdBy ? [d.createdBy] : []),
+            groupAvatar: typeof d.groupAvatar === "string" && AVATAR_RE.test(d.groupAvatar) ? d.groupAvatar : null,
             participants: d.participants || [],
             participantNicknames: d.participantNicknames || {},
             updatedAt: d.updatedAt ? d.updatedAt.toMillis() : 0,
@@ -1411,7 +1429,11 @@
             disappearingSeconds: d.disappearingSeconds || 0,
             muted,
           });
-          if (change.doc.id === activeConvId) { updateDisappearingUi(); updateMuteUi(); }
+          if (change.doc.id === activeConvId) {
+            updateDisappearingUi();
+            updateMuteUi();
+            if (isGroup) syncActiveGroup();
+          }
           subscribeLastMessage(change.doc.id);
 
           // Fire the alarm-style notification for a new message: only once
@@ -1426,6 +1448,7 @@
         });
         if (!threadDetailPanel.classList.contains("hidden")) return;
         renderThreadList();
+        renderStatusStrip(); // contact names come from the conversations
       }, err => console.error("conversations listen error", err));
   }
 
@@ -1651,7 +1674,9 @@
           </div>
         </div>`;
       const avatarEl = li.querySelector(".avatar");
-      if (conv.isGroup) {
+      if (conv.isGroup && conv.groupAvatar) {
+        avatarEl.style.backgroundImage = 'url("' + conv.groupAvatar + '")';
+      } else if (conv.isGroup) {
         avatarEl.textContent = "👥";
         avatarEl.style.backgroundColor = "#2a2e37";
       } else {
@@ -1771,6 +1796,7 @@
         isGroup: true,
         groupName,
         createdBy: myUid,
+        admins: [myUid],
         updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
       });
       document.getElementById("new-group-modal").classList.add("hidden");
@@ -2330,6 +2356,8 @@
         if (m.type === "image") text = "📷 Fotoğraf";
         else if (m.type === "file") text = "📄 Dosya";
         else if (m.type === "audio") text = "🎤 Sesli mesaj";
+        else if (m.type === "poll") text = "📊 Anket";
+        else if (m.type === "location") text = "📍 Konum";
         else if (m.type === "call") text = "📞 Arama kaydı";
         else text = m.content + (m.edited ? " (düzenlendi)" : "");
         line.appendChild(document.createTextNode(text));
@@ -2367,6 +2395,7 @@
     document.getElementById("thread-call-btn").classList.toggle("hidden", activeIsGroup);
     document.getElementById("thread-video-call-btn").classList.toggle("hidden", activeIsGroup);
     document.getElementById("thread-block-btn").classList.toggle("hidden", activeIsGroup);
+    document.querySelector(".thread-header-titles").classList.toggle("clickable", activeIsGroup);
     const conv = conversations.get(convId);
     if (conv) conv.unread = 0;
     fbDb.collection("conversations").doc(convId).update({ [`unreadCount.${myUid}`]: 0 }).catch(() => {});
@@ -2391,6 +2420,520 @@
     updateDisappearingUi();
     updateMuteUi();
   }
+
+  /* ---------------- Statuses (24-hour stories) ----------------
+     A status is encrypted like a message, for the author's 1:1 contacts
+     (audience); it expires after 24 hours. Viewers add themselves to
+     "viewers", so the author sees who looked at it. */
+
+  const STATUS_TTL_MS = 24 * 60 * 60 * 1000;
+  const STATUS_SHOW_MS = 5000;
+  const STATUS_COLORS = ["#2f6f4f", "#3b4f9a", "#8a3b6f", "#9a5b2f", "#2f7a8a", "#5a2f8a"];
+  const statusStrip = document.getElementById("status-strip");
+  const statusViewer = document.getElementById("status-viewer");
+  const statusDocs = new Map(); // id -> { id, from, ts, expiresAt, viewers, raw }
+  const statusPlain = new Map(); // id -> decrypted { kind, text, color, image } (or null on failure)
+  let statusUnsubs = [];
+  let statusTimer = null;
+  let statusQueue = [];
+  let statusIndex = 0;
+
+  function statusAudience() {
+    const uids = new Set();
+    conversations.forEach(conv => {
+      if (conv.isGroup) return;
+      conv.participants.forEach(u => { if (u !== myUid && !myBlocked[u]) uids.add(u); });
+    });
+    return [...uids].slice(0, 500);
+  }
+
+  function nicknameOf(uid) {
+    if (uid === myUid) return myNickname;
+    for (const conv of conversations.values()) {
+      if (conv.participantNicknames && conv.participantNicknames[uid]) return conv.participantNicknames[uid];
+    }
+    return "?";
+  }
+
+  function liveStatuses(from) {
+    const now = Date.now();
+    return [...statusDocs.values()]
+      .filter(s => s.from === from && s.expiresAt > now)
+      .sort((a, b) => a.ts - b.ts);
+  }
+
+  function startStatusListeners() {
+    stopStatusListeners();
+    const onSnap = snap => {
+      snap.docChanges().forEach(change => {
+        const id = change.doc.id;
+        if (change.type === "removed") {
+          statusDocs.delete(id);
+          statusPlain.delete(id);
+          return;
+        }
+        const d = change.doc.data();
+        const expiresAt = d.expiresAt && d.expiresAt.toMillis ? d.expiresAt.toMillis() : 0;
+        if (expiresAt <= Date.now()) {
+          // Nobody needs an expired status: its author tidies it away.
+          if (d.from === myUid) change.doc.ref.delete().catch(() => {});
+          statusDocs.delete(id);
+          return;
+        }
+        statusDocs.set(id, {
+          id, from: d.from, expiresAt, raw: d, viewers: d.viewers || {},
+          ts: d.ts && d.ts.toMillis ? d.ts.toMillis() : Date.now(),
+        });
+      });
+      renderStatusStrip();
+    };
+    const onErr = err => console.error("status listener error", err);
+    const col = fbDb.collection("statuses");
+    statusUnsubs = [
+      col.where("audience", "array-contains", myUid).onSnapshot(onSnap, onErr),
+      col.where("from", "==", myUid).onSnapshot(onSnap, onErr),
+    ];
+  }
+
+  function stopStatusListeners() {
+    statusUnsubs.forEach(u => u());
+    statusUnsubs = [];
+    statusDocs.clear();
+    statusPlain.clear();
+    closeStatusViewer();
+    statusStrip.innerHTML = "";
+  }
+
+  function renderStatusStrip() {
+    if (!myUid) return;
+    statusStrip.innerHTML = "";
+    const mine = liveStatuses(myUid);
+    statusStrip.appendChild(statusStripItem(myUid, "Durumum", mine.length ? false : null, mine.length === 0));
+    const authors = new Set();
+    statusDocs.forEach(s => { if (s.from !== myUid && !myBlocked[s.from]) authors.add(s.from); });
+    const items = [...authors].map(uid => {
+      const list = liveStatuses(uid);
+      return { uid, list, unseen: list.some(s => !s.viewers[myUid]), latest: list.length ? list[list.length - 1].ts : 0 };
+    }).filter(i => i.list.length);
+    // Unseen first, newest first, like WhatsApp.
+    items.sort((a, b) => (b.unseen - a.unseen) || (b.latest - a.latest));
+    items.forEach(i => statusStrip.appendChild(statusStripItem(i.uid, nicknameOf(i.uid), i.unseen, false)));
+  }
+
+  function statusStripItem(uid, label, unseen, isAdd) {
+    const btn = document.createElement("button");
+    btn.className = "status-item";
+    const ring = document.createElement("span");
+    ring.className = "status-ring" + (unseen ? " unseen" : "") + (isAdd ? " status-add" : "");
+    const av = document.createElement("span");
+    av.className = "avatar";
+    watchProfile(uid);
+    paintAvatar(av, uid, uid === myUid ? myNickname : label);
+    ring.appendChild(av);
+    const name = document.createElement("span");
+    name.className = "status-name";
+    name.textContent = label;
+    btn.append(ring, name);
+    btn.addEventListener("click", () => {
+      if (uid === myUid) {
+        const mine = liveStatuses(myUid);
+        if (!mine.length) { showAddStatusMenu(); return; }
+        showActionSheet("Durumum", [
+          { label: "Durumumu gör", run: () => openStatusViewer(myUid) },
+          { label: "Yeni durum ekle", run: showAddStatusMenu },
+        ]);
+      } else {
+        openStatusViewer(uid);
+      }
+    });
+    return btn;
+  }
+
+  function showAddStatusMenu() {
+    showActionSheet("Yeni durum (24 saat)", [
+      { label: "✏️ Yazı", run: addTextStatus },
+      { label: "🖼️ Fotoğraf", run: () => document.getElementById("status-photo-input").click() },
+    ]);
+  }
+
+  async function postStatus(payload) {
+    const audience = statusAudience();
+    if (!audience.length) {
+      alert("Durum paylaşmak için önce en az bir kişiyle sohbetin olmalı.");
+      return;
+    }
+    const key = await makeMessageKey(audience);
+    if (!key) return;
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const ciphertext = await crypto.subtle.encrypt(
+      { name: "AES-GCM", iv }, key.aesKey, new TextEncoder().encode(JSON.stringify(payload))
+    );
+    try {
+      await fbDb.collection("statuses").add({
+        from: myUid,
+        audience,
+        kind: payload.kind,
+        iv: b64encode(iv.buffer),
+        ciphertext: b64encode(ciphertext),
+        wrappedKeys: key.wrappedKeys,
+        ts: firebase.firestore.FieldValue.serverTimestamp(),
+        expiresAt: firebase.firestore.Timestamp.fromMillis(Date.now() + STATUS_TTL_MS),
+      });
+    } catch (e) {
+      alert(e && e.code === "permission-denied"
+        ? "Paylaşılamadı: Firestore kurallarının güncellenmesi gerekiyor."
+        : "Paylaşılamadı: " + e.message);
+    }
+  }
+
+  function addTextStatus() {
+    const text = prompt("Durumun:");
+    if (text === null || !text.trim()) return;
+    const color = STATUS_COLORS[Math.floor(Math.random() * STATUS_COLORS.length)];
+    postStatus({ kind: "text", text: text.trim().slice(0, 700), color });
+  }
+
+  // A Firestore document is capped at 1MiB, so status photos are scaled
+  // down until their (base64, encrypted) form fits comfortably.
+  async function statusPhotoDataUrl(file) {
+    const img = await new Promise((resolve, reject) => {
+      readAsDataUrl(file).then(url => {
+        const i = new Image();
+        i.onload = () => resolve(i);
+        i.onerror = () => reject(new Error("bu fotoğraf açılamadı"));
+        i.src = url;
+      }, reject);
+    });
+    let side = 1280;
+    let quality = 0.8;
+    for (let attempt = 0; attempt < 6; attempt++) {
+      const scale = Math.min(1, side / Math.max(img.naturalWidth, img.naturalHeight));
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.round(img.naturalWidth * scale);
+      canvas.height = Math.round(img.naturalHeight * scale);
+      canvas.getContext("2d").drawImage(img, 0, 0, canvas.width, canvas.height);
+      const jpeg = canvas.toDataURL("image/jpeg", quality);
+      if (jpeg.length < 600000) return jpeg;
+      side = Math.round(side * 0.8);
+      quality = Math.max(0.5, quality - 0.08);
+    }
+    throw new Error("fotoğraf çok büyük");
+  }
+
+  document.getElementById("status-photo-input").addEventListener("change", async e => {
+    const file = e.target.files[0];
+    e.target.value = "";
+    if (!file) return;
+    try {
+      const image = await statusPhotoDataUrl(file);
+      const caption = prompt("Açıklama (isteğe bağlı):") || "";
+      await postStatus({ kind: "image", image, text: caption.trim().slice(0, 300) });
+    } catch (err) {
+      alert("Durum paylaşılamadı: " + err.message);
+    }
+  });
+
+  async function decryptStatus(s) {
+    if (statusPlain.has(s.id)) return statusPlain.get(s.id);
+    let plain = null;
+    try {
+      plain = parseJson(await decryptMessage(s.raw));
+    } catch (e) {
+      plain = null;
+    }
+    statusPlain.set(s.id, plain);
+    return plain;
+  }
+
+  function openStatusViewer(uid) {
+    statusQueue = liveStatuses(uid);
+    if (!statusQueue.length) return;
+    // Start at the first one not seen yet.
+    const firstUnseen = uid === myUid ? -1 : statusQueue.findIndex(s => !s.viewers[myUid]);
+    statusIndex = firstUnseen >= 0 ? firstUnseen : 0;
+    document.getElementById("status-author-name").textContent = uid === myUid ? "Durumum" : "@" + nicknameOf(uid);
+    paintAvatar(document.getElementById("status-author-avatar"), uid, nicknameOf(uid));
+    statusViewer.classList.remove("hidden");
+    showStatusAt(statusIndex);
+  }
+
+  function closeStatusViewer() {
+    clearTimeout(statusTimer);
+    statusTimer = null;
+    statusQueue = [];
+    statusViewer.classList.add("hidden");
+    document.getElementById("status-content").innerHTML = "";
+  }
+
+  async function showStatusAt(i) {
+    clearTimeout(statusTimer);
+    if (i < 0) i = 0;
+    if (i >= statusQueue.length) { closeStatusViewer(); return; }
+    statusIndex = i;
+    const s = statusQueue[i];
+    const progress = document.getElementById("status-progress");
+    progress.innerHTML = "";
+    statusQueue.forEach((_, j) => {
+      const bar = document.createElement("span");
+      if (j < i) bar.className = "done";
+      const fill = document.createElement("i");
+      if (j === i) {
+        fill.style.transition = `width ${STATUS_SHOW_MS}ms linear`;
+        requestAnimationFrame(() => requestAnimationFrame(() => { fill.style.width = "100%"; }));
+      }
+      bar.appendChild(fill);
+      progress.appendChild(bar);
+    });
+    const hoursAgo = Math.floor((Date.now() - s.ts) / 3600000);
+    const minsAgo = Math.floor((Date.now() - s.ts) / 60000);
+    document.getElementById("status-time").textContent =
+      hoursAgo >= 1 ? hoursAgo + " saat önce" : minsAgo >= 1 ? minsAgo + " dakika önce" : "az önce";
+    const content = document.getElementById("status-content");
+    content.innerHTML = "";
+    const plain = await decryptStatus(s);
+    if (statusQueue[statusIndex] !== s) return; // moved on while decrypting
+    if (!plain) {
+      const t = document.createElement("div");
+      t.className = "status-text";
+      t.textContent = "🔒 Bu durum açılamadı";
+      content.appendChild(t);
+    } else if (plain.kind === "image" && typeof plain.image === "string" && plain.image.startsWith("data:image/")) {
+      const img = document.createElement("img");
+      img.src = plain.image;
+      img.alt = "";
+      content.appendChild(img);
+      if (plain.text) {
+        const cap = document.createElement("div");
+        cap.className = "status-caption";
+        cap.textContent = plain.text;
+        content.appendChild(cap);
+      }
+    } else {
+      const t = document.createElement("div");
+      t.className = "status-text";
+      t.style.backgroundColor = STATUS_COLORS.includes(plain.color) ? plain.color : STATUS_COLORS[0];
+      t.textContent = String(plain.text || "");
+      content.appendChild(t);
+    }
+    const mine = s.from === myUid;
+    document.getElementById("status-bottom").classList.toggle("hidden", !mine);
+    if (mine) {
+      const n = Object.keys(s.viewers).length;
+      document.getElementById("status-viewers-btn").textContent = "👁 " + n + " görüntüleme";
+    } else if (!s.viewers[myUid]) {
+      s.viewers[myUid] = true;
+      fbDb.collection("statuses").doc(s.id)
+        .update({ [`viewers.${myUid}`]: firebase.firestore.FieldValue.serverTimestamp() })
+        .catch(() => {});
+    }
+    statusTimer = setTimeout(() => showStatusAt(statusIndex + 1), STATUS_SHOW_MS);
+  }
+
+  document.getElementById("status-close").addEventListener("click", closeStatusViewer);
+  document.getElementById("status-content").addEventListener("click", e => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    showStatusAt(statusIndex + (e.clientX - rect.left < rect.width / 3 ? -1 : 1));
+  });
+  document.getElementById("status-viewers-btn").addEventListener("click", () => {
+    const s = statusQueue[statusIndex];
+    if (!s) return;
+    clearTimeout(statusTimer);
+    const names = Object.keys(s.viewers).map(u => "@" + nicknameOf(u));
+    alert(names.length ? "Görenler:\n" + names.join("\n") : "Henüz kimse görmedi.");
+    statusTimer = setTimeout(() => showStatusAt(statusIndex + 1), STATUS_SHOW_MS);
+  });
+  document.getElementById("status-delete-btn").addEventListener("click", async () => {
+    const s = statusQueue[statusIndex];
+    if (!s) return;
+    clearTimeout(statusTimer);
+    if (!confirm("Bu durum silinsin mi?")) {
+      statusTimer = setTimeout(() => showStatusAt(statusIndex + 1), STATUS_SHOW_MS);
+      return;
+    }
+    try {
+      await fbDb.collection("statuses").doc(s.id).delete();
+    } catch (e) {
+      alert("Silinemedi: " + e.message);
+    }
+    statusQueue.splice(statusIndex, 1);
+    showStatusAt(statusIndex);
+  });
+
+  /* ---------------- Group info and management ----------------
+     Admins (conversation.admins; for older groups the creator) can rename
+     the group, set its photo, add/remove members and make admins; anyone
+     can leave. firestore.rules enforces the same. New members only get
+     the keys of messages sent after they join. */
+
+  const groupInfoModal = document.getElementById("group-info-modal");
+
+  function activeGroup() {
+    return activeIsGroup && activeConvId ? conversations.get(activeConvId) : null;
+  }
+
+  function amGroupAdmin(conv) {
+    return !!(conv && conv.admins.includes(myUid));
+  }
+
+  // The open group's members changed: send to the current member list.
+  function syncActiveGroup() {
+    const conv = activeGroup();
+    if (!conv) return;
+    activeOtherUids = conv.participants.filter(u => u !== myUid);
+    activeOtherUids.forEach(u => getPublicKeyForUid(u));
+    document.getElementById("thread-title").textContent = `👥 ${conv.groupName} (${conv.participants.length})`;
+    renderThreadHeaderProfile();
+    if (!groupInfoModal.classList.contains("hidden")) renderGroupInfo();
+  }
+
+  async function updateGroup(fields) {
+    const conv = activeGroup();
+    if (!conv) return false;
+    try {
+      // Always write admins too, so older groups get the field the rules check.
+      await fbDb.collection("conversations").doc(conv.id).update({ admins: conv.admins, ...fields });
+      return true;
+    } catch (e) {
+      alert(e && e.code === "permission-denied"
+        ? "Yapılamadı: yönetici değilsin ya da Firestore kurallarının güncellenmesi gerekiyor."
+        : "Yapılamadı: " + e.message);
+      return false;
+    }
+  }
+
+  function renderGroupInfo() {
+    const conv = activeGroup();
+    if (!conv) return;
+    const isAdmin = amGroupAdmin(conv);
+    const avatar = document.getElementById("group-info-avatar");
+    if (conv.groupAvatar) {
+      avatar.style.backgroundImage = 'url("' + conv.groupAvatar + '")';
+      avatar.textContent = "";
+    } else {
+      avatar.style.backgroundImage = "";
+      avatar.textContent = "👥";
+    }
+    document.getElementById("group-info-name").textContent = conv.groupName || "Grup";
+    document.getElementById("group-info-admin-actions").classList.toggle("hidden", !isAdmin);
+    document.getElementById("group-info-count").textContent = conv.participants.length + " üye";
+    const list = document.getElementById("group-info-members");
+    list.innerHTML = "";
+    conv.participants.forEach(uid => {
+      const li = document.createElement("li");
+      const av = document.createElement("span");
+      av.className = "avatar small";
+      const name = uid === myUid ? myNickname : (conv.participantNicknames[uid] || "?");
+      watchProfile(uid);
+      paintAvatar(av, uid, name);
+      const label = document.createElement("span");
+      label.className = "member-name";
+      label.textContent = "@" + name + (uid === myUid ? " (sen)" : "");
+      li.append(av, label);
+      if (conv.admins.includes(uid)) {
+        const badge = document.createElement("span");
+        badge.className = "member-badge";
+        badge.textContent = "Yönetici";
+        li.appendChild(badge);
+      }
+      if (isAdmin && uid !== myUid) li.addEventListener("click", () => showMemberActions(conv, uid, name));
+      list.appendChild(li);
+    });
+  }
+
+  function showMemberActions(conv, uid, name) {
+    const isMemberAdmin = conv.admins.includes(uid);
+    showActionSheet("@" + name, [
+      isMemberAdmin
+        ? { label: "Yöneticilikten çıkar", run: () => updateGroup({ admins: conv.admins.filter(a => a !== uid) }) }
+        : { label: "Yönetici yap", run: () => updateGroup({ admins: [...conv.admins, uid] }) },
+      { label: "Gruptan çıkar", danger: true, run: () => {
+        if (!confirm("@" + name + " gruptan çıkarılsın mı?")) return;
+        updateGroup({
+          participants: conv.participants.filter(u => u !== uid),
+          admins: conv.admins.filter(a => a !== uid),
+        });
+      } },
+    ]);
+  }
+
+  document.querySelector(".thread-header-titles").addEventListener("click", () => {
+    if (!activeGroup()) return;
+    renderGroupInfo();
+    groupInfoModal.classList.remove("hidden");
+  });
+  document.getElementById("group-info-close").addEventListener("click", () => groupInfoModal.classList.add("hidden"));
+
+  document.getElementById("group-rename-btn").addEventListener("click", () => {
+    const conv = activeGroup();
+    if (!conv) return;
+    const name = prompt("Yeni grup adı:", conv.groupName || "");
+    if (name === null) return;
+    const trimmed = name.trim().slice(0, 60);
+    if (trimmed && trimmed !== conv.groupName) updateGroup({ groupName: trimmed });
+  });
+
+  const groupPhotoInput = document.getElementById("group-photo-input");
+  document.getElementById("group-photo-btn").addEventListener("click", () => groupPhotoInput.click());
+  groupPhotoInput.addEventListener("change", async () => {
+    const file = groupPhotoInput.files[0];
+    groupPhotoInput.value = "";
+    if (!file) return;
+    try {
+      await updateGroup({ groupAvatar: await makeAvatar(file) });
+    } catch (e) {
+      alert("Fotoğraf ayarlanamadı: " + e.message);
+    }
+  });
+
+  document.getElementById("group-add-member-btn").addEventListener("click", async () => {
+    const conv = activeGroup();
+    if (!conv) return;
+    const raw = prompt("Eklenecek kişinin kullanıcı adı:");
+    if (raw === null) return;
+    const nickname = normalizeNickname(raw);
+    if (!nickname) return;
+    if (conv.participants.length >= 20) {
+      alert("Bir grupta en fazla 20 kişi olabilir.");
+      return;
+    }
+    try {
+      const q = await fbDb.collection("users").where("nickname", "==", nickname).limit(1).get();
+      if (q.empty) {
+        alert("Bu kullanıcı adıyla kayıtlı bir kullanıcı bulunamadı.");
+        return;
+      }
+      const uid = q.docs[0].id;
+      if (conv.participants.includes(uid)) {
+        alert("Bu kişi zaten grupta.");
+        return;
+      }
+      await updateGroup({
+        participants: [...conv.participants, uid],
+        [`participantNicknames.${uid}`]: q.docs[0].data().nickname,
+        [`unreadCount.${uid}`]: 0,
+      });
+    } catch (e) {
+      alert("Eklenemedi: " + e.message);
+    }
+  });
+
+  document.getElementById("group-leave-btn").addEventListener("click", async () => {
+    const conv = activeGroup();
+    if (!conv || !confirm("Bu gruptan çıkılsın mı? Grubun yeni mesajlarını göremeyeceksin.")) return;
+    const remaining = conv.participants.filter(u => u !== myUid);
+    const update = { participants: remaining };
+    if (amGroupAdmin(conv)) {
+      // Don't leave a group without an admin: hand it to the next member.
+      const admins = conv.admins.filter(a => a !== myUid);
+      update.admins = admins.length || !remaining.length ? admins : [remaining[0]];
+    }
+    try {
+      await fbDb.collection("conversations").doc(conv.id).update(update);
+      groupInfoModal.classList.add("hidden");
+    } catch (e) {
+      alert("Gruptan çıkılamadı: " + e.message);
+    }
+  });
 
   /* ---------------- Block / unblock a contact ---------------- */
 
@@ -3464,6 +4007,14 @@
   const threadPresenceEl = document.getElementById("thread-presence");
 
   function renderThreadHeaderProfile() {
+    const activeConv = activeConvId ? conversations.get(activeConvId) : null;
+    if (activeIsGroup && activeConv && activeConv.groupAvatar) {
+      threadAvatarEl.classList.remove("hidden");
+      threadAvatarEl.style.backgroundImage = 'url("' + activeConv.groupAvatar + '")';
+      threadAvatarEl.textContent = "";
+      threadPresenceEl.classList.add("hidden");
+      return;
+    }
     if (!activeConvId || activeIsGroup || !activeOtherUid) {
       threadAvatarEl.classList.add("hidden");
       threadPresenceEl.classList.add("hidden");
@@ -3589,7 +4140,7 @@
           // don't track per-member read receipts (see the tick rendering
           // below), so only bother writing this for 1:1 threads.
           if (!activeIsGroup && d.from !== myUid && !d.read) {
-            doc.ref.update({ read: true }).catch(() => {});
+            doc.ref.update({ read: true, delivered: true }).catch(() => {});
           }
           let file = null;
           if (d.type === "file") {
@@ -3604,7 +4155,11 @@
             type: d.type,
             from: d.from === myUid ? "me" : "them",
             fromNickname,
-            text: (d.type === "image" || d.type === "file" || d.type === "call" || d.type === "audio") ? null : plain,
+            text: ["image", "file", "call", "audio", "poll", "location"].includes(d.type) ? null : plain,
+            poll: d.type === "poll" ? parseJson(plain) : null,
+            votes: d.votes || {},
+            location: d.type === "location" ? parseJson(plain) : null,
+            delivered: !!d.delivered,
             image: d.type === "image" ? plain : null,
             audio: d.type === "audio" ? plain : null,
             replyTo: d.replyTo || null,
@@ -3769,9 +4324,15 @@
      already-decrypted copy, so it can never show anything the reader
      couldn't already read. */
 
+  function parseJson(text) {
+    try { return JSON.parse(text); } catch (e) { return null; }
+  }
+
   function messageSnippet(m) {
     if (!m) return "Mesaj bulunamadı";
     if (m.deleted) return "Bu mesaj silindi";
+    if (m.poll) return "📊 " + (m.poll.question || "Anket");
+    if (m.location) return "📍 Konum";
     if (m.image) return "📷 Fotoğraf";
     if (m.audio) return "🎤 Sesli mesaj";
     if (m.file) return "📄 " + (m.file.name || "Dosya");
@@ -3828,6 +4389,89 @@
   }
 
   document.getElementById("reply-bar-cancel").addEventListener("click", cancelReply);
+
+  /* ---------------- Polls and locations ---------------- */
+
+  // A poll's question and options are encrypted like any message; votes
+  // are { uid: optionIndex } on the message, each person changing only
+  // their own (firestore.rules). An index alone reveals nothing.
+  function renderPoll(m) {
+    const box = document.createElement("div");
+    const q = document.createElement("span");
+    q.className = "poll-question";
+    q.textContent = "📊 " + (m.poll.question || "");
+    box.appendChild(q);
+    const votes = Object.values(m.votes || {}).filter(v => Number.isInteger(v));
+    const total = votes.length;
+    (m.poll.options || []).forEach((opt, idx) => {
+      const count = votes.filter(v => v === idx).length;
+      const btn = document.createElement("button");
+      btn.className = "poll-opt" + (m.votes && m.votes[myUid] === idx ? " mine" : "");
+      btn.dataset.msgId = m.id;
+      btn.dataset.idx = String(idx);
+      const bar = document.createElement("span");
+      bar.className = "poll-bar";
+      bar.style.width = (total ? Math.round(count / total * 100) : 0) + "%";
+      const label = document.createElement("span");
+      label.className = "poll-opt-label";
+      label.textContent = (m.votes && m.votes[myUid] === idx ? "✓ " : "") + opt;
+      const c = document.createElement("span");
+      c.className = "poll-opt-count";
+      c.textContent = String(count);
+      btn.append(bar, label, c);
+      box.appendChild(btn);
+    });
+    const t = document.createElement("span");
+    t.className = "poll-total";
+    t.textContent = total + " oy";
+    box.appendChild(t);
+    return box;
+  }
+
+  async function votePoll(msgId, idx) {
+    const m = currentMessages.find(x => x.id === msgId);
+    if (!m) return;
+    const same = m.votes && m.votes[myUid] === idx;
+    try {
+      await fbDb.collection("conversations").doc(activeConvId).collection("messages").doc(msgId).update({
+        [`votes.${myUid}`]: same ? firebase.firestore.FieldValue.delete() : idx,
+      });
+    } catch (e) {
+      alert(e && e.code === "permission-denied"
+        ? "Oy verilemedi: Firestore kurallarının güncellenmesi gerekiyor."
+        : "Oy verilemedi: " + e.message);
+    }
+  }
+
+  function renderLocation(loc) {
+    const card = document.createElement("div");
+    card.className = "location-card";
+    const title = document.createElement("span");
+    title.className = "loc-title";
+    title.textContent = "📍 Konum";
+    card.appendChild(title);
+    const lat = Number(loc.lat), lng = Number(loc.lng);
+    if (Number.isFinite(lat) && Number.isFinite(lng)) {
+      const coords = document.createElement("span");
+      coords.textContent = lat.toFixed(5) + ", " + lng.toFixed(5);
+      card.appendChild(coords);
+      if (Number.isFinite(Number(loc.acc))) {
+        const acc = document.createElement("span");
+        acc.className = "loc-acc";
+        acc.textContent = "±" + Math.round(Number(loc.acc)) + " m";
+        card.appendChild(acc);
+      }
+      // A link, not an embedded map: nothing is fetched until it's tapped.
+      const a = document.createElement("a");
+      a.className = "msg-link";
+      a.href = "https://www.openstreetmap.org/?mlat=" + lat + "&mlon=" + lng + "#map=17/" + lat + "/" + lng;
+      a.target = "_blank";
+      a.rel = "noopener noreferrer";
+      a.textContent = "Haritada aç";
+      card.appendChild(a);
+    }
+    return card;
+  }
 
   function dayLabel(ts) {
     const d = new Date(ts);
@@ -3904,7 +4548,11 @@
         div.appendChild(senderLabel);
       }
       if (m.replyTo) div.appendChild(renderQuote(msgs.find(q => q.id === m.replyTo), m.replyTo));
-      if (m.image && m.viewOnce) {
+      if (m.poll) {
+        div.appendChild(renderPoll(m));
+      } else if (m.location) {
+        div.appendChild(renderLocation(m.location));
+      } else if (m.image && m.viewOnce) {
         const vo = document.createElement("span");
         vo.className = "view-once";
         vo.dataset.msgId = m.id;
@@ -3986,8 +4634,9 @@
       }
       if (m.from === "me" && !activeIsGroup) {
         const tick = document.createElement("span");
+        // ✓ sent, ✓✓ reached their phone, blue ✓✓ read.
         tick.className = "msg-tick" + (m.read ? " read" : "");
-        tick.textContent = "✓✓";
+        tick.textContent = m.read || m.delivered ? "✓✓" : "✓";
         metaRow.appendChild(tick);
       }
       div.appendChild(metaRow);
@@ -4197,6 +4846,11 @@
         e.preventDefault();
         updatePlugin.openExternal({ url: link.href }).catch(() => {});
       }
+      return;
+    }
+    const pollOpt = e.target.closest(".poll-opt");
+    if (pollOpt) {
+      votePoll(pollOpt.dataset.msgId, Number(pollOpt.dataset.idx));
       return;
     }
     const largeDl = e.target.closest(".large-dl");
@@ -4523,6 +5177,61 @@
     attachMenu.classList.add("hidden");
     photoInput.click();
   });
+  const pollModal = document.getElementById("poll-modal");
+  document.getElementById("attach-poll-btn").addEventListener("click", () => {
+    attachMenu.classList.add("hidden");
+    document.getElementById("poll-question").value = "";
+    const opts = document.getElementById("poll-options");
+    opts.innerHTML = "";
+    for (let i = 0; i < 2; i++) addPollOptionInput();
+    pollModal.classList.remove("hidden");
+  });
+  function addPollOptionInput() {
+    const opts = document.getElementById("poll-options");
+    if (opts.children.length >= 10) return;
+    const input = document.createElement("input");
+    input.className = "poll-option-input";
+    input.type = "text";
+    input.maxLength = 100;
+    input.placeholder = "Seçenek " + (opts.children.length + 1);
+    opts.appendChild(input);
+  }
+  document.getElementById("poll-add-option").addEventListener("click", addPollOptionInput);
+  document.getElementById("poll-cancel").addEventListener("click", () => pollModal.classList.add("hidden"));
+  document.getElementById("poll-send").addEventListener("click", async () => {
+    const question = document.getElementById("poll-question").value.trim();
+    const options = Array.from(document.querySelectorAll(".poll-option-input")).map(i => i.value.trim()).filter(Boolean);
+    if (!question || options.length < 2) {
+      alert("Bir soru ve en az 2 seçenek yaz.");
+      return;
+    }
+    pollModal.classList.add("hidden");
+    try {
+      await sendEncrypted(JSON.stringify({ question, options }), "poll", takeReplyFields());
+    } catch (e) {
+      alert("Anket gönderilemedi: " + e.message);
+    }
+  });
+
+  document.getElementById("attach-location-btn").addEventListener("click", () => {
+    attachMenu.classList.add("hidden");
+    if (!navigator.geolocation) {
+      alert("Bu cihaz konum paylaşmayı desteklemiyor.");
+      return;
+    }
+    if (!confirm("Şu anki konumun bu sohbete gönderilsin mi?")) return;
+    navigator.geolocation.getCurrentPosition(async pos => {
+      const { latitude: lat, longitude: lng, accuracy: acc } = pos.coords;
+      try {
+        await sendEncrypted(JSON.stringify({ lat, lng, acc }), "location", takeReplyFields());
+      } catch (e) {
+        alert("Konum gönderilemedi: " + e.message);
+      }
+    }, err => {
+      alert(err.code === 1 ? "Konum izni verilmedi." : "Konum alınamadı.");
+    }, { enableHighAccuracy: true, timeout: 20000, maximumAge: 30000 });
+  });
+
   const viewOnceInput = document.getElementById("viewonce-input");
   document.getElementById("attach-viewonce-btn").addEventListener("click", () => {
     attachMenu.classList.add("hidden");

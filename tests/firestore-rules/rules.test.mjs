@@ -3,7 +3,7 @@
 import test from "node:test";
 import fs from "node:fs";
 import { initializeTestEnvironment, assertSucceeds, assertFails } from "@firebase/rules-unit-testing";
-import { doc, setDoc, updateDoc, serverTimestamp, Timestamp, deleteField, deleteDoc, addDoc, collection } from "firebase/firestore";
+import { doc, setDoc, updateDoc, getDoc, getDocs, query, where, serverTimestamp, Timestamp, deleteField, deleteDoc, addDoc, collection } from "firebase/firestore";
 
 const env = await initializeTestEnvironment({
   projectId: "demo-calcut",
@@ -19,6 +19,13 @@ async function seed() {
     await setDoc(doc(db, "users/bob"), { nickname: "bob", status: "approved", blocked: {} });
     await setDoc(doc(db, "conversations/c1"), { participants: ["alice", "bob"] });
     await setDoc(doc(db, "conversations/c1/messages/m1"), { from: "alice", type: "text", ciphertext: "x", iv: "y", wrappedKeys: {}, ts: Timestamp.now() });
+    await setDoc(doc(db, "conversations/c1/messages/p1"), { from: "alice", type: "poll", ciphertext: "x", iv: "y", wrappedKeys: {}, ts: Timestamp.now() });
+    await setDoc(doc(db, "users/carol"), { nickname: "carol", status: "approved", blocked: {} });
+    await setDoc(doc(db, "users/dave"), { nickname: "dave", status: "approved", blocked: {} });
+    // An older group (no admins field: its creator is the admin) and a newer one.
+    await setDoc(doc(db, "conversations/g_old"), { isGroup: true, groupName: "eski", createdBy: "alice", participants: ["alice", "bob", "carol"] });
+    await setDoc(doc(db, "conversations/g1"), { isGroup: true, groupName: "grup", createdBy: "alice", admins: ["alice"], participants: ["alice", "bob", "carol"] });
+    await setDoc(doc(db, "statuses/s1"), { from: "alice", audience: ["bob"], expiresAt: Timestamp.fromMillis(Date.now() + 3600e3), ciphertext: "x" });
   });
 }
 const as = uid => env.authenticatedContext(uid).firestore();
@@ -71,4 +78,104 @@ test("existing: delete for everyone erases ciphertext (sender only)", async () =
 test("existing: a reply (replyTo) message can be created", async () => {
   await seed(); await assertSucceeds(addDoc(collection(as("bob"), "conversations/c1/messages"), { from: "bob", type: "text", replyTo: "m1", ts: serverTimestamp() }));
 });
+
+// ---- delivered ticks, reactions, polls
+test("recipient marks delivered / read; the sender can't", async () => {
+  await seed();
+  await assertSucceeds(updateDoc(doc(as("bob"), "conversations/c1/messages/m1"), { delivered: true }));
+  await assertSucceeds(updateDoc(doc(as("bob"), "conversations/c1/messages/m1"), { read: true }));
+  await seed(); // a no-op write is always allowed, so start from an unmarked message
+  await assertFails(updateDoc(doc(as("alice"), "conversations/c1/messages/m1"), { delivered: true }));
+});
+test("reactions: only your own entry", async () => {
+  await seed();
+  await assertSucceeds(updateDoc(doc(as("bob"), "conversations/c1/messages/m1"), { "reactions.bob": "👍" }));
+  await assertFails(updateDoc(doc(as("bob"), "conversations/c1/messages/m1"), { "reactions.alice": "👎" }));
+});
+test("poll votes: only your own, an int, only on polls", async () => {
+  await seed();
+  await assertSucceeds(updateDoc(doc(as("bob"), "conversations/c1/messages/p1"), { "votes.bob": 1 }));
+  await assertSucceeds(updateDoc(doc(as("bob"), "conversations/c1/messages/p1"), { "votes.bob": deleteField() }));
+  await assertFails(updateDoc(doc(as("bob"), "conversations/c1/messages/p1"), { "votes.alice": 0 }));
+  await assertFails(updateDoc(doc(as("bob"), "conversations/c1/messages/p1"), { "votes.bob": "zero" }));
+  await assertFails(updateDoc(doc(as("bob"), "conversations/c1/messages/m1"), { "votes.bob": 0 }));
+});
+
+// ---- group management
+test("admin renames the group, adds and removes members, makes admins", async () => {
+  await seed();
+  const db = as("alice");
+  await assertSucceeds(updateDoc(doc(db, "conversations/g1"), { groupName: "yeni ad" }));
+  await assertSucceeds(updateDoc(doc(db, "conversations/g1"), { participants: ["alice", "bob", "carol", "dave"], "participantNicknames.dave": "dave", "unreadCount.dave": 0 }));
+  await assertSucceeds(updateDoc(doc(db, "conversations/g1"), { participants: ["alice", "bob", "dave"] }));
+  await assertSucceeds(updateDoc(doc(db, "conversations/g1"), { admins: ["alice", "bob"] }));
+  await assertSucceeds(updateDoc(doc(db, "conversations/g1"), { groupAvatar: JPEG }));
+});
+test("creator of an older group (no admins field) is its admin", async () => {
+  await seed();
+  await assertSucceeds(updateDoc(doc(as("alice"), "conversations/g_old"), { groupName: "x", admins: ["alice"] }));
+  await assertFails(updateDoc(doc(as("bob"), "conversations/g_old"), { groupName: "y" }));
+});
+test("non-admins can't rename, add or remove others", async () => {
+  await seed();
+  const db = as("bob");
+  await assertFails(updateDoc(doc(db, "conversations/g1"), { groupName: "ele geçirildi" }));
+  await assertFails(updateDoc(doc(db, "conversations/g1"), { participants: ["alice", "bob", "carol", "dave"] }));
+  await assertFails(updateDoc(doc(db, "conversations/g1"), { participants: ["alice", "bob"] }));
+  await assertFails(updateDoc(doc(db, "conversations/g1"), { admins: ["alice", "bob"] }));
+});
+test("admins must stay members, at least one admin, max 20 members, valid photo", async () => {
+  await seed();
+  const db = as("alice");
+  await assertFails(updateDoc(doc(db, "conversations/g1"), { admins: ["dave"] }));
+  await assertFails(updateDoc(doc(db, "conversations/g1"), { admins: [] }));
+  await assertFails(updateDoc(doc(db, "conversations/g1"), { participants: Array.from({ length: 21 }, (_, i) => "u" + i).concat(["alice"]) }));
+  await assertFails(updateDoc(doc(db, "conversations/g1"), { groupAvatar: "https://evil.example/x.jpg" }));
+});
+test("anyone may leave; only themselves", async () => {
+  await seed();
+  await assertSucceeds(updateDoc(doc(as("bob"), "conversations/g1"), { participants: ["alice", "carol"] }));
+  await seed();
+  await assertFails(updateDoc(doc(as("bob"), "conversations/g1"), { participants: ["alice"] }));
+  await assertFails(updateDoc(doc(as("bob"), "conversations/g1"), { participants: ["alice", "carol"], admins: ["carol"] }));
+});
+test("a leaving admin may hand admin to a remaining member", async () => {
+  await seed();
+  await assertSucceeds(updateDoc(doc(as("alice"), "conversations/g1"), { participants: ["bob", "carol"], admins: ["bob"] }));
+});
+test("existing: non-group conversation updates (unread, typing) still work; 1:1 can't get group fields", async () => {
+  await seed();
+  await assertSucceeds(updateDoc(doc(as("bob"), "conversations/c1"), { "unreadCount.bob": 0, "typing.bob": serverTimestamp() }));
+  await assertFails(updateDoc(doc(as("alice"), "conversations/c1"), { participants: ["alice", "bob", "carol"] }));
+});
+
+// ---- statuses
+test("status: audience and author can read, others can't", async () => {
+  await seed();
+  await assertSucceeds(getDoc(doc(as("bob"), "statuses/s1")));
+  await assertSucceeds(getDoc(doc(as("alice"), "statuses/s1")));
+  await assertFails(getDoc(doc(as("carol"), "statuses/s1")));
+});
+test("status: audience queries are allowed", async () => {
+  await seed();
+  await assertSucceeds(getDocs(query(collection(as("bob"), "statuses"), where("audience", "array-contains", "bob"))));
+  await assertSucceeds(getDocs(query(collection(as("alice"), "statuses"), where("from", "==", "alice"))));
+  await assertFails(getDocs(collection(as("bob"), "statuses")));
+});
+test("status: create only as yourself, expiring within a day", async () => {
+  await seed();
+  const db = as("alice");
+  await assertSucceeds(addDoc(collection(db, "statuses"), { from: "alice", audience: ["bob"], expiresAt: Timestamp.fromMillis(Date.now() + 24 * 3600e3), ciphertext: "x" }));
+  await assertFails(addDoc(collection(db, "statuses"), { from: "bob", audience: ["bob"], expiresAt: Timestamp.fromMillis(Date.now() + 3600e3) }));
+  await assertFails(addDoc(collection(db, "statuses"), { from: "alice", audience: ["bob"], expiresAt: Timestamp.fromMillis(Date.now() + 72 * 3600e3) }));
+});
+test("status: viewers add only themselves; only the author deletes", async () => {
+  await seed();
+  await assertSucceeds(updateDoc(doc(as("bob"), "statuses/s1"), { "viewers.bob": serverTimestamp() }));
+  await assertFails(updateDoc(doc(as("bob"), "statuses/s1"), { "viewers.carol": serverTimestamp() }));
+  await assertFails(updateDoc(doc(as("bob"), "statuses/s1"), { ciphertext: "y" }));
+  await assertFails(deleteDoc(doc(as("bob"), "statuses/s1")));
+  await assertSucceeds(deleteDoc(doc(as("alice"), "statuses/s1")));
+});
+
 test.after(async () => { await env.cleanup(); });
