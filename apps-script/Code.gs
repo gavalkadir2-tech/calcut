@@ -66,9 +66,11 @@ function handle_(body, uid, sa) {
     const conv = fs.get(`conversations/${body.convId}`);
     if (!conv || !Array.isArray(conv.participants) || conv.participants.indexOf(uid) < 0) return 0;
     const muted = conv.muted || {};
+    // Someone @mentioned in a group is told even if they muted it.
+    const mentions = Array.isArray(msg.mentions) ? msg.mentions : [];
     let sent = 0;
     conv.participants
-      .filter(u => u !== uid && !muted[u])
+      .filter(u => u !== uid && (!muted[u] || mentions.indexOf(u) >= 0))
       .forEach(r => { sent += pushToUser_(fs, sa, r, uid, { kind: "message" }); });
     return sent;
   }
