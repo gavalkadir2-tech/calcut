@@ -34,6 +34,7 @@ service cloud.firestore {
     function validProfileFields(data, changed) {
       return (!changed.hasAny(['avatar']) || !('avatar' in data) || validJpegDataUrl(data.avatar)) &&
              (!changed.hasAny(['hidePresence']) || data.hidePresence is bool) &&
+             (!changed.hasAny(['hideReadReceipts']) || data.hideReadReceipts is bool) &&
              // lastSeen can only be "now" as set by the server, not a made-up time.
              (!changed.hasAny(['lastSeen']) || !('lastSeen' in data) || data.lastSeen == request.time);
     }
@@ -59,7 +60,7 @@ service cloud.firestore {
       allow update: if isSignedIn() && (
         (request.auth.uid == userId &&
          request.resource.data.diff(resource.data).affectedKeys()
-           .hasOnly(['nickname', 'blocked', 'avatar', 'lastSeen', 'hidePresence']) &&
+           .hasOnly(['nickname', 'blocked', 'avatar', 'lastSeen', 'hidePresence', 'hideReadReceipts']) &&
          validProfileFields(request.resource.data, request.resource.data.diff(resource.data).affectedKeys())) ||
         (request.auth.uid == resource.data.referredBy &&
          resource.data.status == "pending" &&
@@ -104,7 +105,10 @@ service cloud.firestore {
       }
 
       allow update: if isSignedIn() && request.auth.uid in resource.data.participants && (
-        changedKeys().hasOnly(['unreadCount', 'typing', 'updatedAt', 'participantNicknames', 'disappearingSeconds', 'muted']) ||
+        // pinnedMessage: the id of the message pinned to the top of the chat.
+        (changedKeys().hasOnly(['unreadCount', 'typing', 'updatedAt', 'participantNicknames', 'disappearingSeconds', 'muted', 'pinnedMessage']) &&
+         (!changedKeys().hasAny(['pinnedMessage']) || !('pinnedMessage' in request.resource.data) ||
+          (request.resource.data.pinnedMessage is string && request.resource.data.pinnedMessage.size() <= 64))) ||
         // Group admins: name, photo, members and admins.
         (isGroupConv() && request.auth.uid in groupAdmins() &&
          changedKeys().hasOnly(['groupName', 'groupAvatar', 'participants', 'admins', 'participantNicknames', 'unreadCount', 'updatedAt']) &&
@@ -134,8 +138,8 @@ service cloud.firestore {
           request.resource.data.from == request.auth.uid;
 
         allow update: if isConversationParticipant(conversationId) && (
-          // read / delivered receipts, set by the recipient.
-          (changedKeys().hasOnly(['read', 'delivered']) && resource.data.from != request.auth.uid) ||
+          // read / delivered / voice message played receipts, set by the recipient.
+          (changedKeys().hasOnly(['read', 'delivered', 'played']) && resource.data.from != request.auth.uid) ||
           (resource.data.from == request.auth.uid &&
            changedKeys().hasOnly(['deleted', 'deletedAt', 'edited', 'editedAt', 'ciphertext', 'iv', 'wrappedKeys'])) ||
           // Each person may only change their own reaction or poll vote.

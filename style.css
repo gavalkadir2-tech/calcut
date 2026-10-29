@@ -199,7 +199,7 @@ button.danger { background: var(--danger); color: #fff; }
 #thread-detail-panel .thread-actions button { flex: 1 1 0; min-width: 0; max-width: 48px; padding: 6px 0; font-size: 14px; border-radius: 8px; }
 #thread-typing { margin: 0; font-size: 12px; color: var(--accent); font-style: italic; }
 .header-actions { display: flex; gap: 8px; }
-.header-actions button, #thread-delete-btn, #thread-back-btn {
+.header-actions button, #thread-delete-btn, #thread-back-btn, #media-gallery-close {
   background: #1c1f26;
   border: 1px solid #333;
   color: var(--panel-fg);
@@ -969,3 +969,50 @@ button.danger { background: var(--danger); color: #fff; }
 #status-bottom button { background: rgba(255, 255, 255, 0.15); color: #fff; border: none; border-radius: 18px; padding: 8px 14px; font-size: 14px; cursor: pointer; }
 #status-content { position: relative; }
 .status-caption { position: absolute; left: 0; right: 0; bottom: 0; padding: 12px 16px; background: rgba(0, 0, 0, 0.55); text-align: center; font-size: 16px; word-break: break-word; }
+
+/* Pinned message bar */
+#pinned-bar { display: flex; align-items: center; gap: 8px; background: #1c1f26; border: 1px solid #2a2e37; border-radius: 10px; padding: 6px 8px; margin-bottom: 8px; font-size: 13px; }
+#pinned-bar.hidden { display: none; }
+#pinned-bar-text { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; }
+#pinned-bar-unpin { background: none; border: none; color: #888; font-size: 14px; cursor: pointer; padding: 2px 4px; }
+.msg-bubble.flash { animation: msg-flash 1.6s ease-out; }
+@keyframes msg-flash { 0%, 40% { box-shadow: 0 0 0 3px var(--accent); } 100% { box-shadow: 0 0 0 0 transparent; } }
+
+/* @mentions */
+#mention-picker { display: flex; flex-direction: column; background: #1c1f26; border: 1px solid #2a2e37; border-radius: 10px; margin-bottom: 6px; max-height: 200px; overflow-y: auto; }
+#mention-picker.hidden { display: none; }
+#mention-picker button { display: flex; align-items: center; gap: 8px; background: none; border: none; color: var(--panel-fg); padding: 8px 10px; text-align: left; font-size: 14px; cursor: pointer; }
+#mention-picker button + button { border-top: 1px solid #2a2e37; }
+.mention { color: #7fb3ff; font-weight: 600; }
+.msg-bubble.me .mention { color: #fff; text-decoration: underline; }
+.mention.me { background: rgba(255, 159, 10, 0.25); border-radius: 4px; padding: 0 2px; }
+
+/* Voice messages */
+.voice-row { display: flex; align-items: center; gap: 6px; }
+.voice-row audio { min-width: 0; max-width: 220px; }
+.voice-speed { flex-shrink: 0; background: rgba(255, 255, 255, 0.15); color: inherit; border: none; border-radius: 12px; padding: 4px 8px; font-size: 12px; font-weight: 600; cursor: pointer; }
+.msg-played { font-size: 11px; color: #9fd0ff; }
+
+/* Contact card */
+.contact-card { display: flex; flex-direction: column; gap: 8px; min-width: 180px; }
+.contact-head { display: flex; align-items: center; gap: 8px; }
+.contact-name { font-weight: 600; }
+.contact-msg-btn { background: rgba(255, 255, 255, 0.15); color: inherit; border: none; border-radius: 8px; padding: 6px 10px; font-size: 13px; cursor: pointer; }
+
+/* Media gallery */
+#media-gallery { position: fixed; inset: 0; z-index: 800; background: var(--panel-bg); color: var(--panel-fg); display: flex; flex-direction: column; padding: 12px 16px; overflow: hidden; }
+#media-gallery.hidden { display: none; }
+.media-tabs { display: flex; gap: 6px; margin-bottom: 10px; }
+.media-tabs button { flex: 1; background: #1c1f26; color: var(--panel-fg); border: 1px solid #333; border-radius: 8px; padding: 8px 0; font-size: 14px; cursor: pointer; }
+.media-tabs button.active { border-color: var(--accent); color: var(--accent); }
+#media-gallery-body { flex: 1; overflow-y: auto; }
+.media-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; }
+.media-thumb { position: relative; aspect-ratio: 1; padding: 0; border: none; background: #1c1f26; overflow: hidden; border-radius: 4px; cursor: pointer; }
+.media-thumb img, .media-thumb video { width: 100%; height: 100%; object-fit: cover; display: block; }
+.media-play { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 26px; color: #fff; text-shadow: 0 0 6px #000; }
+.media-row { display: flex; align-items: center; gap: 10px; width: 100%; background: none; border: none; border-bottom: 1px solid #22252c; color: var(--panel-fg); padding: 10px 2px; text-align: left; cursor: pointer; }
+.media-row-icon { font-size: 22px; flex-shrink: 0; }
+.media-row-info { display: flex; flex-direction: column; min-width: 0; }
+.media-row-title { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 14px; }
+.media-row-sub { font-size: 12px; color: #888; }
+.media-empty { color: #888; text-align: center; margin-top: 40px; }
