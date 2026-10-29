@@ -1364,7 +1364,7 @@
         } else if (d.type === "sticker") {
           preview = "🌟 Çıkartma";
         } else if (d.type === "call") {
-          if (threadFilter === "calls") loadCallHistory();
+          if (mainTab === "calls") loadCallHistory();
           const raw = await decryptMessage(d).catch(() => null);
           try {
             const cd = raw ? JSON.parse(raw) : null;
@@ -1662,7 +1662,119 @@
     const actions = [];
     if (!archived) actions.push({ label: pinned ? "📌 Sabitlemeyi kaldır" : "📌 Sabitle", run: () => togglePin(conv.id) });
     actions.push({ label: archived ? "🗄️ Arşivden çıkar" : "🗄️ Arşivle", run: () => toggleArchive(conv.id) });
+    actions.push({ label: "🗑 Sohbeti sil", danger: true, run: () => askDeleteChat(conv) });
     showActionSheet(conv.isGroup ? conv.groupName : "@" + conv.otherNickname, actions);
+  }
+
+  /* ---------------- Deleting a chat ----------------
+     "Benden sil" (like WhatsApp's delete chat) only hides it on this
+     device: deletedChats[convId] = when. Older messages stay hidden and the
+     chat comes back to the list with the next new message. The person
+     stays in Kişiler. "Herkesten sil" erases every message for everyone. */
+
+  function chatDeletedAt(convId) {
+    const d = localSessionData && localSessionData.deletedChats;
+    return (d && typeof d === "object" && Number(d[convId])) || 0;
+  }
+
+  function chatHiddenForMe(conv) {
+    const at = chatDeletedAt(conv.id);
+    return !!at && (conv.lastTs || conv.updatedAt || 0) <= at;
+  }
+
+  async function deleteChatForMe(conv) {
+    if (!localSessionData || !currentLocalKey) return;
+    const deleted = { ...(localSessionData.deletedChats || {}), [conv.id]: Date.now() };
+    localSessionData.deletedChats = deleted;
+    localSessionData.pinned = pinnedConvIds().filter(id => id !== conv.id);
+    localSessionData.archived = archivedConvIds().filter(id => id !== conv.id);
+    await saveLocalPrefs();
+    if (activeConvId === conv.id) document.getElementById("thread-back-btn").click();
+    else renderThreadList();
+  }
+
+  async function deleteChatForEveryone(convId) {
+    // Only the messages go; the conversation doc stays so the contact remains
+    // in both people's lists and can be messaged again.
+    try {
+      const convRef = fbDb.collection("conversations").doc(convId);
+      const msgsSnap = await convRef.collection("messages").get();
+      // Firestore batches are capped at 500 writes.
+      for (let i = 0; i < msgsSnap.docs.length; i += 450) {
+        const batch = fbDb.batch();
+        msgsSnap.docs.slice(i, i + 450).forEach(d => batch.delete(d.ref));
+        await batch.commit();
+      }
+      const conv = conversations.get(convId);
+      const convUpdate = {};
+      ((conv && conv.participants) || [myUid]).forEach(u => { convUpdate[`unreadCount.${u}`] = 0; });
+      await convRef.update(convUpdate).catch(() => {});
+    } catch (e) {
+      alert("Sohbet silinemedi: " + e.message);
+    }
+  }
+
+  function askDeleteChat(conv) {
+    showActionSheet("Sohbeti sil", [
+      { label: "🙈 Benden sil (yalnızca bu cihazda)", run: () => {
+        if (confirm("Sohbet listenden kaldırılsın mı? Karşı tarafta durur; yeni mesaj gelince sohbet yeniden görünür. Kişi, Kişiler'de kalır.")) deleteChatForMe(conv);
+      } },
+      { label: "🗑 Herkesten sil (tüm mesajlar)", danger: true, run: () => {
+        if (confirm("Bu sohbetteki tüm mesajlar herkesten silinsin mi? Geri alınamaz. Kişi listende kalır.")) deleteChatForEveryone(conv.id);
+      } },
+    ]);
+  }
+
+  /* ---------------- Contacts list ----------------
+     Everyone you have a 1:1 chat with, whether or not the chat is in the
+     chat list (archived, deleted for me...). */
+
+  function renderContactsList() {
+    const add = document.createElement("li");
+    add.className = "archive-row";
+    add.textContent = "➕ Yeni kişi ekle";
+    add.addEventListener("click", () => document.getElementById("new-thread-btn").click());
+    threadListEl.appendChild(add);
+    const contacts = [...conversations.values()]
+      .filter(c => !c.isGroup && c.otherUid)
+      .sort((a, b) => a.otherNickname.localeCompare(b.otherNickname, "tr"));
+    if (!contacts.length) {
+      const li = document.createElement("li");
+      li.className = "empty-state";
+      li.textContent = "Henüz kişi yok.";
+      threadListEl.appendChild(li);
+      return;
+    }
+    contacts.forEach(c => {
+      const blocked = !!myBlocked[c.otherUid];
+      const li = document.createElement("li");
+      li.className = "has-avatar call-row";
+      li.innerHTML = `
+        <span class="avatar"></span>
+        <div class="thread-body">
+          <div class="thread-row"><span class="thread-name"></span></div>
+          <div class="thread-row"><span class="thread-preview"></span></div>
+        </div>`;
+      watchProfile(c.otherUid);
+      paintAvatar(li.querySelector(".avatar"), c.otherUid, c.otherNickname);
+      li.querySelector(".thread-name").textContent = "@" + c.otherNickname;
+      li.querySelector(".thread-preview").textContent = blocked ? "🚫 Engellendi" : (presenceText(c.otherUid) || "");
+      if (!blocked) {
+        [["📞", false, "Sesli ara"], ["📹", true, "Görüntülü ara"]].forEach(([icon, video, title]) => {
+          const b = document.createElement("button");
+          b.className = "call-back-btn";
+          b.textContent = icon;
+          b.title = title;
+          b.addEventListener("click", e => {
+            e.stopPropagation();
+            startCall(c.otherUid, c.otherNickname, video);
+          });
+          li.appendChild(b);
+        });
+      }
+      li.addEventListener("click", () => openConversation(c.id, c.otherUid, c.otherNickname));
+      threadListEl.appendChild(li);
+    });
   }
 
   let showingArchived = false;
@@ -1776,13 +1888,22 @@
   /* ---------------- Chat list filters and the calls list ---------------- */
 
   let threadFilter = "all";
+  let mainTab = "chats"; // chats | contacts | calls
   let callHistory = null; // decrypted call log entries, newest first (cleared on lock)
   let callHistoryLoading = false;
+
+  document.querySelectorAll("#main-tabs button").forEach(btn => btn.addEventListener("click", () => {
+    mainTab = btn.dataset.tab;
+    document.querySelectorAll("#main-tabs button").forEach(b => b.classList.toggle("active", b === btn));
+    document.getElementById("thread-filters").classList.toggle("hidden", mainTab !== "chats");
+    document.getElementById("status-strip").classList.toggle("hidden", mainTab !== "chats");
+    if (mainTab === "calls") loadCallHistory();
+    renderThreadList();
+  }));
 
   document.querySelectorAll("#thread-filters button").forEach(btn => btn.addEventListener("click", () => {
     threadFilter = btn.dataset.filter;
     document.querySelectorAll("#thread-filters button").forEach(b => b.classList.toggle("active", b === btn));
-    if (threadFilter === "calls") loadCallHistory();
     renderThreadList();
   }));
 
@@ -1802,6 +1923,7 @@
             const d = doc.data();
             if (d.deleted || (d.expiresAt && d.expiresAt.toMillis() <= Date.now())) continue;
             if (msgFlag("hiddenMsgs", c.id, doc.id)) continue;
+            if (d.ts && d.ts.toMillis() <= chatDeletedAt(c.id)) continue;
             const cd = parseJson(await decryptMessage(d).catch(() => null));
             if (!cd) continue;
             out.push({
@@ -1820,7 +1942,7 @@
     } finally {
       callHistoryLoading = false;
     }
-    if (threadFilter === "calls") renderThreadList();
+    if (mainTab === "calls") renderThreadList();
   }
 
   function threadMatchesFilter(conv) {
@@ -1880,13 +2002,17 @@
 
   function renderThreadList() {
     threadListEl.innerHTML = "";
-    if (threadFilter === "calls") {
+    if (mainTab === "calls") {
       renderCallsList();
+      return;
+    }
+    if (mainTab === "contacts") {
+      renderContactsList();
       return;
     }
     const pins = pinnedConvIds();
     const archived = archivedConvIds();
-    const all = Array.from(conversations.values());
+    const all = Array.from(conversations.values()).filter(c => !chatHiddenForMe(c));
     const archivedCount = all.filter(c => archived.includes(c.id)).length;
     if (showingArchived && !archivedCount) showingArchived = false;
     const filtering = threadFilter !== "all";
@@ -1899,6 +2025,12 @@
       row.textContent = showingArchived ? "← Arşivlenmiş sohbetler" : "🗄️ Arşivlenmiş (" + archivedCount + ")";
       row.addEventListener("click", () => { showingArchived = !showingArchived; renderThreadList(); });
       threadListEl.appendChild(row);
+      if (showingArchived) {
+        const hint = document.createElement("li");
+        hint.className = "archive-hint";
+        hint.textContent = "Arşivlenen sohbetler ana listede görünmez ama silinmez; mesajlar gelmeye devam eder. Çıkarmak için sohbete uzun bas.";
+        threadListEl.appendChild(hint);
+      }
     }
     if (!list.length && (filtering || !archivedCount)) {
       const li = document.createElement("li");
@@ -4846,6 +4978,7 @@
     msgs.forEach(m => {
       if (m.expiresAtMillis && m.expiresAtMillis <= Date.now()) return;
       if (msgFlag("hiddenMsgs", activeConvId, m.id)) return; // deleted for me
+      if (m.ts <= chatDeletedAt(activeConvId)) return; // chat deleted for me after this
       if (starredOnly && !msgFlag("starred", activeConvId, m.id)) return;
       if (query) {
         // Images, call log entries and deleted messages aren't searchable
@@ -6132,6 +6265,11 @@
       ? { label: "🔓 Sohbet kilidini kaldır", run: () => toggleChatLock(convId) }
       : { label: "🔒 Sohbeti kilitle", run: () => toggleChatLock(convId) });
     actions.push({ label: "📤 Sohbeti dışa aktar", run: exportChat });
+    const pinned = pinnedConvIds().includes(convId);
+    const archived = archivedConvIds().includes(convId);
+    if (!archived) actions.push({ label: pinned ? "📌 Sabitlemeyi kaldır" : "📌 Sabitle", run: () => togglePin(convId) });
+    actions.push({ label: archived ? "🗄️ Arşivden çıkar" : "🗄️ Arşivle", run: () => toggleArchive(convId) });
+    actions.push({ label: "🗑 Sohbeti sil", danger: true, run: () => askDeleteChat(conv) });
     showActionSheet(activeIsGroup ? conv.groupName : "@" + conv.otherNickname, actions);
   }
 
@@ -6906,6 +7044,7 @@
           if (d.type !== "text" || d.deleted) continue;
           if (d.expiresAt && d.expiresAt.toMillis() <= Date.now()) continue;
           if (msgFlag("hiddenMsgs", c.id, doc.id)) continue;
+          if (d.ts && d.ts.toMillis() <= chatDeletedAt(c.id)) continue;
           const text = await decryptMessage(d).catch(() => null);
           if (text) out.push({ id: doc.id, text, ts: d.ts ? d.ts.toMillis() : 0, fromMe: d.from === myUid, from: d.from });
         }
@@ -7328,28 +7467,9 @@
     showThreadList();
   });
 
-  document.getElementById("thread-delete-btn").addEventListener("click", async () => {
-    if (!activeConvId) return;
-    if (!confirm("Bu sohbetteki tüm mesajlar silinsin mi? (Karşı tarafta da silinir, kişi listende kalır)")) return;
-    const convId = activeConvId;
-    // Only the messages go; the conversation doc stays so the contact remains
-    // in both people's lists and can be messaged again.
-    try {
-      const convRef = fbDb.collection("conversations").doc(convId);
-      const msgsSnap = await convRef.collection("messages").get();
-      // Firestore batches are capped at 500 writes.
-      for (let i = 0; i < msgsSnap.docs.length; i += 450) {
-        const batch = fbDb.batch();
-        msgsSnap.docs.slice(i, i + 450).forEach(d => batch.delete(d.ref));
-        await batch.commit();
-      }
-      const conv = conversations.get(convId);
-      const convUpdate = {};
-      ((conv && conv.participants) || [myUid]).forEach(u => { convUpdate[`unreadCount.${u}`] = 0; });
-      await convRef.update(convUpdate).catch(() => {});
-    } catch (e) {
-      alert("Sohbet silinemedi: " + e.message);
-    }
+  document.getElementById("thread-delete-btn").addEventListener("click", () => {
+    const conv = activeConv();
+    if (conv) askDeleteChat(conv);
   });
 
 })();

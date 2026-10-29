@@ -99,12 +99,16 @@
       </div>
       <input id="global-search-input" type="search" placeholder="🔍 Sohbetlerde ve mesajlarda ara">
       <div id="global-search-results" class="hidden"></div>
+      <div id="main-tabs">
+        <button data-tab="chats" class="active">💬 Sohbetler</button>
+        <button data-tab="contacts">👤 Kişiler</button>
+        <button data-tab="calls">📞 Aramalar</button>
+      </div>
       <div id="status-strip"></div>
       <div id="thread-filters">
         <button data-filter="all" class="active">Tümü</button>
         <button data-filter="unread">Okunmamış</button>
         <button data-filter="groups">Gruplar</button>
-        <button data-filter="calls">📞 Aramalar</button>
       </div>
       <ul id="thread-list"></ul>
     </div>
@@ -241,7 +245,7 @@
         <button id="enable-alarm-btn">Bildirimleri Etkinleştir</button>
         <button id="test-push-btn" class="ghost">Test bildirimi gönder</button>
         <p id="alarm-msg"></p>
-        <p class="app-version">Sürüm: 34</p>
+        <p class="app-version">Sürüm: 35</p>
         <div id="app-update-section" class="hidden">
           <hr>
           <label>Uygulama güncellemesi</label>
