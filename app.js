@@ -614,8 +614,14 @@
   // synthetic address, and Firebase's own "email already in use" check is
   // what actually enforces nickname uniqueness.
   const SYNTHETIC_EMAIL_DOMAIN = "@calcut.local";
+  // Auth email addresses must stay ASCII, so a nickname with Turkish
+  // letters is spelled out there: each such letter becomes "-" plus its
+  // 4-digit code (çağrı -> u-00e7a-011fr-0131). ASCII nicknames keep their
+  // old address, and "-" never appears in a nickname, so none collide.
   function nicknameToSyntheticEmail(nickname) {
-    return nickname + SYNTHETIC_EMAIL_DOMAIN;
+    if (/^[a-z0-9_]*$/.test(nickname)) return nickname + SYNTHETIC_EMAIL_DOMAIN;
+    return "u" + nickname.replace(/[^a-z0-9_]/g,
+      ch => "-" + ch.charCodeAt(0).toString(16).padStart(4, "0")) + SYNTHETIC_EMAIL_DOMAIN;
   }
 
   const authTitle = document.getElementById("auth-title");
@@ -690,8 +696,11 @@
     closeVaultToCalculator();
   });
 
+  // Lowercase letters (Turkish ones included), digits and "_". "I" stays
+  // "i" as before (so existing nicknames still match); "İ" is "i" too.
   function normalizeNickname(raw) {
-    return raw.trim().toLowerCase().replace(/[^a-z0-9_]/g, "");
+    return raw.normalize("NFC").trim().replace(/İ/g, "i").toLowerCase()
+      .replace(/[^a-z0-9_çğıöşü]/g, "");
   }
 
   authBackBtn.addEventListener("click", closeVaultToCalculator);
@@ -707,7 +716,7 @@
   async function signUp(nicknameRaw, password, referrerNicknameRaw) {
     const nickname = normalizeNickname(nicknameRaw);
     if (nickname.length < 3) {
-      throw new Error("Kullanıcı adı en az 3 karakter olmalı (harf, rakam, alt çizgi).");
+      throw new Error("Kullanıcı adı en az 3 karakter olmalı (harf, Türkçe harfler dahil, rakam, alt çizgi).");
     }
     const referrerNickname = normalizeNickname(referrerNicknameRaw || "");
 
@@ -796,7 +805,16 @@
 
   async function logIn(nicknameRaw, password) {
     const nickname = normalizeNickname(nicknameRaw);
-    const cred = await fbAuth.signInWithEmailAndPassword(nicknameToSyntheticEmail(nickname), password);
+    let cred;
+    try {
+      cred = await fbAuth.signInWithEmailAndPassword(nicknameToSyntheticEmail(nickname), password);
+    } catch (e) {
+      // Before Turkish letters were allowed they were dropped from the
+      // nickname ("çağrı" signed up as "ar"): try that older form too.
+      const legacy = nickname.replace(/[^a-z0-9_]/g, "");
+      if (legacy === nickname || legacy.length < 3) throw e;
+      cred = await fbAuth.signInWithEmailAndPassword(nicknameToSyntheticEmail(legacy), password).catch(() => { throw e; });
+    }
     const uid = cred.user.uid;
     const doc = await fbDb.collection("users").doc(uid).get();
     const data = doc.data();
@@ -840,7 +858,7 @@
     const password = authPasswordInput.value;
     const referrer = authReferrerInput.value;
     if (normalizeNickname(nickname).length < 3) {
-      authError.textContent = "Kullanıcı adı en az 3 karakter olmalı (harf, rakam, alt çizgi).";
+      authError.textContent = "Kullanıcı adı en az 3 karakter olmalı (harf, Türkçe harfler dahil, rakam, alt çizgi).";
       return;
     }
     if (password.length < 6) {
@@ -1961,7 +1979,7 @@
     const newNicknameRaw = document.getElementById("new-nickname-input").value;
     const newNickname = normalizeNickname(newNicknameRaw);
     if (newNickname.length < 3) {
-      msgEl.textContent = "Kullanıcı adı en az 3 karakter olmalı (harf, rakam, alt çizgi).";
+      msgEl.textContent = "Kullanıcı adı en az 3 karakter olmalı (harf, Türkçe harfler dahil, rakam, alt çizgi).";
       return;
     }
     if (newNickname === myNickname) {
