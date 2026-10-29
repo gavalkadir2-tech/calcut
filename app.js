@@ -1359,6 +1359,10 @@
           preview = "📍 Konum";
         } else if (d.type === "contact") {
           preview = "👤 Kişi";
+        } else if (d.type === "livelocation") {
+          preview = "📍 Canlı konum";
+        } else if (d.type === "sticker") {
+          preview = "🌟 Çıkartma";
         } else if (d.type === "call") {
           if (threadFilter === "calls") loadCallHistory();
           const raw = await decryptMessage(d).catch(() => null);
@@ -1454,6 +1458,7 @@
             disappearingSeconds: d.disappearingSeconds || 0,
             muted,
             pinnedMessage: typeof d.pinnedMessage === "string" ? d.pinnedMessage : null,
+            inviteCode: typeof d.inviteCode === "string" ? d.inviteCode : null,
             lastMentionsMe: !!existing.lastMentionsMe,
           });
           if (change.doc.id === activeConvId) {
@@ -1942,8 +1947,11 @@
         li.classList.add("blocked");
         li.querySelector(".thread-preview").textContent = "🚫 Engellendi";
       } else {
-        li.querySelector(".thread-preview").textContent = conv.lastPreview || "Aç ve sohbet et";
-        if (conv.lastIsMissedCall) li.classList.add("missed-call");
+        const previewEl = li.querySelector(".thread-preview");
+        if (isChatLocked(conv.id)) previewEl.textContent = "🔒 Kilitli sohbet";
+        else if (conv.lastPreview) appendFormatted(previewEl, conv.lastPreview);
+        else previewEl.textContent = "Aç ve sohbet et";
+        if (conv.lastIsMissedCall && !isChatLocked(conv.id)) li.classList.add("missed-call");
       }
       if (conv.unread > 0) {
         const badge = li.querySelector(".thread-badge");
@@ -2059,6 +2067,10 @@
   });
 
   function lockVault() {
+    stopAllLiveLocations(); // while the keys are still there to write the last update
+    forgetSearchAndLiveData();
+    closePhotoEditor(null);
+    ["sticker-picker", "broadcast-modal", "chat-unlock-modal"].forEach(id => document.getElementById(id).classList.add("hidden"));
     stopAllMessengerListeners();
     myPrivateKey = null;
     myPublicKey = null;
@@ -2612,6 +2624,8 @@
         else if (m.type === "poll") text = "📊 Anket";
         else if (m.type === "location") text = "📍 Konum";
         else if (m.type === "contact") text = "👤 Kişi";
+        else if (m.type === "livelocation") text = "📍 Canlı konum";
+        else if (m.type === "sticker") text = "🌟 Çıkartma";
         else if (m.type === "call") text = "📞 Arama kaydı";
         else text = m.content + (m.edited ? " (düzenlendi)" : "");
         line.appendChild(document.createTextNode(text));
@@ -2634,6 +2648,10 @@
 
   async function openConversation(convId, otherUid, otherNickname, extra) {
     extra = extra || {};
+    if (isChatLocked(convId) && !(await confirmChatUnlock())) {
+      pendingJumpMsgId = null;
+      return;
+    }
     closeThreadSearch();
     leaveComposer();
     activeConvId = convId;
@@ -2649,7 +2667,7 @@
     document.getElementById("thread-call-btn").classList.toggle("hidden", activeIsGroup);
     document.getElementById("thread-video-call-btn").classList.toggle("hidden", activeIsGroup);
     document.getElementById("thread-block-btn").classList.toggle("hidden", activeIsGroup);
-    document.querySelector(".thread-header-titles").classList.toggle("clickable", activeIsGroup);
+    document.querySelector(".thread-header-titles").classList.add("clickable");
     const conv = conversations.get(convId);
     if (conv) conv.unread = 0;
     fbDb.collection("conversations").doc(convId).update({ [`unreadCount.${myUid}`]: 0 }).catch(() => {});
@@ -2674,6 +2692,7 @@
     renderPinnedBar();
     hideMentionPicker();
     mediaGallery.classList.add("hidden");
+    applyWallpaper();
     updateDisappearingUi();
     updateMuteUi();
   }
@@ -3113,11 +3132,7 @@
     ]);
   }
 
-  document.querySelector(".thread-header-titles").addEventListener("click", () => {
-    if (!activeGroup()) return;
-    renderGroupInfo();
-    groupInfoModal.classList.remove("hidden");
-  });
+  document.querySelector(".thread-header-titles").addEventListener("click", () => openChatMenu());
   document.getElementById("group-info-close").addEventListener("click", () => groupInfoModal.classList.add("hidden"));
 
   document.getElementById("group-rename-btn").addEventListener("click", () => {
@@ -3430,6 +3445,7 @@
     callRemoteVideo.classList.toggle("hidden", !isVideoCall);
     callLocalVideo.classList.toggle("hidden", !isVideoCall);
     callCameraBtn.classList.toggle("hidden", !isVideoCall);
+    callFlipBtn.classList.toggle("hidden", !isVideoCall);
     if (isVideoCall && localStream) {
       callLocalVideo.srcObject = localStream;
     }
@@ -3651,6 +3667,8 @@
   }
 
   async function getMic(withVideo) {
+    cameraFacing = "user";
+    callLocalVideo.classList.remove("rear");
     try {
       return await navigator.mediaDevices.getUserMedia({
         audio: true,
@@ -4461,7 +4479,9 @@
             type: d.type,
             from: d.from === myUid ? "me" : "them",
             fromNickname,
-            text: ["image", "file", "call", "audio", "poll", "location", "contact"].includes(d.type) ? null : plain,
+            text: ["image", "file", "call", "audio", "poll", "location", "contact", "livelocation", "sticker"].includes(d.type) ? null : plain,
+            liveLocation: d.type === "livelocation" ? parseJson(plain) : null,
+            sticker: d.type === "sticker" && isSticker(plain) ? plain : null,
             contact: d.type === "contact" ? parseJson(plain) : null,
             mentions: Array.isArray(d.mentions) ? d.mentions : [],
             readBy: receiptTimes(d.readBy),
@@ -4666,6 +4686,8 @@
     if (m.poll) return "📊 " + (m.poll.question || "Anket");
     if (m.location) return "📍 Konum";
     if (m.contact) return "👤 @" + (m.contact.nickname || "kişi");
+    if (m.liveLocation) return "📍 Canlı konum";
+    if (m.sticker) return "🌟 Çıkartma";
     if (m.image) return "📷 Fotoğraf";
     if (m.audio) return "🎤 Sesli mesaj";
     if (m.file) return "📄 " + (m.file.name || "Dosya");
@@ -4887,6 +4909,15 @@
         div.appendChild(renderLocation(m.location));
       } else if (m.contact) {
         div.appendChild(renderContactCard(m.contact));
+      } else if (m.liveLocation) {
+        div.appendChild(renderLiveLocation(m));
+      } else if (m.sticker) {
+        div.classList.add("sticker");
+        const img = document.createElement("img");
+        img.className = "sticker-img";
+        img.src = m.sticker;
+        img.alt = "Çıkartma";
+        div.appendChild(img);
       } else if (m.image && m.viewOnce) {
         const vo = document.createElement("span");
         vo.className = "view-once";
@@ -5004,6 +5035,12 @@
     });
     messageListEl.scrollTop = messageListEl.scrollHeight;
     renderPinnedBar();
+    // Opened from a search result: show that message.
+    if (pendingJumpMsgId && msgs.some(x => x.id === pendingJumpMsgId)) {
+      const id = pendingJumpMsgId;
+      pendingJumpMsgId = null;
+      setTimeout(() => jumpToMessage(id), 50);
+    }
     if (query) {
       threadSearchCount.textContent = matchCount === 0 ? "Sonuç yok" : matchCount + " sonuç";
     }
@@ -5116,6 +5153,9 @@
       actions.push({ label: pinned ? "📌 Sabitlemeyi kaldır" : "📌 Sabitle", run: () => setPinnedMessage(pinned ? null : m.id) });
     }
     if (m.text) actions.push({ label: "📋 Kopyala", run: () => copyText(m.text) });
+    if (m.sticker && !chatPrefs().stickers.includes(m.sticker)) {
+      actions.push({ label: "🌟 Çıkartmalarıma ekle", run: () => saveSticker(m.sticker) });
+    }
     if (!m.deleted && !m.viewOnce && (m.type === "text" || m.type === "image" || m.type === "file" || m.type === "audio")) {
       actions.push({ label: "➡️ İlet", run: () => openForwardModal(m.id) });
     }
@@ -5201,6 +5241,13 @@
     const speedBtn = e.target.closest(".voice-speed");
     if (speedBtn) {
       cycleVoiceSpeed(speedBtn);
+      return;
+    }
+    const liveStop = e.target.closest(".live-stop-btn");
+    if (liveStop) {
+      const m = currentMessages.find(x => x.id === liveStop.dataset.msgId);
+      liveStop.disabled = true;
+      stopLiveLocation(liveStop.dataset.msgId, m);
       return;
     }
     const contactBtn = e.target.closest(".contact-msg-btn");
@@ -5387,6 +5434,7 @@
     }
     const msgRef = await messagesCol.add(msgData);
     await afterMessageSent(convId, otherUids, msgRef, type);
+    return msgRef;
   }
 
   // A fresh AES key for one message, wrapped for me and every recipient.
@@ -5579,6 +5627,15 @@
 
   document.getElementById("attach-location-btn").addEventListener("click", () => {
     attachMenu.classList.add("hidden");
+    showActionSheet("Konum paylaş", [
+      { label: "📍 Şu anki konum", run: sendCurrentLocation },
+      { label: "🔴 Canlı konum · 15 dakika", run: () => startLiveLocation(15) },
+      { label: "🔴 Canlı konum · 1 saat", run: () => startLiveLocation(60) },
+      { label: "🔴 Canlı konum · 8 saat", run: () => startLiveLocation(480) },
+    ]);
+  });
+
+  function sendCurrentLocation() {
     if (!navigator.geolocation) {
       alert("Bu cihaz konum paylaşmayı desteklemiyor.");
       return;
@@ -5594,7 +5651,7 @@
     }, err => {
       alert(err.code === 1 ? "Konum izni verilmedi." : "Konum alınamadı.");
     }, { enableHighAccuracy: true, timeout: 20000, maximumAge: 30000 });
-  });
+  }
 
   /* ---------------- Pinned message ----------------
      conversation.pinnedMessage holds the id of one message shown in a bar
@@ -6013,6 +6070,971 @@
   }));
   document.getElementById("media-gallery-close").addEventListener("click", () => mediaGallery.classList.add("hidden"));
 
+  /* ---------------- Per-device chat settings ----------------
+     Wallpapers, locked chats, broadcast lists and saved stickers live in
+     the PIN-encrypted vault (localSessionData), like pins and stars: they
+     never leave this device. */
+
+  function chatPrefs() {
+    const d = localSessionData || {};
+    return {
+      wallpapers: d.wallpapers && typeof d.wallpapers === "object" ? d.wallpapers : {},
+      lockedChats: Array.isArray(d.lockedChats) ? d.lockedChats : [],
+      broadcastLists: Array.isArray(d.broadcastLists) ? d.broadcastLists : [],
+      stickers: Array.isArray(d.stickers) ? d.stickers : [],
+    };
+  }
+
+  async function setChatPref(name, value) {
+    if (!localSessionData || !currentLocalKey) return false;
+    localSessionData[name] = value;
+    try {
+      await saveLocalBlob(currentLocalKey, await sealSession(localSessionData));
+      return true;
+    } catch (e) {
+      alert("Bu cihazda kaydedilemedi (depolama dolu olabilir).");
+      return false;
+    }
+  }
+
+  function loadImageFile(file) {
+    return readAsDataUrl(file).then(url => new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = () => reject(new Error("bu fotoğraf açılamadı"));
+      img.src = url;
+    }));
+  }
+
+  // Picks one photo with a temporary file input.
+  function pickPhoto() {
+    return new Promise(resolve => {
+      const input = document.createElement("input");
+      input.type = "file";
+      input.accept = "image/*";
+      input.addEventListener("change", () => resolve(input.files[0] || null));
+      input.click();
+    });
+  }
+
+  /* ---------------- Chat menu (tap the chat's name) ---------------- */
+
+  function openChatMenu() {
+    const convId = activeConvId;
+    const conv = activeConv();
+    if (!convId || !conv) return;
+    const actions = [];
+    if (activeIsGroup) {
+      actions.push({ label: "👥 Grup bilgisi", run: () => { renderGroupInfo(); groupInfoModal.classList.remove("hidden"); } });
+    }
+    actions.push({ label: "🎨 Duvar kağıdı", run: chooseWallpaper });
+    actions.push(isChatLocked(convId)
+      ? { label: "🔓 Sohbet kilidini kaldır", run: () => toggleChatLock(convId) }
+      : { label: "🔒 Sohbeti kilitle", run: () => toggleChatLock(convId) });
+    actions.push({ label: "📤 Sohbeti dışa aktar", run: exportChat });
+    showActionSheet(activeIsGroup ? conv.groupName : "@" + conv.otherNickname, actions);
+  }
+
+  /* ---------------- Wallpapers ---------------- */
+
+  const WALLPAPER_COLORS = [
+    { name: "Gece mavisi", value: "#0f1b2d" },
+    { name: "Orman", value: "#10251b" },
+    { name: "Bordo", value: "#2a1018" },
+    { name: "Mor", value: "#1e1530" },
+    { name: "Kahve", value: "#261b12" },
+    { name: "Gri", value: "#1d1f24" },
+  ];
+  const WALLPAPER_PHOTO_RE = /^data:image\/jpeg;base64,[A-Za-z0-9+/=]+$/;
+
+  function applyWallpaper() {
+    const wp = activeConvId ? chatPrefs().wallpapers[activeConvId] : null;
+    if (wp && WALLPAPER_PHOTO_RE.test(wp)) {
+      messageListEl.style.background = 'center / cover no-repeat url("' + wp + '")';
+    } else if (wp && WALLPAPER_COLORS.some(c => c.value === wp)) {
+      messageListEl.style.background = wp;
+    } else {
+      messageListEl.style.background = "";
+    }
+  }
+
+  async function setWallpaper(convId, value) {
+    const wallpapers = { ...chatPrefs().wallpapers };
+    if (value) wallpapers[convId] = value;
+    else delete wallpapers[convId];
+    if (await setChatPref("wallpapers", wallpapers)) applyWallpaper();
+  }
+
+  function chooseWallpaper() {
+    const convId = activeConvId;
+    const actions = WALLPAPER_COLORS.map(c => ({ label: "🎨 " + c.name, run: () => setWallpaper(convId, c.value) }));
+    actions.push({ label: "🖼️ Fotoğraf seç", run: async () => {
+      const file = await pickPhoto();
+      if (!file) return;
+      try {
+        const img = await loadImageFile(file);
+        const scale = Math.min(1, 900 / Math.max(img.naturalWidth, img.naturalHeight));
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.round(img.naturalWidth * scale);
+        canvas.height = Math.round(img.naturalHeight * scale);
+        const ctx = canvas.getContext("2d");
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        // Darkened, so the bubbles stay readable on any photo.
+        ctx.fillStyle = "rgba(0, 0, 0, 0.35)";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        await setWallpaper(convId, canvas.toDataURL("image/jpeg", 0.6));
+      } catch (e) {
+        alert("Duvar kağıdı ayarlanamadı: " + e.message);
+      }
+    } });
+    actions.push({ label: "↺ Varsayılan", run: () => setWallpaper(convId, null) });
+    showActionSheet("Duvar kağıdı (yalnızca bu cihazda)", actions);
+  }
+
+  /* ---------------- Chat lock ----------------
+     A locked chat asks for the fingerprint (or the vault PIN) every time
+     it is opened, and its preview is hidden in the chat list. */
+
+  function isChatLocked(convId) {
+    return chatPrefs().lockedChats.includes(convId);
+  }
+
+  function askVaultPin() {
+    const modal = document.getElementById("chat-unlock-modal");
+    const input = document.getElementById("chat-unlock-pin");
+    const errEl = document.getElementById("chat-unlock-error");
+    input.value = "";
+    errEl.textContent = "";
+    modal.classList.remove("hidden");
+    setTimeout(() => input.focus(), 50);
+    return new Promise(resolve => {
+      const done = ok => {
+        modal.classList.add("hidden");
+        okBtn.removeEventListener("click", onOk);
+        cancelBtn.removeEventListener("click", onCancel);
+        input.removeEventListener("keydown", onKey);
+        resolve(ok);
+      };
+      const onOk = async () => {
+        try {
+          await loadLocalBlob(await deriveLocalKey(input.value.trim()));
+          done(true);
+        } catch (e) {
+          errEl.textContent = "Yanlış PIN.";
+        }
+      };
+      const onCancel = () => done(false);
+      const onKey = e => { if (e.key === "Enter") onOk(); };
+      const okBtn = document.getElementById("chat-unlock-ok");
+      const cancelBtn = document.getElementById("chat-unlock-cancel");
+      okBtn.addEventListener("click", onOk);
+      cancelBtn.addEventListener("click", onCancel);
+      input.addEventListener("keydown", onKey);
+    });
+  }
+
+  async function confirmChatUnlock() {
+    const plugin = biometricKeyPlugin();
+    const sealed = localStorage.getItem(STORAGE_BIO_SEALED);
+    if (plugin && sealed) {
+      try {
+        await plugin.unlock({ sealed });
+        return true;
+      } catch (e) { /* fall back to the PIN */ }
+    } else if (localStorage.getItem(STORAGE_BIOMETRIC) && window.PublicKeyCredential) {
+      if (await verifyBiometricIfEnabled()) return true;
+    }
+    return askVaultPin();
+  }
+
+  async function toggleChatLock(convId) {
+    const locked = chatPrefs().lockedChats;
+    if (locked.includes(convId)) {
+      if (!(await confirmChatUnlock())) return;
+      await setChatPref("lockedChats", locked.filter(id => id !== convId));
+    } else {
+      await setChatPref("lockedChats", [...locked, convId]);
+      alert("Sohbet kilitlendi. Açmak için her seferinde parmak izi ya da PIN istenecek.");
+    }
+  }
+
+  /* ---------------- Export a chat ---------------- */
+
+  async function exportChat() {
+    const conv = activeConv();
+    if (!conv) return;
+    if (!confirm("Sohbet şifresiz bir metin dosyası olarak dışa aktarılacak. Fotoğraf ve dosyalar eklenmez. Devam edilsin mi?")) return;
+    const title = activeIsGroup ? conv.groupName : "@" + conv.otherNickname;
+    const fmt = t => new Date(t).toLocaleString("tr-TR", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" });
+    const now = Date.now();
+    const lines = currentMessages
+      .filter(m => !msgFlag("hiddenMsgs", activeConvId, m.id) && !(m.expiresAtMillis && m.expiresAtMillis <= now))
+      .map(m => {
+        const who = m.from === "me" ? "@" + myNickname : "@" + (m.fromNickname || conv.otherNickname || "?");
+        let body;
+        if (m.deleted) body = "Bu mesaj silindi";
+        else if (m.call) body = callLogText(m.from === "me", m.call.outcome, m.call.duration || 0, m.call.media);
+        else if (m.type === "text") body = m.text;
+        else body = messageSnippet(m);
+        return `[${fmt(m.ts)}] ${who}: ${body}`;
+      });
+    const text = `${title} sohbeti · ${fmt(now)}\n\n${lines.join("\n")}\n`;
+    const fileName = "sohbet-" + (activeIsGroup ? "grup" : conv.otherNickname) + ".txt";
+    const file = new File([text], fileName, { type: "text/plain" });
+    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+      try {
+        await navigator.share({ files: [file], title });
+        return;
+      } catch (e) {
+        if (e && e.name === "AbortError") return;
+      }
+    }
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(file);
+    a.download = fileName;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+  }
+
+  /* ---------------- Group invite codes ----------------
+     An admin creates a random code (conversation.inviteCode). Whoever has
+     "calcut-davet:<group id>.<code>" can add themselves to the group
+     (firestore.rules: joinsWithInviteCode). Resetting the code makes old
+     ones useless. */
+
+  const INVITE_PREFIX = "calcut-davet:";
+
+  function randomInviteCode() {
+    const bytes = crypto.getRandomValues(new Uint8Array(15));
+    return Array.from(bytes, b => "abcdefghijkmnpqrstuvwxyz23456789"[b % 32]).join("") + "x"; // 16 chars
+  }
+
+  async function shareInvite(text) {
+    if (navigator.share) {
+      try { await navigator.share({ text }); return; } catch (e) { if (e && e.name === "AbortError") return; }
+    }
+    copyText(text);
+  }
+
+  document.getElementById("group-invite-btn").addEventListener("click", async () => {
+    const conv = activeGroup();
+    if (!conv || !amGroupAdmin(conv)) return;
+    let code = conv.inviteCode;
+    if (!code) {
+      code = randomInviteCode();
+      if (!(await updateGroup({ inviteCode: code }))) return;
+    }
+    const text = INVITE_PREFIX + conv.id + "." + code;
+    showActionSheet("Davet kodu: " + text, [
+      { label: "📤 Paylaş / kopyala", run: () => shareInvite("\"" + conv.groupName + "\" grubuna katılmak için calcut'ta Gruba katıl'a bu kodu yapıştır:\n" + text) },
+      { label: "♻️ Yeni kod (eskisi geçersiz olur)", run: () => updateGroup({ inviteCode: randomInviteCode() }) },
+      { label: "⛔ Davet kodunu kapat", danger: true, run: () => updateGroup({ inviteCode: firebase.firestore.FieldValue.delete() }) },
+    ]);
+  });
+
+  function parseInvite(raw) {
+    const m = /calcut-davet:([A-Za-z0-9]{1,128})\.([a-z0-9]{16,64})/.exec(raw || "");
+    return m ? { convId: m[1], code: m[2] } : null;
+  }
+
+  document.getElementById("group-join-btn").addEventListener("click", async () => {
+    const raw = prompt("Davet kodunu yapıştır:");
+    if (raw === null) return;
+    const invite = parseInvite(raw);
+    if (!invite) {
+      alert("Bu bir davet kodu değil.");
+      return;
+    }
+    if (conversations.has(invite.convId)) {
+      alert("Zaten bu gruptasın.");
+      return;
+    }
+    try {
+      await fbDb.collection("conversations").doc(invite.convId).update({
+        participants: firebase.firestore.FieldValue.arrayUnion(myUid),
+        [`participantNicknames.${myUid}`]: myNickname,
+        [`unreadCount.${myUid}`]: 0,
+        joinCode: invite.code,
+        updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+      });
+      document.getElementById("new-group-modal").classList.add("hidden");
+      alert("Gruba katıldın. Katılmadan önceki mesajlar sende görünmez.");
+    } catch (e) {
+      alert(e && (e.code === "permission-denied" || e.code === "not-found")
+        ? "Katılınamadı: kod geçersiz ya da artık kullanılmıyor (grup dolu da olabilir)."
+        : "Katılınamadı: " + e.message);
+    }
+  });
+
+  /* ---------------- Broadcast messages ----------------
+     One message sent to each chosen contact separately, in their own 1:1
+     chat (they don't see each other). Lists can be saved on this device. */
+
+  const broadcastModal = document.getElementById("broadcast-modal");
+
+  function broadcastContacts() {
+    return [...conversations.values()]
+      .filter(c => !c.isGroup && c.otherUid && !myBlocked[c.otherUid])
+      .map(c => ({ uid: c.otherUid, nickname: c.otherNickname, convId: c.id }))
+      .sort((a, b) => a.nickname.localeCompare(b.nickname, "tr"));
+  }
+
+  function renderBroadcastModal() {
+    const listsEl = document.getElementById("broadcast-lists");
+    const contactsEl = document.getElementById("broadcast-contacts");
+    listsEl.innerHTML = "";
+    contactsEl.innerHTML = "";
+    chatPrefs().broadcastLists.forEach((list, idx) => {
+      const chip = document.createElement("button");
+      chip.className = "broadcast-chip";
+      chip.textContent = "📋 " + list.name + " (" + list.uids.length + ")";
+      chip.addEventListener("click", () => {
+        contactsEl.querySelectorAll("input").forEach(cb => { cb.checked = list.uids.includes(cb.value); });
+      });
+      attachLongPress(chip, async () => {
+        if (!confirm("\"" + list.name + "\" listesi silinsin mi?")) return;
+        await setChatPref("broadcastLists", chatPrefs().broadcastLists.filter((_, i) => i !== idx));
+        renderBroadcastModal();
+      });
+      listsEl.appendChild(chip);
+    });
+    const contacts = broadcastContacts();
+    if (!contacts.length) {
+      contactsEl.textContent = "Toplu mesaj için önce kişilerle sohbet başlatmalısın.";
+      return;
+    }
+    contacts.forEach(c => {
+      const label = document.createElement("label");
+      label.className = "toggle-row";
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.value = c.uid;
+      const span = document.createElement("span");
+      span.textContent = "@" + c.nickname;
+      label.append(cb, span);
+      contactsEl.appendChild(label);
+    });
+  }
+
+  document.getElementById("broadcast-open-btn").addEventListener("click", () => {
+    document.getElementById("new-thread-modal").classList.add("hidden");
+    document.getElementById("broadcast-text").value = "";
+    document.getElementById("broadcast-save").checked = false;
+    renderBroadcastModal();
+    broadcastModal.classList.remove("hidden");
+  });
+  document.getElementById("broadcast-cancel").addEventListener("click", () => broadcastModal.classList.add("hidden"));
+  document.getElementById("broadcast-send").addEventListener("click", async () => {
+    const btn = document.getElementById("broadcast-send");
+    const text = document.getElementById("broadcast-text").value.trim();
+    const uids = [...document.querySelectorAll("#broadcast-contacts input:checked")].map(cb => cb.value);
+    if (!text || !uids.length) {
+      alert("Bir mesaj yaz ve en az bir kişi seç.");
+      return;
+    }
+    if (document.getElementById("broadcast-save").checked) {
+      const name = (prompt("Liste adı:") || "").trim().slice(0, 40);
+      if (name) await setChatPref("broadcastLists", [...chatPrefs().broadcastLists, { name, uids }].slice(-20));
+    }
+    btn.disabled = true;
+    const contacts = broadcastContacts();
+    const failed = [];
+    for (let i = 0; i < uids.length; i++) {
+      const c = contacts.find(x => x.uid === uids[i]);
+      if (!c) continue;
+      btn.textContent = "Gönderiliyor " + (i + 1) + "/" + uids.length;
+      try {
+        await sendEncryptedTo(c.convId, [c.uid], text, "text");
+      } catch (e) {
+        failed.push("@" + c.nickname);
+      }
+    }
+    btn.disabled = false;
+    btn.textContent = "Gönder";
+    broadcastModal.classList.add("hidden");
+    alert(failed.length ? "Şunlara gönderilemedi: " + failed.join(", ") : uids.length + " kişiye gönderildi.");
+  });
+
+  /* ---------------- Live location ----------------
+     A "livelocation" message holds { lat, lng, acc, until, updated,
+     stopped } (encrypted). While sharing, the sender re-encrypts it with
+     the newest position every LIVE_UPDATE_MS. Sharing needs the app open:
+     a web page can't follow the position in the background. */
+
+  const LIVE_UPDATE_MS = 20000;
+  const liveShares = new Map(); // msg id -> { convId, otherUids, until, watchId, timer, last, pos }
+
+  async function writeLiveLocation(share, msgId, payload) {
+    // Taken before any await: locking clears the keys right after asking
+    // for the final "stopped" update.
+    const me = myUid;
+    const myPub = myPublicKey;
+    if (!me || !myPub) return;
+    const otherKeys = await Promise.all(share.otherUids.map(u => getPublicKeyForUid(u)));
+    if (otherKeys.some(k => !k)) return;
+    const aesKey = await crypto.subtle.generateKey({ name: "AES-GCM", length: 256 }, true, ["encrypt", "decrypt"]);
+    const rawAes = await crypto.subtle.exportKey("raw", aesKey);
+    const wrappedKeys = { [me]: await wrapAesKeyForPublicKey(rawAes, myPub) };
+    for (let i = 0; i < otherKeys.length; i++) wrappedKeys[share.otherUids[i]] = await wrapAesKeyForPublicKey(rawAes, otherKeys[i]);
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const ciphertext = await crypto.subtle.encrypt(
+      { name: "AES-GCM", iv }, aesKey, new TextEncoder().encode(JSON.stringify(payload))
+    );
+    await fbDb.collection("conversations").doc(share.convId).collection("messages").doc(msgId).update({
+      iv: b64encode(iv.buffer), ciphertext: b64encode(ciphertext), wrappedKeys,
+    });
+  }
+
+  function startLiveLocation(minutes) {
+    if (!navigator.geolocation) {
+      alert("Bu cihaz konum paylaşmayı desteklemiyor.");
+      return;
+    }
+    const label = minutes >= 60 ? (minutes / 60) + " saat" : minutes + " dakika";
+    if (!confirm("Canlı konumun " + label + " boyunca bu sohbetle paylaşılsın mı? Paylaşım uygulama açıkken güncellenir.")) return;
+    const convId = activeConvId;
+    const otherUids = activeOtherUids.slice();
+    const replyFields = takeReplyFields();
+    navigator.geolocation.getCurrentPosition(async pos => {
+      const until = Date.now() + minutes * 60000;
+      const p = { lat: pos.coords.latitude, lng: pos.coords.longitude, acc: pos.coords.accuracy };
+      try {
+        const ref = await sendEncryptedTo(convId, otherUids, JSON.stringify({ ...p, until, updated: Date.now() }), "livelocation", replyFields);
+        if (!ref) return;
+        const share = { convId, otherUids, until, last: Date.now(), pos: p };
+        share.watchId = navigator.geolocation.watchPosition(next => {
+          share.pos = { lat: next.coords.latitude, lng: next.coords.longitude, acc: next.coords.accuracy };
+          if (Date.now() - share.last < LIVE_UPDATE_MS) return;
+          share.last = Date.now();
+          writeLiveLocation(share, ref.id, { ...share.pos, until, updated: Date.now() }).catch(() => {});
+        }, () => {}, { enableHighAccuracy: true, maximumAge: 10000 });
+        share.timer = setTimeout(() => stopLiveLocation(ref.id), until - Date.now());
+        liveShares.set(ref.id, share);
+      } catch (e) {
+        alert("Canlı konum paylaşılamadı: " + e.message);
+      }
+    }, err => {
+      alert(err.code === 1 ? "Konum izni verilmedi." : "Konum alınamadı.");
+    }, { enableHighAccuracy: true, timeout: 20000, maximumAge: 30000 });
+  }
+
+  // m (optional): the rendered message, for a share started before a restart.
+  async function stopLiveLocation(msgId, m) {
+    const share = liveShares.get(msgId);
+    liveShares.delete(msgId);
+    if (share) {
+      navigator.geolocation.clearWatch(share.watchId);
+      clearTimeout(share.timer);
+    }
+    const target = share || (m && { convId: activeConvId, otherUids: activeOtherUids.slice() });
+    const pos = share ? share.pos : m && m.liveLocation;
+    if (!target || !pos) return;
+    await writeLiveLocation(target, msgId, {
+      lat: pos.lat, lng: pos.lng, acc: pos.acc, until: Date.now(), updated: Date.now(), stopped: true,
+    }).catch(() => {});
+  }
+
+  function stopAllLiveLocations() {
+    [...liveShares.keys()].forEach(id => stopLiveLocation(id));
+  }
+
+  function liveLocationActive(loc) {
+    return !!loc && !loc.stopped && Number(loc.until) > Date.now();
+  }
+
+  function renderLiveLocation(m) {
+    const loc = m.liveLocation;
+    const box = renderLocation(loc);
+    box.classList.add("live");
+    const title = box.querySelector(".loc-title");
+    const active = liveLocationActive(loc);
+    if (title) title.textContent = active ? "🔴 Canlı konum" : "📍 Canlı konum sona erdi";
+    const info = document.createElement("span");
+    info.className = "loc-acc";
+    if (active) {
+      const left = Math.max(1, Math.round((loc.until - Date.now()) / 60000));
+      const upd = new Date(loc.updated || m.ts).toLocaleTimeString("tr-TR", { hour: "2-digit", minute: "2-digit" });
+      info.textContent = (left >= 60 ? Math.round(left / 60) + " saat" : left + " dk") + " kaldı · son güncelleme " + upd;
+    } else {
+      info.textContent = "Son konum";
+    }
+    box.insertBefore(info, title ? title.nextSibling : box.firstChild);
+    if (m.from === "me" && active) {
+      const stop = document.createElement("button");
+      stop.className = "live-stop-btn";
+      stop.dataset.msgId = m.id;
+      stop.textContent = "⏹ Paylaşımı durdur";
+      box.appendChild(stop);
+    }
+    return box;
+  }
+
+  /* ---------------- Camera flip in video calls ---------------- */
+
+  const callFlipBtn = document.getElementById("call-flip-btn");
+  let cameraFacing = "user";
+
+  callFlipBtn.addEventListener("click", async () => {
+    if (!localStream || !peerConnection) return;
+    const next = cameraFacing === "user" ? "environment" : "user";
+    let stream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { exact: next } } });
+    } catch (e) {
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: next } });
+      } catch (e2) {
+        alert("Diğer kamera açılamadı.");
+        return;
+      }
+    }
+    const newTrack = stream.getVideoTracks()[0];
+    if (!newTrack || !localStream || !peerConnection) {
+      stream.getTracks().forEach(t => t.stop());
+      return;
+    }
+    newTrack.enabled = !isCameraOff;
+    const sender = peerConnection.getSenders().find(s => s.track && s.track.kind === "video");
+    if (sender) await sender.replaceTrack(newTrack);
+    localStream.getVideoTracks().forEach(t => { localStream.removeTrack(t); t.stop(); });
+    localStream.addTrack(newTrack);
+    callLocalVideo.srcObject = localStream;
+    cameraFacing = next;
+    callLocalVideo.classList.toggle("rear", next === "environment");
+  });
+
+  /* ---------------- Photo editor (draw, text, crop, rotate) ----------------
+     A single photo picked for sending opens here first. */
+
+  const PE_COLORS = ["#ffffff", "#111111", "#ff3b30", "#ffcc00", "#34c759", "#0a84ff", "#af52de"];
+  const PE_MAX_SIDE = 1600;
+  const photoEditor = document.getElementById("photo-editor");
+  const peCanvas = document.getElementById("pe-canvas");
+  const peCropBox = document.getElementById("pe-crop-box");
+  let peTool = "draw";
+  let peColor = PE_COLORS[2];
+  let peHistory = [];
+  let peResolve = null;
+  let peCrop = null; // { x, y, w, h } in canvas pixels
+
+  function peSnapshot() {
+    const copy = document.createElement("canvas");
+    copy.width = peCanvas.width;
+    copy.height = peCanvas.height;
+    copy.getContext("2d").drawImage(peCanvas, 0, 0);
+    peHistory.push(copy);
+    if (peHistory.length > 6) peHistory.shift();
+  }
+
+  function peSetCanvasFrom(source, w, h) {
+    peCanvas.width = w;
+    peCanvas.height = h;
+    peCanvas.getContext("2d").drawImage(source, 0, 0, w, h);
+  }
+
+  function pePoint(e) {
+    const r = peCanvas.getBoundingClientRect();
+    return { x: (e.clientX - r.left) * (peCanvas.width / r.width), y: (e.clientY - r.top) * (peCanvas.height / r.height) };
+  }
+
+  function peSetTool(tool) {
+    peTool = tool;
+    photoEditor.querySelectorAll(".pe-tools [data-tool]").forEach(b => b.classList.toggle("active", b.dataset.tool === tool));
+    peCrop = null;
+    peCropBox.classList.add("hidden");
+    document.getElementById("pe-crop-apply").classList.add("hidden");
+  }
+
+  function peShowCropBox() {
+    if (!peCrop) return;
+    const r = peCanvas.getBoundingClientRect();
+    const stage = peCanvas.parentElement.getBoundingClientRect();
+    const sx = r.width / peCanvas.width;
+    const sy = r.height / peCanvas.height;
+    Object.assign(peCropBox.style, {
+      left: (r.left - stage.left + peCrop.x * sx) + "px",
+      top: (r.top - stage.top + peCrop.y * sy) + "px",
+      width: peCrop.w * sx + "px",
+      height: peCrop.h * sy + "px",
+    });
+    peCropBox.classList.remove("hidden");
+  }
+
+  let peDrawing = null;
+  peCanvas.addEventListener("pointerdown", e => {
+    e.preventDefault();
+    peCanvas.setPointerCapture(e.pointerId);
+    const p = pePoint(e);
+    if (peTool === "draw") {
+      peSnapshot();
+      const ctx = peCanvas.getContext("2d");
+      ctx.strokeStyle = peColor;
+      ctx.lineWidth = Math.max(4, peCanvas.width / 120);
+      ctx.lineCap = "round";
+      ctx.lineJoin = "round";
+      ctx.beginPath();
+      ctx.moveTo(p.x, p.y);
+      peDrawing = p;
+    } else if (peTool === "text") {
+      const text = prompt("Yazı:");
+      if (!text || !text.trim()) return;
+      peSnapshot();
+      const ctx = peCanvas.getContext("2d");
+      const size = Math.max(24, Math.round(peCanvas.width / 14));
+      ctx.font = "bold " + size + "px sans-serif";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.lineWidth = size / 8;
+      ctx.strokeStyle = peColor === "#111111" ? "#ffffff" : "#000000";
+      ctx.strokeText(text.trim(), p.x, p.y);
+      ctx.fillStyle = peColor;
+      ctx.fillText(text.trim(), p.x, p.y);
+    } else if (peTool === "crop") {
+      peDrawing = p;
+      peCrop = { x: p.x, y: p.y, w: 0, h: 0 };
+    }
+  });
+  peCanvas.addEventListener("pointermove", e => {
+    if (!peDrawing) return;
+    const p = pePoint(e);
+    if (peTool === "draw") {
+      const ctx = peCanvas.getContext("2d");
+      ctx.lineTo(p.x, p.y);
+      ctx.stroke();
+    } else if (peTool === "crop") {
+      const x = Math.max(0, Math.min(peDrawing.x, p.x));
+      const y = Math.max(0, Math.min(peDrawing.y, p.y));
+      peCrop = { x, y, w: Math.min(peCanvas.width, Math.max(peDrawing.x, p.x)) - x, h: Math.min(peCanvas.height, Math.max(peDrawing.y, p.y)) - y };
+      peShowCropBox();
+    }
+  });
+  const peEnd = () => {
+    if (peTool === "crop" && peCrop && peCrop.w > 20 && peCrop.h > 20) {
+      document.getElementById("pe-crop-apply").classList.remove("hidden");
+    }
+    peDrawing = null;
+  };
+  peCanvas.addEventListener("pointerup", peEnd);
+  peCanvas.addEventListener("pointercancel", peEnd);
+
+  document.getElementById("pe-crop-apply").addEventListener("click", () => {
+    if (!peCrop) return;
+    peSnapshot();
+    const c = peCrop;
+    const copy = document.createElement("canvas");
+    copy.width = Math.round(c.w);
+    copy.height = Math.round(c.h);
+    copy.getContext("2d").drawImage(peCanvas, c.x, c.y, c.w, c.h, 0, 0, copy.width, copy.height);
+    peSetCanvasFrom(copy, copy.width, copy.height);
+    peSetTool("draw");
+  });
+  document.getElementById("pe-rotate").addEventListener("click", () => {
+    peSnapshot();
+    const copy = document.createElement("canvas");
+    copy.width = peCanvas.height;
+    copy.height = peCanvas.width;
+    const ctx = copy.getContext("2d");
+    ctx.translate(copy.width, 0);
+    ctx.rotate(Math.PI / 2);
+    ctx.drawImage(peCanvas, 0, 0);
+    peSetCanvasFrom(copy, copy.width, copy.height);
+    peSetTool(peTool === "crop" ? "draw" : peTool);
+  });
+  document.getElementById("pe-undo").addEventListener("click", () => {
+    const prev = peHistory.pop();
+    if (prev) peSetCanvasFrom(prev, prev.width, prev.height);
+  });
+  photoEditor.querySelectorAll(".pe-tools [data-tool]").forEach(b => b.addEventListener("click", () => peSetTool(b.dataset.tool)));
+  PE_COLORS.forEach(color => {
+    const b = document.createElement("button");
+    b.className = "pe-color" + (color === peColor ? " active" : "");
+    b.style.background = color;
+    b.addEventListener("click", () => {
+      peColor = color;
+      document.querySelectorAll(".pe-color").forEach(x => x.classList.toggle("active", x === b));
+    });
+    document.getElementById("pe-colors").appendChild(b);
+  });
+
+  function closePhotoEditor(result) {
+    photoEditor.classList.add("hidden");
+    peHistory = [];
+    const resolve = peResolve;
+    peResolve = null;
+    if (resolve) resolve(result);
+  }
+
+  document.getElementById("pe-cancel").addEventListener("click", () => closePhotoEditor(null));
+  document.getElementById("pe-send").addEventListener("click", () => {
+    peCanvas.toBlob(blob => {
+      closePhotoEditor(blob ? new File([blob], "foto.jpg", { type: "image/jpeg" }) : null);
+    }, "image/jpeg", 0.9);
+  });
+
+  // Resolves with the edited photo as a File, or null if cancelled.
+  async function openPhotoEditor(file) {
+    let img;
+    try {
+      img = await loadImageFile(file);
+    } catch (e) {
+      return file; // a format the browser can't draw (e.g. HEIC): send as it is
+    }
+    const scale = Math.min(1, PE_MAX_SIDE / Math.max(img.naturalWidth, img.naturalHeight));
+    peSetCanvasFrom(img, Math.round(img.naturalWidth * scale), Math.round(img.naturalHeight * scale));
+    peHistory = [];
+    peSetTool("draw");
+    photoEditor.classList.remove("hidden");
+    return new Promise(resolve => { peResolve = resolve; });
+  }
+
+  /* ---------------- Stickers ----------------
+     A sticker is a small rounded square image (data URL, encrypted like a
+     photo) shown without a bubble. Saved stickers stay on this device. */
+
+  const STICKER_SIDE = 320;
+  const STICKER_RE = /^data:image\/(webp|png);base64,[A-Za-z0-9+/=]+$/;
+  const MAX_SAVED_STICKERS = 24;
+  const stickerPicker = document.getElementById("sticker-picker");
+
+  function isSticker(v) {
+    return typeof v === "string" && v.length < 300000 && STICKER_RE.test(v);
+  }
+
+  async function makeSticker(file) {
+    const img = await loadImageFile(file);
+    const side = Math.min(img.naturalWidth, img.naturalHeight);
+    const canvas = document.createElement("canvas");
+    canvas.width = canvas.height = STICKER_SIDE;
+    const ctx = canvas.getContext("2d");
+    const r = STICKER_SIDE * 0.18;
+    ctx.beginPath();
+    ctx.moveTo(r, 0);
+    ctx.arcTo(STICKER_SIDE, 0, STICKER_SIDE, STICKER_SIDE, r);
+    ctx.arcTo(STICKER_SIDE, STICKER_SIDE, 0, STICKER_SIDE, r);
+    ctx.arcTo(0, STICKER_SIDE, 0, 0, r);
+    ctx.arcTo(0, 0, STICKER_SIDE, 0, r);
+    ctx.closePath();
+    ctx.clip();
+    ctx.drawImage(img, (img.naturalWidth - side) / 2, (img.naturalHeight - side) / 2, side, side, 0, 0, STICKER_SIDE, STICKER_SIDE);
+    const webp = canvas.toDataURL("image/webp", 0.8);
+    return webp.startsWith("data:image/webp") ? webp : canvas.toDataURL("image/png");
+  }
+
+  async function saveSticker(dataUrl) {
+    const list = chatPrefs().stickers.filter(s => s !== dataUrl);
+    return setChatPref("stickers", [dataUrl, ...list].slice(0, MAX_SAVED_STICKERS));
+  }
+
+  function renderStickerPicker() {
+    const grid = document.getElementById("sticker-grid");
+    grid.innerHTML = "";
+    const list = chatPrefs().stickers.filter(isSticker);
+    if (!list.length) {
+      grid.textContent = "Henüz çıkartman yok. Bir fotoğraftan yap ya da gelen bir çıkartmaya uzun basıp kaydet.";
+      return;
+    }
+    list.forEach(src => {
+      const b = document.createElement("button");
+      b.className = "sticker-cell";
+      const img = document.createElement("img");
+      img.src = src;
+      img.alt = "";
+      b.appendChild(img);
+      b.addEventListener("click", async () => {
+        stickerPicker.classList.add("hidden");
+        try {
+          await sendEncrypted(src, "sticker", takeReplyFields());
+        } catch (e) {
+          alert("Çıkartma gönderilemedi: " + e.message);
+        }
+      });
+      attachLongPress(b, async () => {
+        if (!confirm("Bu çıkartma silinsin mi?")) return;
+        await setChatPref("stickers", chatPrefs().stickers.filter(s => s !== src));
+        renderStickerPicker();
+      });
+      grid.appendChild(b);
+    });
+  }
+
+  document.getElementById("attach-sticker-btn").addEventListener("click", () => {
+    attachMenu.classList.add("hidden");
+    renderStickerPicker();
+    stickerPicker.classList.remove("hidden");
+  });
+  document.getElementById("sticker-close").addEventListener("click", () => stickerPicker.classList.add("hidden"));
+  const stickerPhotoInput = document.getElementById("sticker-photo-input");
+  document.getElementById("sticker-make").addEventListener("click", () => stickerPhotoInput.click());
+  stickerPhotoInput.addEventListener("change", async () => {
+    const file = stickerPhotoInput.files[0];
+    stickerPhotoInput.value = "";
+    if (!file) return;
+    try {
+      await saveSticker(await makeSticker(file));
+      renderStickerPicker();
+    } catch (e) {
+      alert("Çıkartma yapılamadı: " + e.message);
+    }
+  });
+
+  /* ---------------- Search across all chats ----------------
+     Names match right away; messages are searched in a decrypted index of
+     each chat's latest SEARCH_PER_CHAT messages, built on first use and
+     dropped when the vault locks. Locked chats are left out. */
+
+  const SEARCH_PER_CHAT = 300;
+  const globalSearchInput = document.getElementById("global-search-input");
+  const globalSearchResults = document.getElementById("global-search-results");
+  let messageIndex = null; // convId -> [{ id, text, ts, fromMe, from }]
+  let messageIndexAt = 0;
+  let messageIndexBuilding = null;
+  let pendingJumpMsgId = null;
+  let globalSearchTimer = null;
+
+  async function buildMessageIndex() {
+    const index = new Map();
+    const convs = [...conversations.values()].filter(c => !isChatLocked(c.id));
+    await Promise.all(convs.map(async c => {
+      try {
+        const snap = await fbDb.collection("conversations").doc(c.id).collection("messages")
+          .orderBy("ts", "desc").limit(SEARCH_PER_CHAT).get();
+        const out = [];
+        for (const doc of snap.docs) {
+          const d = doc.data();
+          if (d.type !== "text" || d.deleted) continue;
+          if (d.expiresAt && d.expiresAt.toMillis() <= Date.now()) continue;
+          if (msgFlag("hiddenMsgs", c.id, doc.id)) continue;
+          const text = await decryptMessage(d).catch(() => null);
+          if (text) out.push({ id: doc.id, text, ts: d.ts ? d.ts.toMillis() : 0, fromMe: d.from === myUid, from: d.from });
+        }
+        index.set(c.id, out);
+      } catch (e) { /* skip this chat */ }
+    }));
+    return index;
+  }
+
+  function ensureMessageIndex() {
+    if (messageIndex && Date.now() - messageIndexAt < 60000) return Promise.resolve(messageIndex);
+    if (!messageIndexBuilding) {
+      messageIndexBuilding = buildMessageIndex().then(index => {
+        messageIndexBuilding = null;
+        if (!myUid) return null; // locked meanwhile
+        messageIndex = index;
+        messageIndexAt = Date.now();
+        return index;
+      });
+    }
+    return messageIndexBuilding;
+  }
+
+  function clearGlobalSearch() {
+    globalSearchInput.value = "";
+    globalSearchResults.classList.add("hidden");
+    globalSearchResults.innerHTML = "";
+    threadListPanel.classList.remove("searching");
+  }
+
+  function convTitle(c) {
+    return c.isGroup ? "👥 " + c.groupName : "@" + c.otherNickname;
+  }
+
+  function openConvFromSearch(c, msgId) {
+    pendingJumpMsgId = msgId || null;
+    clearGlobalSearch();
+    openConversation(c.id, c.otherUid, c.otherNickname, {
+      isGroup: c.isGroup, groupName: c.groupName, participants: c.participants,
+    });
+  }
+
+  function searchSnippet(text, q) {
+    const i = text.toLowerCase().indexOf(q);
+    const start = Math.max(0, i - 30);
+    return (start ? "…" : "") + text.slice(start, i + q.length + 60);
+  }
+
+  async function runGlobalSearch() {
+    const q = globalSearchInput.value.trim().toLocaleLowerCase("tr");
+    if (!q) { clearGlobalSearch(); return; }
+    threadListPanel.classList.add("searching");
+    globalSearchResults.classList.remove("hidden");
+    const head = title => {
+      const h = document.createElement("p");
+      h.className = "search-section";
+      h.textContent = title;
+      globalSearchResults.appendChild(h);
+    };
+    const row = (title, sub, onClick) => {
+      const b = document.createElement("button");
+      b.className = "media-row";
+      const info = document.createElement("span");
+      info.className = "media-row-info";
+      const t = document.createElement("span");
+      t.className = "media-row-title";
+      t.textContent = title;
+      const s = document.createElement("span");
+      s.className = "media-row-sub";
+      s.textContent = sub;
+      info.append(t, s);
+      b.appendChild(info);
+      b.addEventListener("click", onClick);
+      globalSearchResults.appendChild(b);
+    };
+    const render = index => {
+      if (globalSearchInput.value.trim().toLocaleLowerCase("tr") !== q) return; // typed on
+      globalSearchResults.innerHTML = "";
+      const convs = [...conversations.values()];
+      const nameHits = convs.filter(c => convTitle(c).toLocaleLowerCase("tr").includes(q));
+      if (nameHits.length) {
+        head("Sohbetler");
+        nameHits.forEach(c => row(convTitle(c), c.lastPreview && !isChatLocked(c.id) ? c.lastPreview : "", () => openConvFromSearch(c)));
+      }
+      if (!index) {
+        head("Mesajlar");
+        const p = document.createElement("p");
+        p.className = "media-empty";
+        p.textContent = "Mesajlarda aranıyor…";
+        globalSearchResults.appendChild(p);
+        return;
+      }
+      const hits = [];
+      index.forEach((msgs, convId) => {
+        const c = conversations.get(convId);
+        if (!c) return;
+        msgs.forEach(m => { if (m.text.toLocaleLowerCase("tr").includes(q)) hits.push({ c, m }); });
+      });
+      hits.sort((a, b) => b.m.ts - a.m.ts);
+      if (hits.length) {
+        head("Mesajlar");
+        hits.slice(0, 50).forEach(({ c, m }) => {
+          const who = m.fromMe ? "Sen" : c.isGroup ? "@" + (c.participantNicknames[m.from] || "?") : "@" + c.otherNickname;
+          row(convTitle(c) + " · " + formatThreadTime(m.ts), who + ": " + searchSnippet(m.text, q), () => openConvFromSearch(c, m.id));
+        });
+      }
+      if (!nameHits.length && !hits.length) {
+        const p = document.createElement("p");
+        p.className = "media-empty";
+        p.textContent = "Sonuç yok.";
+        globalSearchResults.appendChild(p);
+      }
+    };
+    render(messageIndex && Date.now() - messageIndexAt < 60000 ? messageIndex : null);
+    render(await ensureMessageIndex());
+  }
+
+  globalSearchInput.addEventListener("input", () => {
+    clearTimeout(globalSearchTimer);
+    globalSearchTimer = setTimeout(runGlobalSearch, 250);
+  });
+
+  function forgetSearchAndLiveData() {
+    messageIndex = null;
+    messageIndexBuilding = null;
+    pendingJumpMsgId = null;
+    clearGlobalSearch();
+  }
+
   const viewOnceInput = document.getElementById("viewonce-input");
   document.getElementById("attach-viewonce-btn").addEventListener("click", () => {
     attachMenu.classList.add("hidden");
@@ -6040,6 +7062,12 @@
   async function sendPickedFiles(files, opts) {
     opts = opts || {};
     if (!files.length) return;
+    // A single photo can be drawn on, captioned, cropped or rotated first.
+    if (files.length === 1 && files[0].type.startsWith("image/") && files[0].type !== "image/gif") {
+      const edited = await openPhotoEditor(files[0]);
+      if (!edited) return;
+      files = [edited];
+    }
     if (files.length > MAX_FILES_PER_SEND) {
       alert("Tek seferde en fazla " + MAX_FILES_PER_SEND + " dosya seçebilirsin.");
       return;

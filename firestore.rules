@@ -109,14 +109,29 @@ service cloud.firestore {
         return d.get('admins', []).toSet().difference(d.participants.toSet()).size() == 0;
       }
 
-      allow update: if isSignedIn() && request.auth.uid in resource.data.participants && (
+      // Joining a group with its invite code: the caller adds only
+      // themselves (and their own nickname / unread entry), giving the code.
+      function joinsWithInviteCode() {
+        return isGroupConv() &&
+          !(request.auth.uid in resource.data.participants) &&
+          resource.data.get('inviteCode', '') is string && resource.data.get('inviteCode', '').size() >= 16 &&
+          request.resource.data.get('joinCode', '') == resource.data.inviteCode &&
+          changedKeys().hasOnly(['participants', 'participantNicknames', 'unreadCount', 'updatedAt', 'joinCode']) &&
+          request.resource.data.participants.toSet() == resource.data.participants.toSet().union([request.auth.uid].toSet()) &&
+          request.resource.data.participants.size() <= 20 &&
+          onlyOwnEntryChanged('participantNicknames') && onlyOwnEntryChanged('unreadCount');
+      }
+
+      allow update: if isSignedIn() && (joinsWithInviteCode() || (request.auth.uid in resource.data.participants && (
         // pinnedMessage: the id of the message pinned to the top of the chat.
         (changedKeys().hasOnly(['unreadCount', 'typing', 'updatedAt', 'participantNicknames', 'disappearingSeconds', 'muted', 'pinnedMessage']) &&
          (!changedKeys().hasAny(['pinnedMessage']) || !('pinnedMessage' in request.resource.data) ||
           (request.resource.data.pinnedMessage is string && request.resource.data.pinnedMessage.size() <= 64))) ||
         // Group admins: name, photo, members and admins.
         (isGroupConv() && request.auth.uid in groupAdmins() &&
-         changedKeys().hasOnly(['groupName', 'groupAvatar', 'participants', 'admins', 'participantNicknames', 'unreadCount', 'updatedAt']) &&
+         changedKeys().hasOnly(['groupName', 'groupAvatar', 'participants', 'admins', 'participantNicknames', 'unreadCount', 'updatedAt', 'inviteCode']) &&
+         (!changedKeys().hasAny(['inviteCode']) || !('inviteCode' in request.resource.data) ||
+          (request.resource.data.inviteCode is string && request.resource.data.inviteCode.size() >= 16 && request.resource.data.inviteCode.size() <= 64)) &&
          request.resource.data.participants.size() >= 1 && request.resource.data.participants.size() <= 20 &&
          request.resource.data.get('admins', []).size() >= 1 &&
          adminsWithinParticipants(request.resource.data) &&
@@ -129,7 +144,7 @@ service cloud.firestore {
          request.resource.data.participants.toSet() == resource.data.participants.toSet().difference([request.auth.uid].toSet()) &&
          ((request.auth.uid in groupAdmins() && adminsWithinParticipants(request.resource.data)) ||
           (!(request.auth.uid in groupAdmins()) && !changedKeys().hasAny(['admins']))))
-      );
+      )));
 
       allow delete: if isSignedIn() && request.auth.uid in resource.data.participants;
 
