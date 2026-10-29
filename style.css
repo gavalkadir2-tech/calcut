@@ -198,7 +198,7 @@ button.danger { background: var(--danger); color: #fff; }
 }
 #thread-detail-panel .thread-actions button { flex: 1 1 0; min-width: 0; max-width: 48px; padding: 6px 0; font-size: 14px; border-radius: 8px; }
 #thread-typing { margin: 0; font-size: 12px; color: var(--accent); font-style: italic; }
-.header-actions { display: flex; gap: 8px; }
+.header-actions { display: flex; gap: 8px; margin-left: auto; }
 .header-actions button, #thread-delete-btn, #thread-back-btn, #media-gallery-close {
   background: #1c1f26;
   border: 1px solid #333;
