@@ -1356,6 +1356,8 @@
           preview = "📊 Anket";
         } else if (d.type === "location") {
           preview = "📍 Konum";
+        } else if (d.type === "contact") {
+          preview = "👤 Kişi";
         } else if (d.type === "call") {
           const raw = await decryptMessage(d).catch(() => null);
           try {
@@ -1383,6 +1385,7 @@
         }
         conv.lastPreview = prefix + preview;
         conv.lastIsMissedCall = lastIsMissedCall;
+        conv.lastMentionsMe = d.from !== myUid && Array.isArray(d.mentions) && d.mentions.includes(myUid);
         conv.lastTs = d.ts ? d.ts.toMillis() : Date.now();
         if (!threadListPanel.classList.contains("hidden")) renderThreadList();
       }, err => {
@@ -1446,10 +1449,13 @@
             lastTs: existing.lastTs || 0,
             disappearingSeconds: d.disappearingSeconds || 0,
             muted,
+            pinnedMessage: typeof d.pinnedMessage === "string" ? d.pinnedMessage : null,
+            lastMentionsMe: !!existing.lastMentionsMe,
           });
           if (change.doc.id === activeConvId) {
             updateDisappearingUi();
             updateMuteUi();
+            renderPinnedBar();
             if (isGroup) syncActiveGroup();
           }
           subscribeLastMessage(change.doc.id);
@@ -1717,7 +1723,7 @@
       }
       if (conv.unread > 0) {
         const badge = li.querySelector(".thread-badge");
-        badge.textContent = conv.unread > 99 ? "99+" : String(conv.unread);
+        badge.textContent = (conv.lastMentionsMe ? "@ " : "") + (conv.unread > 99 ? "99+" : String(conv.unread));
         badge.classList.remove("hidden");
       }
       attachLongPress(li, () => showThreadActions(conv));
@@ -1735,6 +1741,20 @@
   document.getElementById("new-thread-cancel").addEventListener("click", () => {
     document.getElementById("new-thread-modal").classList.add("hidden");
   });
+  // Opens the 1:1 chat with a user (creating it the first time).
+  async function startConversationWith(otherUid, otherNickname) {
+    const convId = convIdFor(myUid, otherUid);
+    if (!conversations.has(convId)) {
+      await fbDb.collection("conversations").doc(convId).set({
+        participants: [myUid, otherUid],
+        participantNicknames: { [myUid]: myNickname, [otherUid]: otherNickname },
+        unreadCount: { [myUid]: 0, [otherUid]: 0 },
+        updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+      }, { merge: true });
+    }
+    openConversation(convId, otherUid, otherNickname);
+  }
+
   document.getElementById("new-thread-create").addEventListener("click", async () => {
     const nickname = normalizeNickname(document.getElementById("new-thread-name").value);
     if (!nickname) return;
@@ -1748,18 +1768,8 @@
         alert("Bu kullanıcı adıyla kayıtlı bir kullanıcı bulunamadı.");
         return;
       }
-      const otherDoc = q.docs[0];
-      const otherUid = otherDoc.id;
-      const otherData = otherDoc.data();
-      const convId = convIdFor(myUid, otherUid);
-      await fbDb.collection("conversations").doc(convId).set({
-        participants: [myUid, otherUid],
-        participantNicknames: { [myUid]: myNickname, [otherUid]: otherData.nickname },
-        unreadCount: { [myUid]: 0, [otherUid]: 0 },
-        updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
-      }, { merge: true });
       document.getElementById("new-thread-modal").classList.add("hidden");
-      openConversation(convId, otherUid, otherData.nickname);
+      await startConversationWith(q.docs[0].id, q.docs[0].data().nickname);
     } catch (e) {
       alert("Sohbet eklenemedi: " + e.message);
     }
@@ -1833,6 +1843,7 @@
     leaveComposer();
     hideActionSheet();
     closeImageViewer();
+    mediaGallery.classList.add("hidden");
     forgetLargeFiles();
     showingArchived = false;
     currentLocalKey = null;
@@ -2376,6 +2387,7 @@
         else if (m.type === "audio") text = "🎤 Sesli mesaj";
         else if (m.type === "poll") text = "📊 Anket";
         else if (m.type === "location") text = "📍 Konum";
+        else if (m.type === "contact") text = "👤 Kişi";
         else if (m.type === "call") text = "📞 Arama kaydı";
         else text = m.content + (m.edited ? " (düzenlendi)" : "");
         line.appendChild(document.createTextNode(text));
@@ -2435,6 +2447,9 @@
       updateBlockUi();
     }
     listenToMessages(convId);
+    renderPinnedBar();
+    hideMentionPicker();
+    mediaGallery.classList.add("hidden");
     updateDisappearingUi();
     updateMuteUi();
   }
@@ -3927,6 +3942,11 @@
   let myPresenceKnown = false;
   let threadListRenderQueued = false;
 
+  function myHideReadReceipts() {
+    const me = profiles.get(myUid);
+    return !!(me && me.hideReadReceipts);
+  }
+
   function myHidePresence() {
     const me = profiles.get(myUid);
     return !!(me && me.hidePresence);
@@ -3942,6 +3962,7 @@
         avatar: typeof d.avatar === "string" && AVATAR_RE.test(d.avatar) ? d.avatar : null,
         lastSeen: d.lastSeen && d.lastSeen.toMillis ? d.lastSeen.toMillis() : null,
         hidePresence: !!d.hidePresence,
+        hideReadReceipts: !!d.hideReadReceipts,
       });
       onProfileChanged(uid);
     }, () => {});
@@ -4060,6 +4081,7 @@
     const p = profiles.get(myUid);
     document.getElementById("avatar-remove-btn").classList.toggle("hidden", !(p && p.avatar));
     document.getElementById("presence-toggle").checked = !myHidePresence();
+    document.getElementById("read-receipts-toggle").checked = !myHideReadReceipts();
   }
 
   function profileSaveError(e) {
@@ -4126,6 +4148,19 @@
     }
   });
 
+  document.getElementById("read-receipts-toggle").addEventListener("change", async (e) => {
+    const send = e.target.checked;
+    const msgEl = document.getElementById("avatar-msg");
+    try {
+      await fbDb.collection("users").doc(myUid).update({ hideReadReceipts: !send });
+      msgEl.textContent = send ? "Okundu bilgisi artık gönderiliyor." : "Okundu bilgisi kapatıldı.";
+      if (activeConvId) renderMessages(currentMessages);
+    } catch (err) {
+      e.target.checked = !send;
+      msgEl.textContent = profileSaveError(err);
+    }
+  });
+
   let disappearingCheckInterval = null;
 
   function listenToMessages(convId) {
@@ -4158,7 +4193,9 @@
           // don't track per-member read receipts (see the tick rendering
           // below), so only bother writing this for 1:1 threads.
           if (!activeIsGroup && d.from !== myUid && !d.read) {
-            doc.ref.update({ read: true, delivered: true }).catch(() => {});
+            // With read receipts off, only "reached my phone" is sent.
+            if (!myHideReadReceipts()) doc.ref.update({ read: true, delivered: true }).catch(() => {});
+            else if (!d.delivered) doc.ref.update({ delivered: true }).catch(() => {});
           }
           let file = null;
           if (d.type === "file") {
@@ -4173,7 +4210,10 @@
             type: d.type,
             from: d.from === myUid ? "me" : "them",
             fromNickname,
-            text: ["image", "file", "call", "audio", "poll", "location"].includes(d.type) ? null : plain,
+            text: ["image", "file", "call", "audio", "poll", "location", "contact"].includes(d.type) ? null : plain,
+            contact: d.type === "contact" ? parseJson(plain) : null,
+            mentions: Array.isArray(d.mentions) ? d.mentions : [],
+            played: !!d.played,
             poll: d.type === "poll" ? parseJson(plain) : null,
             votes: d.votes || {},
             location: d.type === "location" ? parseJson(plain) : null,
@@ -4351,6 +4391,7 @@
     if (m.deleted) return "Bu mesaj silindi";
     if (m.poll) return "📊 " + (m.poll.question || "Anket");
     if (m.location) return "📍 Konum";
+    if (m.contact) return "👤 @" + (m.contact.nickname || "kişi");
     if (m.image) return "📷 Fotoğraf";
     if (m.audio) return "🎤 Sesli mesaj";
     if (m.file) return "📄 " + (m.file.name || "Dosya");
@@ -4570,6 +4611,8 @@
         div.appendChild(renderPoll(m));
       } else if (m.location) {
         div.appendChild(renderLocation(m.location));
+      } else if (m.contact) {
+        div.appendChild(renderContactCard(m.contact));
       } else if (m.image && m.viewOnce) {
         const vo = document.createElement("span");
         vo.className = "view-once";
@@ -4581,11 +4624,7 @@
         img.src = m.image;
         div.appendChild(img);
       } else if (m.audio) {
-        const audio = document.createElement("audio");
-        audio.controls = true;
-        audio.preload = "metadata";
-        audio.src = m.audio;
-        div.appendChild(audio);
+        div.appendChild(renderVoiceMessage(m));
       } else if (m.file) {
         const mime = m.file.mime || "";
         // Large files (chunked bytes) play from a local blob URL once downloaded.
@@ -4630,6 +4669,7 @@
         const span = document.createElement("span");
         span.className = "msg-text";
         appendHighlightedText(span, m.text, query);
+        if (activeIsGroup) highlightMentions(span);
         div.appendChild(span);
       }
       const metaRow = document.createElement("span");
@@ -4650,10 +4690,17 @@
         star.textContent = "⭐";
         metaRow.appendChild(star);
       }
+      if (m.audio && m.from === "me" && m.played && !activeIsGroup) {
+        const played = document.createElement("span");
+        played.className = "msg-played";
+        played.textContent = "🎧 dinlendi";
+        metaRow.appendChild(played);
+      }
       if (m.from === "me" && !activeIsGroup) {
         const tick = document.createElement("span");
-        // ✓ sent, ✓✓ reached their phone, blue ✓✓ read.
-        tick.className = "msg-tick" + (m.read ? " read" : "");
+        // ✓ sent, ✓✓ reached their phone, blue ✓✓ read. Like WhatsApp, with
+        // our own read receipts off we don't see theirs either.
+        tick.className = "msg-tick" + (m.read && !myHideReadReceipts() ? " read" : "");
         tick.textContent = m.read || m.delivered ? "✓✓" : "✓";
         metaRow.appendChild(tick);
       }
@@ -4679,6 +4726,7 @@
       messageListEl.appendChild(div);
     });
     messageListEl.scrollTop = messageListEl.scrollHeight;
+    renderPinnedBar();
     if (query) {
       threadSearchCount.textContent = matchCount === 0 ? "Sonuç yok" : matchCount + " sonuç";
     }
@@ -4786,6 +4834,10 @@
       actions.push({ label: "↩ Yanıtla", run: () => startReply(m.id) });
       if (bubble) actions.push({ label: "🙂 Tepki ver", run: () => openReactionPicker(m.id, bubble) });
     }
+    if (!m.deleted && !m.call) {
+      const pinned = activeConv() && activeConv().pinnedMessage === m.id;
+      actions.push({ label: pinned ? "📌 Sabitlemeyi kaldır" : "📌 Sabitle", run: () => setPinnedMessage(pinned ? null : m.id) });
+    }
     if (m.text) actions.push({ label: "📋 Kopyala", run: () => copyText(m.text) });
     if (!m.deleted && !m.viewOnce && (m.type === "text" || m.type === "image" || m.type === "file" || m.type === "audio")) {
       actions.push({ label: "➡️ İlet", run: () => openForwardModal(m.id) });
@@ -4864,6 +4916,16 @@
         e.preventDefault();
         updatePlugin.openExternal({ url: link.href }).catch(() => {});
       }
+      return;
+    }
+    const speedBtn = e.target.closest(".voice-speed");
+    if (speedBtn) {
+      cycleVoiceSpeed(speedBtn);
+      return;
+    }
+    const contactBtn = e.target.closest(".contact-msg-btn");
+    if (contactBtn) {
+      openContactChat(contactBtn.dataset.uid);
       return;
     }
     const pollOpt = e.target.closest(".poll-opt");
@@ -5174,8 +5236,12 @@
     const text = messageInput.value.trim();
     if (!text) return;
     messageInput.value = "";
+    hideMentionPicker();
     try {
-      await sendEncrypted(text, "text", takeReplyFields());
+      const fields = takeReplyFields() || {};
+      const mentions = activeIsGroup ? mentionedUids(text) : [];
+      if (mentions.length) fields.mentions = mentions;
+      await sendEncrypted(text, "text", Object.keys(fields).length ? fields : null);
     } catch (e) {
       alert("Mesaj gönderilemedi: " + e.message);
     }
@@ -5249,6 +5315,423 @@
       alert(err.code === 1 ? "Konum izni verilmedi." : "Konum alınamadı.");
     }, { enableHighAccuracy: true, timeout: 20000, maximumAge: 30000 });
   });
+
+  /* ---------------- Pinned message ----------------
+     conversation.pinnedMessage holds the id of one message shown in a bar
+     under the header (any participant may change it, like WhatsApp). The
+     id reveals nothing; the bar's text comes from the decrypted copy. */
+
+  function activeConv() {
+    return activeConvId ? conversations.get(activeConvId) : null;
+  }
+
+  async function setPinnedMessage(msgId) {
+    const convId = activeConvId;
+    if (!convId) return;
+    try {
+      await fbDb.collection("conversations").doc(convId).update({
+        pinnedMessage: msgId || firebase.firestore.FieldValue.delete(),
+      });
+    } catch (e) {
+      alert(e && e.code === "permission-denied"
+        ? "Sabitlenemedi: Firestore kurallarının güncellenmesi gerekiyor."
+        : "Sabitlenemedi: " + e.message);
+    }
+  }
+
+  function renderPinnedBar() {
+    const bar = document.getElementById("pinned-bar");
+    const conv = activeConv();
+    const id = conv && conv.pinnedMessage;
+    const m = id ? currentMessages.find(x => x.id === id) : null;
+    // Gone (deleted, expired) or not loaded yet: no bar.
+    if (!m || m.deleted || msgFlag("hiddenMsgs", activeConvId, m.id)) {
+      bar.classList.add("hidden");
+      return;
+    }
+    const who = activeIsGroup ? messageSenderName(m) + ": " : "";
+    document.getElementById("pinned-bar-text").textContent = who + messageSnippet(m);
+    bar.classList.remove("hidden");
+  }
+
+  // Scrolls the chat to a message and briefly highlights it.
+  function jumpToMessage(msgId) {
+    const el = messageListEl.querySelector('.msg-bubble[data-msg-id="' + CSS.escape(msgId) + '"]');
+    if (!el) return;
+    el.scrollIntoView({ block: "center", behavior: "smooth" });
+    el.classList.add("flash");
+    setTimeout(() => el.classList.remove("flash"), 1600);
+  }
+
+  document.getElementById("pinned-bar-text").addEventListener("click", () => {
+    const conv = activeConv();
+    if (conv && conv.pinnedMessage) jumpToMessage(conv.pinnedMessage);
+  });
+  document.getElementById("pinned-bar-unpin").addEventListener("click", () => setPinnedMessage(null));
+
+  /* ---------------- @mentions in groups ----------------
+     Typing "@" offers the group's members; a sent message lists the
+     mentioned uids in "mentions" (outside the encryption, like replyTo:
+     the members are already known to everyone in the group). The push
+     worker notifies a mentioned member even if they muted the group. */
+
+  const NICK_CHARS = "a-z0-9_çğıöşü";
+  const mentionPicker = document.getElementById("mention-picker");
+
+  function groupMembersForMention() {
+    const conv = activeGroup();
+    if (!conv) return [];
+    return conv.participants
+      .filter(u => u !== myUid)
+      .map(uid => ({ uid, nickname: conv.participantNicknames[uid] || "" }))
+      .filter(mb => mb.nickname);
+  }
+
+  function mentionPattern(nickname) {
+    return new RegExp("(^|\\s)@" + nickname.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "(?![" + NICK_CHARS + "])");
+  }
+
+  function mentionedUids(text) {
+    return groupMembersForMention().filter(mb => mentionPattern(mb.nickname).test(text)).map(mb => mb.uid);
+  }
+
+  // Wraps known @nicknames in a message's text (not inside links).
+  function highlightMentions(container) {
+    const conv = activeGroup();
+    if (!conv) return;
+    const known = new Map(Object.entries(conv.participantNicknames).map(([uid, n]) => [n, uid]));
+    known.set(myNickname, myUid);
+    const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
+    const nodes = [];
+    while (walker.nextNode()) nodes.push(walker.currentNode);
+    const re = new RegExp("@([" + NICK_CHARS + "]+)", "g");
+    nodes.forEach(node => {
+      if (node.parentElement && node.parentElement.closest("a")) return;
+      const text = node.nodeValue;
+      let frag = null;
+      let last = 0;
+      let match;
+      re.lastIndex = 0;
+      while ((match = re.exec(text))) {
+        const uid = known.get(match[1]);
+        if (!uid) continue;
+        frag = frag || document.createDocumentFragment();
+        frag.append(text.slice(last, match.index));
+        const span = document.createElement("span");
+        span.className = "mention" + (uid === myUid ? " me" : "");
+        span.textContent = match[0];
+        frag.append(span);
+        last = match.index + match[0].length;
+      }
+      if (frag) {
+        frag.append(text.slice(last));
+        node.replaceWith(frag);
+      }
+    });
+  }
+
+  function hideMentionPicker() {
+    mentionPicker.classList.add("hidden");
+    mentionPicker.innerHTML = "";
+  }
+
+  function updateMentionPicker() {
+    if (!activeIsGroup) { hideMentionPicker(); return; }
+    const caret = messageInput.selectionStart == null ? messageInput.value.length : messageInput.selectionStart;
+    const match = messageInput.value.slice(0, caret).match(/(^|\s)@(\S*)$/);
+    if (!match) { hideMentionPicker(); return; }
+    const prefix = normalizeNickname(match[2]);
+    const members = groupMembersForMention().filter(mb => mb.nickname.startsWith(prefix)).slice(0, 8);
+    if (!members.length) { hideMentionPicker(); return; }
+    mentionPicker.innerHTML = "";
+    members.forEach(mb => {
+      const btn = document.createElement("button");
+      const av = document.createElement("span");
+      av.className = "avatar small";
+      watchProfile(mb.uid);
+      paintAvatar(av, mb.uid, mb.nickname);
+      const label = document.createElement("span");
+      label.textContent = "@" + mb.nickname;
+      btn.append(av, label);
+      // Keep the keyboard open while picking.
+      btn.addEventListener("mousedown", e => e.preventDefault());
+      btn.addEventListener("click", () => {
+        const value = messageInput.value;
+        const start = caret - match[2].length - 1;
+        const insert = "@" + mb.nickname + " ";
+        messageInput.value = value.slice(0, start) + insert + value.slice(caret);
+        const pos = start + insert.length;
+        messageInput.setSelectionRange(pos, pos);
+        messageInput.focus();
+        hideMentionPicker();
+      });
+      mentionPicker.appendChild(btn);
+    });
+    mentionPicker.classList.remove("hidden");
+  }
+
+  messageInput.addEventListener("input", updateMentionPicker);
+  messageInput.addEventListener("blur", () => setTimeout(hideMentionPicker, 150));
+
+  /* ---------------- Voice messages: speed and "played" ---------------- */
+
+  const VOICE_RATES = [1, 1.5, 2];
+  const voiceRates = new Map(); // msg id -> chosen playback speed
+
+  function voiceRateLabel(rate) {
+    return String(rate).replace(".", ",") + "×";
+  }
+
+  function renderVoiceMessage(m) {
+    const row = document.createElement("div");
+    row.className = "voice-row";
+    const audio = document.createElement("audio");
+    audio.controls = true;
+    audio.preload = "metadata";
+    audio.src = m.audio;
+    const rate = voiceRates.get(m.id) || 1;
+    audio.defaultPlaybackRate = rate;
+    audio.playbackRate = rate;
+    if (m.from === "them" && !activeIsGroup && !m.played) {
+      // Written once listening stops, not on play: the write re-renders the
+      // chat, which would cut the playback off.
+      const convId = activeConvId;
+      const markPlayed = () => {
+        if (m.played) return;
+        m.played = true;
+        fbDb.collection("conversations").doc(convId).collection("messages").doc(m.id)
+          .update({ played: true }).catch(() => {});
+      };
+      audio.addEventListener("pause", markPlayed);
+      audio.addEventListener("ended", markPlayed);
+    }
+    const speed = document.createElement("button");
+    speed.className = "voice-speed";
+    speed.dataset.msgId = m.id;
+    speed.textContent = voiceRateLabel(rate);
+    row.append(audio, speed);
+    return row;
+  }
+
+  function cycleVoiceSpeed(btn) {
+    const current = voiceRates.get(btn.dataset.msgId) || 1;
+    const next = VOICE_RATES[(VOICE_RATES.indexOf(current) + 1) % VOICE_RATES.length];
+    voiceRates.set(btn.dataset.msgId, next);
+    btn.textContent = voiceRateLabel(next);
+    const audio = btn.parentElement.querySelector("audio");
+    if (audio) {
+      audio.defaultPlaybackRate = next;
+      audio.playbackRate = next;
+    }
+  }
+
+  /* ---------------- Contact cards ----------------
+     A "contact" message carries { uid, nickname } (encrypted). Tapping it
+     opens a chat with that user, looked up by uid so a renamed user is
+     still found. */
+
+  const UID_RE = /^[A-Za-z0-9]{1,128}$/;
+
+  function renderContactCard(c) {
+    const box = document.createElement("div");
+    box.className = "contact-card";
+    const head = document.createElement("div");
+    head.className = "contact-head";
+    const av = document.createElement("span");
+    av.className = "avatar small";
+    const validUid = typeof c.uid === "string" && UID_RE.test(c.uid);
+    if (validUid) {
+      watchProfile(c.uid);
+      paintAvatar(av, c.uid, c.nickname || "?");
+    }
+    const name = document.createElement("span");
+    name.className = "contact-name";
+    name.textContent = "@" + (c.nickname || "?");
+    head.append(av, name);
+    box.appendChild(head);
+    if (validUid && c.uid !== myUid) {
+      const btn = document.createElement("button");
+      btn.className = "contact-msg-btn";
+      btn.dataset.uid = c.uid;
+      btn.textContent = "💬 Mesaj gönder";
+      box.appendChild(btn);
+    }
+    return box;
+  }
+
+  async function openContactChat(uid) {
+    if (!uid || !UID_RE.test(uid)) return;
+    try {
+      const doc = await fbDb.collection("users").doc(uid).get();
+      if (!doc.exists) {
+        alert("Bu kullanıcı artık yok.");
+        return;
+      }
+      await startConversationWith(uid, doc.data().nickname);
+    } catch (e) {
+      alert("Sohbet açılamadı: " + e.message);
+    }
+  }
+
+  async function sendContact(contact) {
+    try {
+      await sendEncrypted(JSON.stringify({ uid: contact.uid, nickname: contact.nickname }), "contact", takeReplyFields());
+    } catch (e) {
+      alert("Kişi gönderilemedi: " + e.message);
+    }
+  }
+
+  document.getElementById("attach-contact-btn").addEventListener("click", () => {
+    attachMenu.classList.add("hidden");
+    const contacts = [...conversations.values()]
+      .filter(c => !c.isGroup && c.otherUid && !myBlocked[c.otherUid] && !activeOtherUids.includes(c.otherUid))
+      .map(c => ({ uid: c.otherUid, nickname: c.otherNickname }))
+      .sort((a, b) => a.nickname.localeCompare(b.nickname, "tr"));
+    const actions = contacts.map(ct => ({ label: "@" + ct.nickname, run: () => sendContact(ct) }));
+    actions.push({ label: "✏️ Kullanıcı adı yaz…", run: async () => {
+      const raw = prompt("Paylaşılacak kişinin kullanıcı adı:");
+      if (raw === null) return;
+      const nickname = normalizeNickname(raw);
+      if (!nickname) return;
+      try {
+        const q = await fbDb.collection("users").where("nickname", "==", nickname).limit(1).get();
+        if (q.empty) {
+          alert("Bu kullanıcı adıyla kayıtlı bir kullanıcı bulunamadı.");
+          return;
+        }
+        await sendContact({ uid: q.docs[0].id, nickname: q.docs[0].data().nickname });
+      } catch (e) {
+        alert("Kişi gönderilemedi: " + e.message);
+      }
+    } });
+    showActionSheet("Kişi paylaş", actions);
+  });
+
+  /* ---------------- Media, files and links of a chat ---------------- */
+
+  const mediaGallery = document.getElementById("media-gallery");
+  const mediaGalleryBody = document.getElementById("media-gallery-body");
+  let mediaTab = "media";
+
+  function galleryMessages() {
+    const now = Date.now();
+    return currentMessages
+      .filter(m => !m.deleted && !(m.expiresAtMillis && m.expiresAtMillis <= now) && !msgFlag("hiddenMsgs", activeConvId, m.id))
+      .slice()
+      .reverse(); // newest first
+  }
+
+  function isVideoFile(m) {
+    return !!(m.file && (m.file.mime || "").startsWith("video/"));
+  }
+
+  function galleryEmpty(text) {
+    const p = document.createElement("p");
+    p.className = "media-empty";
+    p.textContent = text;
+    mediaGalleryBody.appendChild(p);
+  }
+
+  function galleryRow(icon, title, sub) {
+    const row = document.createElement("button");
+    row.className = "media-row";
+    const i = document.createElement("span");
+    i.className = "media-row-icon";
+    i.textContent = icon;
+    const info = document.createElement("span");
+    info.className = "media-row-info";
+    const t = document.createElement("span");
+    t.className = "media-row-title";
+    t.textContent = title;
+    const s2 = document.createElement("span");
+    s2.className = "media-row-sub";
+    s2.textContent = sub;
+    info.append(t, s2);
+    row.append(i, info);
+    return row;
+  }
+
+  function renderMediaGallery() {
+    mediaGallery.querySelectorAll(".media-tabs button").forEach(b => b.classList.toggle("active", b.dataset.tab === mediaTab));
+    mediaGalleryBody.innerHTML = "";
+    const msgs = galleryMessages();
+    const dateOf = m => new Date(m.ts).toLocaleDateString("tr-TR");
+    if (mediaTab === "media") {
+      const items = msgs.filter(m => (m.image && !m.viewOnce) || isVideoFile(m));
+      if (!items.length) return galleryEmpty("Bu sohbette henüz fotoğraf ya da video yok.");
+      const grid = document.createElement("div");
+      grid.className = "media-grid";
+      items.forEach(m => {
+        const cell = document.createElement("button");
+        cell.className = "media-thumb";
+        if (m.image) {
+          const img = document.createElement("img");
+          img.src = m.image;
+          img.alt = "";
+          cell.appendChild(img);
+          cell.addEventListener("click", () => openImageViewer(m.image));
+        } else {
+          const url = m.file.binary ? largeFileUrls.get(m.id) : m.file.dataUrl;
+          if (url) {
+            const v = document.createElement("video");
+            v.src = url;
+            v.muted = true;
+            v.preload = "metadata";
+            v.playsInline = true;
+            cell.appendChild(v);
+          }
+          const play = document.createElement("span");
+          play.className = "media-play";
+          play.textContent = "▶";
+          cell.appendChild(play);
+          cell.addEventListener("click", () => {
+            mediaGallery.classList.add("hidden");
+            jumpToMessage(m.id);
+          });
+        }
+        grid.appendChild(cell);
+      });
+      mediaGalleryBody.appendChild(grid);
+    } else if (mediaTab === "files") {
+      const items = msgs.filter(m => m.file && !isVideoFile(m));
+      if (!items.length) return galleryEmpty("Bu sohbette henüz dosya yok.");
+      items.forEach(m => {
+        const row = galleryRow("📄", m.file.name || "Dosya", [m.file.size ? formatFileSize(m.file.size) : "", dateOf(m)].filter(Boolean).join(" · "));
+        row.addEventListener("click", () => {
+          mediaGallery.classList.add("hidden");
+          jumpToMessage(m.id);
+        });
+        mediaGalleryBody.appendChild(row);
+      });
+    } else {
+      let count = 0;
+      msgs.forEach(m => {
+        if (!m.text) return;
+        (m.text.match(LINK_RE) || []).forEach(url => {
+          count++;
+          const row = galleryRow("🔗", url, dateOf(m));
+          row.addEventListener("click", () => {
+            const updatePlugin = appUpdatePlugin();
+            if (updatePlugin) updatePlugin.openExternal({ url }).catch(() => {});
+            else window.open(url, "_blank", "noopener,noreferrer");
+          });
+          mediaGalleryBody.appendChild(row);
+        });
+      });
+      if (!count) galleryEmpty("Bu sohbette henüz bağlantı yok.");
+    }
+  }
+
+  document.getElementById("thread-media-btn").addEventListener("click", () => {
+    mediaTab = "media";
+    renderMediaGallery();
+    mediaGallery.classList.remove("hidden");
+  });
+  mediaGallery.querySelectorAll(".media-tabs button").forEach(b => b.addEventListener("click", () => {
+    mediaTab = b.dataset.tab;
+    renderMediaGallery();
+  }));
+  document.getElementById("media-gallery-close").addEventListener("click", () => mediaGallery.classList.add("hidden"));
 
   const viewOnceInput = document.getElementById("viewonce-input");
   document.getElementById("attach-viewonce-btn").addEventListener("click", () => {

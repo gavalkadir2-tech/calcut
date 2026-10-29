@@ -179,3 +179,28 @@ test("status: viewers add only themselves; only the author deletes", async () =>
 });
 
 test.after(async () => { await env.cleanup(); });
+
+test("read receipts setting: own, bool only", async () => {
+  await seed();
+  await assertSucceeds(updateDoc(doc(as("alice"), "users/alice"), { hideReadReceipts: true }));
+  await assertFails(updateDoc(doc(as("alice"), "users/alice"), { hideReadReceipts: "yes" }));
+  await assertFails(updateDoc(doc(as("bob"), "users/alice"), { hideReadReceipts: false }));
+});
+test("voice message played: recipient only", async () => {
+  await seed();
+  await assertFails(updateDoc(doc(as("alice"), "conversations/c1/messages/m1"), { played: true }));
+  await assertSucceeds(updateDoc(doc(as("bob"), "conversations/c1/messages/m1"), { played: true }));
+});
+test("pin a message: any participant, an id string; unpin", async () => {
+  await seed();
+  await assertSucceeds(updateDoc(doc(as("bob"), "conversations/c1"), { pinnedMessage: "m1" }));
+  await assertSucceeds(updateDoc(doc(as("alice"), "conversations/c1"), { pinnedMessage: deleteField() }));
+  await assertSucceeds(updateDoc(doc(as("carol"), "conversations/g1"), { pinnedMessage: "x" }));
+  await assertFails(updateDoc(doc(as("alice"), "conversations/c1"), { pinnedMessage: 5 }));
+  await assertFails(updateDoc(doc(as("alice"), "conversations/c1"), { pinnedMessage: "a".repeat(65) }));
+  await assertFails(updateDoc(doc(as("dave"), "conversations/c1"), { pinnedMessage: "m1" }));
+});
+test("a message with mentions can be created", async () => {
+  await seed();
+  await assertSucceeds(addDoc(collection(as("bob"), "conversations/g1/messages"), { from: "bob", type: "text", mentions: ["alice"], ts: serverTimestamp() }));
+});

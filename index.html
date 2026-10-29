@@ -117,6 +117,7 @@
         <button id="thread-call-btn" title="Sesli ara">📞</button>
         <button id="thread-video-call-btn" title="Görüntülü ara">📹</button>
         <button id="thread-search-btn" title="Sohbette ara">🔍</button>
+        <button id="thread-media-btn" title="Medya, dosyalar ve bağlantılar">🖼</button>
         <button id="thread-disappearing-btn" title="Kaybolan mesajlar">⏳</button>
         <button id="thread-mute-btn" title="Sohbeti sessize al">🔔</button>
         <button id="thread-block-btn" title="Kullanıcıyı engelle">🚫</button>
@@ -131,6 +132,11 @@
         <span>Bu kullanıcıyı engellediniz.</span>
         <button id="thread-unblock-btn">Engeli Kaldır</button>
       </div>
+      <div id="pinned-bar" class="hidden">
+        <span class="pinned-icon">📌</span>
+        <span id="pinned-bar-text"></span>
+        <button id="pinned-bar-unpin" title="Sabitlemeyi kaldır">✕</button>
+      </div>
       <div id="message-list"></div>
       <div id="attach-menu" class="hidden">
         <button id="attach-camera-btn">📷 Kamera</button>
@@ -138,8 +144,10 @@
         <button id="attach-viewonce-btn">👁️ Tek seferlik</button>
         <button id="attach-poll-btn">📊 Anket</button>
         <button id="attach-location-btn">📍 Konum</button>
+        <button id="attach-contact-btn">👤 Kişi</button>
       </div>
       <p id="upload-status" class="hidden"></p>
+      <div id="mention-picker" class="hidden"></div>
       <div id="reply-bar" class="hidden">
         <div class="reply-bar-text">
           <span id="reply-bar-sender"></span>
@@ -185,6 +193,11 @@
           <span>Çevrimiçi ve son görülme bilgimi göster</span>
         </label>
         <p class="hint">Kapatırsan başkalarının çevrimiçi ve son görülme bilgisini de göremezsin.</p>
+        <label class="toggle-row">
+          <input id="read-receipts-toggle" type="checkbox" checked>
+          <span>Okundu bilgisi gönder (mavi tik)</span>
+        </label>
+        <p class="hint">Kapatırsan başkalarının okundu bilgisini de göremezsin. Sesli mesajların dinlendi bilgisi her zaman gönderilir.</p>
         <hr>
         <label>Görünen Kullanıcı Adını Değiştir</label>
         <input id="new-nickname-input" type="text" placeholder="Yeni kullanıcı adı">
@@ -213,7 +226,7 @@
         <button id="enable-alarm-btn">Bildirimleri Etkinleştir</button>
         <button id="test-push-btn" class="ghost">Test bildirimi gönder</button>
         <p id="alarm-msg"></p>
-        <p class="app-version">Sürüm: 30</p>
+        <p class="app-version">Sürüm: 31</p>
         <div id="app-update-section" class="hidden">
           <hr>
           <label>Uygulama güncellemesi</label>
@@ -391,6 +404,19 @@
     <button id="group-leave-btn" class="danger">🚪 Gruptan çık</button>
     <button id="group-info-close" class="ghost">Kapat</button>
   </div>
+</div>
+
+<div id="media-gallery" class="hidden">
+  <div class="vault-header">
+    <button id="media-gallery-close" class="ghost">←</button>
+    <h2>Medya ve dosyalar</h2>
+  </div>
+  <div class="media-tabs">
+    <button data-tab="media" class="active">Medya</button>
+    <button data-tab="files">Dosyalar</button>
+    <button data-tab="links">Bağlantılar</button>
+  </div>
+  <div id="media-gallery-body"></div>
 </div>
 
 <div id="status-viewer" class="hidden">

@@ -77,7 +77,9 @@ async function handle(body, uid, sa) {
     const conv = await fs.get(`conversations/${body.convId}`);
     if (!conv || !Array.isArray(conv.participants) || !conv.participants.includes(uid)) return 0;
     const muted = conv.muted || {};
-    const recipients = conv.participants.filter(u => u !== uid && !muted[u]);
+    // Someone @mentioned in a group is told even if they muted it.
+    const mentions = Array.isArray(msg.mentions) ? msg.mentions : [];
+    const recipients = conv.participants.filter(u => u !== uid && (!muted[u] || mentions.includes(u)));
     let sent = 0;
     for (const r of recipients) sent += await pushToUser(fs, sa, r, uid, { kind: "message" });
     return sent;
