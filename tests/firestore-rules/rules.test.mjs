@@ -211,3 +211,12 @@ test("a message with mentions can be created", async () => {
   await seed();
   await assertSucceeds(addDoc(collection(as("bob"), "conversations/g1/messages"), { from: "bob", type: "text", mentions: ["alice"], ts: serverTimestamp() }));
 });
+
+test("group receipts: each member adds only their own time", async () => {
+  await seed();
+  await env.withSecurityRulesDisabled(ctx => setDoc(doc(ctx.firestore(), "conversations/g1/messages/gm1"), { from: "alice", type: "text", ts: Timestamp.now() }));
+  await assertSucceeds(updateDoc(doc(as("bob"), "conversations/g1/messages/gm1"), { "readBy.bob": serverTimestamp(), "deliveredTo.bob": serverTimestamp() }));
+  await assertFails(updateDoc(doc(as("bob"), "conversations/g1/messages/gm1"), { "readBy.carol": serverTimestamp() }));
+  await assertFails(updateDoc(doc(as("carol"), "conversations/g1/messages/gm1"), { "readBy.carol": true }));
+  await assertFails(updateDoc(doc(as("alice"), "conversations/g1/messages/gm1"), { "readBy.alice": serverTimestamp() }));
+});

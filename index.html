@@ -98,6 +98,12 @@
         </div>
       </div>
       <div id="status-strip"></div>
+      <div id="thread-filters">
+        <button data-filter="all" class="active">Tümü</button>
+        <button data-filter="unread">Okunmamış</button>
+        <button data-filter="groups">Gruplar</button>
+        <button data-filter="calls">📞 Aramalar</button>
+      </div>
       <ul id="thread-list"></ul>
     </div>
 
@@ -155,6 +161,11 @@
         </div>
         <button id="reply-bar-cancel" title="Yanıtı iptal et">✕</button>
       </div>
+      <div id="voice-preview" class="hidden">
+        <button id="voice-preview-delete" title="Kaydı sil">🗑</button>
+        <audio id="voice-preview-audio" controls preload="metadata"></audio>
+        <button id="voice-preview-send">Gönder</button>
+      </div>
       <div class="message-input-row">
         <button id="attach-photo-btn" title="Dosya ekle">📎</button>
         <input id="photo-input" type="file" multiple class="hidden">
@@ -167,6 +178,7 @@
           <button id="voice-cancel-btn" title="Kaydı sil">✕</button>
           <span class="rec-dot"></span>
           <span id="voice-timer">0:00</span>
+          <button id="voice-stop-btn" title="Durdur ve dinle">⏹</button>
           <button id="voice-send-btn">Gönder</button>
         </div>
       </div>
@@ -226,7 +238,7 @@
         <button id="enable-alarm-btn">Bildirimleri Etkinleştir</button>
         <button id="test-push-btn" class="ghost">Test bildirimi gönder</button>
         <p id="alarm-msg"></p>
-        <p class="app-version">Sürüm: 32</p>
+        <p class="app-version">Sürüm: 33</p>
         <div id="app-update-section" class="hidden">
           <hr>
           <label>Uygulama güncellemesi</label>

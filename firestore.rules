@@ -17,6 +17,11 @@ service cloud.firestore {
         .affectedKeys().hasOnly([request.auth.uid]);
     }
 
+    function ownEntryIsTimestamp(field) {
+      return !(request.auth.uid in request.resource.data.get(field, {})) ||
+             request.resource.data.get(field, {})[request.auth.uid] is timestamp;
+    }
+
     function validJpegDataUrl(v) {
       return v is string && v.size() < 100000 && v.matches('data:image/jpeg;base64,[A-Za-z0-9+/=]+');
     }
@@ -144,6 +149,10 @@ service cloud.firestore {
            changedKeys().hasOnly(['deleted', 'deletedAt', 'edited', 'editedAt', 'ciphertext', 'iv', 'wrappedKeys'])) ||
           // Each person may only change their own reaction or poll vote.
           (changedKeys().hasOnly(['reactions']) && onlyOwnEntryChanged('reactions')) ||
+          // Group read / delivered receipts: each member adds only their own time.
+          (changedKeys().hasOnly(['readBy', 'deliveredTo']) && resource.data.from != request.auth.uid &&
+           onlyOwnEntryChanged('readBy') && onlyOwnEntryChanged('deliveredTo') &&
+           ownEntryIsTimestamp('readBy') && ownEntryIsTimestamp('deliveredTo')) ||
           (changedKeys().hasOnly(['votes']) && resource.data.get('type', '') == 'poll' && onlyOwnEntryChanged('votes') &&
            (!(request.auth.uid in request.resource.data.votes) || request.resource.data.votes[request.auth.uid] is int))
         );
