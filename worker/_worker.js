@@ -22,7 +22,7 @@
 // "Generate new private key").
 
 // Bumped when the app needs a newer Worker; the Settings test button checks it.
-const WORKER_VERSION = 3;
+const WORKER_VERSION = 4;
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -42,6 +42,7 @@ export default {
       const uid = await verifyIdToken(idToken, sa.project_id).catch(() => null);
       if (!uid) return reply(401, "unauthorized");
       if (body.kind === "ice-servers") return reply(200, { iceServers: await turnIceServers(env), v: WORKER_VERSION });
+      if (body.kind === "link-token") return reply(200, { token: await customToken(sa, uid), v: WORKER_VERSION });
       const sent = await handle(body, uid, sa);
       return reply(200, { sent, v: WORKER_VERSION });
     } catch (e) {
@@ -199,6 +200,27 @@ async function verifyIdToken(idToken, projectId) {
 }
 
 /* ---------------- Service account OAuth token ---------------- */
+
+// A Firebase custom token for this user, so a device being linked (see
+// "Linked devices" in app.js) can sign in. The phone encrypts it, with the
+// keys, to that device's one-time key before handing it over.
+async function customToken(sa, uid) {
+  const now = Math.floor(Date.now() / 1000);
+  const header = b64urlEncodeText(JSON.stringify({ alg: "RS256", typ: "JWT" }));
+  const claims = b64urlEncodeText(JSON.stringify({
+    iss: sa.client_email,
+    sub: sa.client_email,
+    aud: "https://identitytoolkit.googleapis.com/google.identity.identitytoolkit.v1.IdentityToolkit",
+    iat: now,
+    exp: now + 3600,
+    uid,
+  }));
+  const pem = sa.private_key.replace(/-----[^-]+-----/g, "").replace(/\s+/g, "");
+  const der = Uint8Array.from(atob(pem), c => c.charCodeAt(0));
+  const key = await crypto.subtle.importKey("pkcs8", der, { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" }, false, ["sign"]);
+  const sig = await crypto.subtle.sign("RSASSA-PKCS1-v1_5", key, new TextEncoder().encode(header + "." + claims));
+  return header + "." + claims + "." + b64urlEncode(new Uint8Array(sig));
+}
 
 let accessTokenCache = null; // { token, expires }
 

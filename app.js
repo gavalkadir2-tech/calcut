@@ -1294,6 +1294,7 @@
     listenToConversations();
     startStatusListeners();
     listenForIncomingCalls();
+    listenForGroupCalls();
     startPresence();
     registerPushToken().catch(err => console.error("push token register error", err));
     refreshTurnServers(); // ready before the first call
@@ -1320,6 +1321,8 @@
     stopTypingListener();
     stopPresence();
     stopStatusListeners();
+    stopGroupCallListener();
+    leaveGroupCall();
     // The incoming-call listener deliberately keeps running while locked (it
     // follows the Firebase sign-in, see listenForIncomingCalls); it stops on sign-out.
     endCall(null);
@@ -1369,6 +1372,8 @@
           preview = "🌟 Çıkartma";
         } else if (d.type === "event") {
           preview = "📅 Etkinlik";
+        } else if (d.type === "groupcall") {
+          preview = "📞 Grup araması";
         } else if (d.type === "call") {
           if (mainTab === "calls") loadCallHistory();
           const raw = await decryptMessage(d).catch(() => null);
@@ -1465,6 +1470,8 @@
             muted,
             pinnedMessage: typeof d.pinnedMessage === "string" ? d.pinnedMessage : null,
             inviteCode: typeof d.inviteCode === "string" ? d.inviteCode : null,
+            isChannel: !!d.isChannel,
+            onlyAdmins: !!d.onlyAdmins,
             lastMentionsMe: !!existing.lastMentionsMe,
           });
           if (change.doc.id === activeConvId) {
@@ -2075,7 +2082,7 @@
         watchProfile(conv.otherUid);
         paintAvatar(avatarEl, conv.otherUid, conv.otherNickname);
       }
-      const displayName = conv.isGroup ? `👥 ${conv.groupName} (${conv.participants.length})` : "@" + conv.otherNickname;
+      const displayName = conv.isGroup ? `${groupIcon(conv)} ${conv.groupName} (${conv.participants.length})` : "@" + conv.otherNickname;
       li.querySelector(".thread-name").textContent = displayName + (conv.muted ? " 🔕" : "");
       if (pins.includes(conv.id)) {
         li.classList.add("pinned");
@@ -2176,7 +2183,8 @@
         .filter(Boolean)
         .filter(n => n !== myNickname)
     )];
-    if (nicknames.length < 2) { alert("Kendin hariç en az 2 kişi eklemelisin."); return; }
+    const asChannel = document.getElementById("new-group-channel").checked;
+    if (!asChannel && nicknames.length < 2) { alert("Kendin hariç en az 2 kişi eklemelisin."); return; }
     try {
       const participants = [myUid];
       const participantNicknames = { [myUid]: myNickname };
@@ -2198,11 +2206,14 @@
         groupName,
         createdBy: myUid,
         admins: [myUid],
+        ...(asChannel ? { isChannel: true } : {}),
         updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
         ...(defaultDisappearingSeconds() ? { disappearingSeconds: defaultDisappearingSeconds() } : {}),
       });
       document.getElementById("new-group-modal").classList.add("hidden");
+      document.getElementById("new-group-channel").checked = false;
       openConversation(convRef.id, null, null, { isGroup: true, groupName, participants });
+      if (asChannel) alert("Kanal oluşturuldu. Abone eklemek için kanal adına dokun → Grup bilgisi → 🔗 Davet kodu ile kodu paylaş.");
     } catch (e) {
       alert("Grup oluşturulamadı: " + e.message);
     }
@@ -2776,6 +2787,7 @@
         else if (m.type === "livelocation") text = "📍 Canlı konum";
         else if (m.type === "sticker") text = "🌟 Çıkartma";
         else if (m.type === "event") text = "📅 Etkinlik";
+        else if (m.type === "groupcall") text = "📞 Grup araması";
         else if (m.type === "call") text = "📞 Arama kaydı";
         else text = m.content + (m.edited ? " (düzenlendi)" : "");
         line.appendChild(document.createTextNode(text));
@@ -2811,11 +2823,14 @@
     threadListPanel.classList.add("hidden");
     threadDetailPanel.classList.remove("hidden");
     settingsPanel.classList.add("hidden");
+    const openedConv = conversations.get(convId);
     document.getElementById("thread-title").textContent = activeIsGroup
-      ? `👥 ${extra.groupName} (${(extra.participants || []).length})`
+      ? `${groupIcon(openedConv)} ${extra.groupName} (${(extra.participants || []).length})`
       : "@" + otherNickname;
-    document.getElementById("thread-call-btn").classList.toggle("hidden", activeIsGroup);
-    document.getElementById("thread-video-call-btn").classList.toggle("hidden", activeIsGroup);
+    // Groups have group calls; channels have none.
+    const noCalls = !!(openedConv && openedConv.isChannel);
+    document.getElementById("thread-call-btn").classList.toggle("hidden", noCalls);
+    document.getElementById("thread-video-call-btn").classList.toggle("hidden", noCalls);
     document.getElementById("thread-block-btn").classList.toggle("hidden", activeIsGroup);
     document.querySelector(".thread-header-titles").classList.add("clickable");
     const conv = conversations.get(convId);
@@ -2845,6 +2860,7 @@
     mediaGallery.classList.add("hidden");
     applyWallpaper();
     updateComposerMode();
+    updateComposerAccess();
     updateDisappearingUi();
     updateMuteUi();
   }
@@ -3251,7 +3267,8 @@
     if (!conv) return;
     activeOtherUids = conv.participants.filter(u => u !== myUid);
     activeOtherUids.forEach(u => getPublicKeyForUid(u));
-    document.getElementById("thread-title").textContent = `👥 ${conv.groupName} (${conv.participants.length})`;
+    document.getElementById("thread-title").textContent = `${groupIcon(conv)} ${conv.groupName} (${conv.participants.length})`;
+    updateComposerAccess();
     renderThreadHeaderProfile();
     if (!groupInfoModal.classList.contains("hidden")) renderGroupInfo();
   }
@@ -3285,7 +3302,10 @@
     }
     document.getElementById("group-info-name").textContent = conv.groupName || "Grup";
     document.getElementById("group-info-admin-actions").classList.toggle("hidden", !isAdmin);
-    document.getElementById("group-info-count").textContent = conv.participants.length + " üye";
+    document.getElementById("group-info-count").textContent = conv.participants.length + (conv.isChannel ? " abone" : " üye");
+    const onlyAdminsBtn = document.getElementById("group-only-admins-btn");
+    onlyAdminsBtn.classList.toggle("hidden", conv.isChannel);
+    onlyAdminsBtn.textContent = conv.onlyAdmins ? "💬 Herkes yazabilsin" : "🔒 Yalnızca yöneticiler yazsın";
     const list = document.getElementById("group-info-members");
     list.innerHTML = "";
     conv.participants.forEach(uid => {
@@ -3358,7 +3378,7 @@
     if (raw === null) return;
     const nickname = normalizeNickname(raw);
     if (!nickname) return;
-    if (conv.participants.length >= 20) {
+    if (conv.participants.length >= maxMembersOf(conv)) {
       alert("Bir grupta en fazla 20 kişi olabilir.");
       return;
     }
@@ -4256,11 +4276,13 @@
   }
 
   threadCallBtn.addEventListener("click", () => {
+    if (activeIsGroup) { startGroupCall(false); return; }
     if (!activeOtherUid || !activeConvId) return;
     const conv = conversations.get(activeConvId);
     startCall(activeOtherUid, conv ? conv.otherNickname : "?", false);
   });
   threadVideoCallBtn.addEventListener("click", () => {
+    if (activeIsGroup) { startGroupCall(true); return; }
     if (!activeOtherUid || !activeConvId) return;
     const conv = conversations.get(activeConvId);
     startCall(activeOtherUid, conv ? conv.otherNickname : "?", true);
@@ -4708,7 +4730,7 @@
             if (!myHideReadReceipts()) doc.ref.update({ read: true, delivered: true }).catch(() => {});
             else if (!d.delivered) doc.ref.update({ delivered: true }).catch(() => {});
           }
-          if (activeIsGroup && d.from !== myUid && docIdx >= receiptFrom && !(d.readBy && d.readBy[myUid])) {
+          if (activeIsGroup && !(conv && conv.isChannel) && d.from !== myUid && docIdx >= receiptFrom && !(d.readBy && d.readBy[myUid])) {
             const now = firebase.firestore.FieldValue.serverTimestamp();
             const receipt = { [`readBy.${myUid}`]: now };
             if (!(d.deliveredTo && d.deliveredTo[myUid])) receipt[`deliveredTo.${myUid}`] = now;
@@ -4727,9 +4749,10 @@
             type: d.type,
             from: d.from === myUid ? "me" : "them",
             fromNickname,
-            text: ["image", "file", "call", "audio", "poll", "location", "contact", "livelocation", "sticker", "event"].includes(d.type) ? null : plain,
+            text: ["image", "file", "call", "audio", "poll", "location", "contact", "livelocation", "sticker", "event", "groupcall"].includes(d.type) ? null : plain,
             liveLocation: d.type === "livelocation" ? parseJson(plain) : null,
             event: d.type === "event" ? parseJson(plain) : null,
+            groupCall: d.type === "groupcall" ? parseJson(plain) : null,
             rsvp: d.rsvp || {},
             sticker: d.type === "sticker" && isSticker(plain) ? plain : null,
             contact: d.type === "contact" ? parseJson(plain) : null,
@@ -4939,6 +4962,7 @@
     if (m.liveLocation) return "📍 Canlı konum";
     if (m.sticker) return "🌟 Çıkartma";
     if (m.event) return "📅 " + (m.event.title || "Etkinlik");
+    if (m.groupCall) return "📞 Grup araması";
     if (m.image) return "📷 Fotoğraf";
     if (m.audio) return "🎤 Sesli mesaj";
     if (m.file) return "📄 " + (m.file.name || "Dosya");
@@ -5200,6 +5224,8 @@
         div.appendChild(renderLiveLocation(m));
       } else if (m.event) {
         div.appendChild(renderEvent(m));
+      } else if (m.groupCall) {
+        div.appendChild(renderGroupCallCard(m));
       } else if (m.sticker) {
         div.classList.add("sticker");
         const img = document.createElement("img");
@@ -5546,6 +5572,11 @@
       cycleVoiceSpeed(speedBtn);
       return;
     }
+    const gcJoin = e.target.closest(".gc-join-msg");
+    if (gcJoin) {
+      if (gcJoin.dataset.callId) joinGroupCall(gcJoin.dataset.callId);
+      return;
+    }
     const rsvpBtn = e.target.closest(".event-rsvp-btn");
     if (rsvpBtn) {
       setRsvp(rsvpBtn.dataset.msgId, rsvpBtn.dataset.rsvp);
@@ -5645,7 +5676,7 @@
     } else {
       list.forEach(conv => {
         const li = document.createElement("li");
-        li.textContent = conv.isGroup ? `👥 ${conv.groupName}` : "@" + conv.otherNickname;
+        li.textContent = conv.isGroup ? `${groupIcon(conv)} ${conv.groupName}` : "@" + conv.otherNickname;
         li.addEventListener("click", () => forwardMessageTo(conv.id));
         forwardThreadList.appendChild(li);
       });
@@ -7521,10 +7552,17 @@
     return true;
   }
 
-  document.getElementById("qr-scan-btn").addEventListener("click", async () => {
+  document.getElementById("qr-scan-btn").addEventListener("click", () => {
     document.getElementById("new-thread-modal").classList.add("hidden");
+    startQrScan("QR kod okut", "Kamerayı kişinin QR koduna tut.", onContactQr,
+      "Bu cihaz QR kod okutmayı desteklemiyor. Kişinin kullanıcı adını yazarak ekleyebilirsin.");
+  });
+
+  // Opens the camera and hands every QR code it sees to onCode until that
+  // returns true.
+  async function startQrScan(title, hint, onCode, unsupportedText) {
     if (!("BarcodeDetector" in window)) {
-      alert("Bu cihaz QR kod okutmayı desteklemiyor. Kişinin kullanıcı adını yazarak ekleyebilirsin.");
+      alert(unsupportedText || "Bu cihaz QR kod okutmayı desteklemiyor.");
       return;
     }
     let detector;
@@ -7536,9 +7574,9 @@
       alert("Kamera açılamadı.");
       return;
     }
-    document.getElementById("qr-title").textContent = "QR kod okut";
+    document.getElementById("qr-title").textContent = title;
     document.getElementById("qr-code").innerHTML = "";
-    document.getElementById("qr-hint").textContent = "Kamerayı kişinin QR koduna tut.";
+    document.getElementById("qr-hint").textContent = hint;
     qrVideo.srcObject = qrStream;
     qrVideo.classList.remove("hidden");
     qrModal.classList.remove("hidden");
@@ -7550,12 +7588,12 @@
       try {
         const codes = await detector.detect(qrVideo);
         for (const code of codes) {
-          if (await onContactQr(code.rawValue)) return;
+          if (await onCode(code.rawValue)) return;
         }
       } catch (e) { /* keep trying */ }
       busy = false;
     }, 400);
-  });
+  }
 
   /* ---------------- Picking contacts (status privacy) ---------------- */
 
@@ -8107,6 +8145,497 @@
     });
     showActionSheet("Bu sohbetin bildirim sesi (uygulama açıkken)", actions);
   }
+
+  /* ---------------- Channels and admin-only groups ----------------
+     A channel is a group (isChannel) where only admins post, with up to
+     256 subscribers who join with its invite code. A normal group can be
+     set to "only admins post" too (onlyAdmins). firestore.rules enforce
+     both (mayPost). */
+
+  function groupIcon(conv) {
+    return conv && conv.isChannel ? "📢" : "👥";
+  }
+
+  function maxMembersOf(conv) {
+    return conv && conv.isChannel ? 256 : 20;
+  }
+
+  function canPostIn(conv) {
+    if (!conv || !conv.isGroup || !(conv.isChannel || conv.onlyAdmins)) return true;
+    return conv.admins.includes(myUid);
+  }
+
+  function updateComposerAccess() {
+    const can = canPostIn(activeConv());
+    document.querySelector(".message-input-row").classList.toggle("hidden", !can);
+    const banner = document.getElementById("readonly-banner");
+    banner.classList.toggle("hidden", can);
+    if (!can) {
+      banner.textContent = activeConv() && activeConv().isChannel
+        ? "📢 Bu bir kanal: yalnızca yöneticiler mesaj gönderebilir."
+        : "🔒 Bu grupta yalnızca yöneticiler mesaj gönderebilir.";
+    }
+  }
+
+  document.getElementById("group-only-admins-btn").addEventListener("click", () => {
+    const conv = activeGroup();
+    if (!conv || conv.isChannel || !amGroupAdmin(conv)) return;
+    updateGroup({ onlyAdmins: !conv.onlyAdmins });
+  });
+
+  /* ---------------- Group calls ----------------
+     Every participant connects to every other one (a mesh), so it works
+     with the same WebRTC + TURN as 1:1 calls and stays end-to-end
+     encrypted, for up to GROUP_CALL_MAX people. groupCalls/{id} holds who
+     is in (participants: uid -> last heartbeat); each pair signals in
+     peers/{a_b}: the smaller uid offers, the other answers. A fresh
+     session id (sid) per offer lets either side drop out and come back. */
+
+  const GROUP_CALL_MAX = 4;
+  const GC_HEARTBEAT_MS = 20000;
+  const GC_STALE_MS = 90000;
+  const gcScreen = document.getElementById("group-call-screen");
+  const gcGrid = document.getElementById("gc-grid");
+  const gcIncoming = document.getElementById("gc-incoming");
+  let gc = null;
+  let gcIncomingUnsub = null;
+  let gcIncomingId = null;
+  const gcDismissed = new Set();
+
+  function gcPairId(a, b) {
+    return [a, b].sort().join("_");
+  }
+
+  function gcFresh(participants) {
+    const now = Date.now();
+    return Object.entries(participants || {})
+      .filter(([, t]) => t && t.toMillis && t.toMillis() > now - GC_STALE_MS)
+      .map(([uid]) => uid);
+  }
+
+  function gcName(uid) {
+    if (uid === myUid) return "Sen";
+    return "@" + ((gc && gc.names[uid]) || nicknameOf(uid));
+  }
+
+  async function startGroupCall(withVideo) {
+    const conv = activeGroup();
+    if (!conv) return;
+    if (conv.isChannel) { alert("Kanallarda arama yapılamaz."); return; }
+    if (gc || activeCallId) { alert("Önce mevcut aramayı bitir."); return; }
+    const media = withVideo ? "video" : "audio";
+    const ref = fbDb.collection("groupCalls").doc();
+    try {
+      await ref.set({
+        convId: conv.id, members: conv.participants, from: myUid, media, status: "active",
+        createdAt: firebase.firestore.FieldValue.serverTimestamp(), participants: {},
+      });
+      sendEncryptedTo(conv.id, conv.participants.filter(u => u !== myUid), JSON.stringify({ callId: ref.id, media }), "groupcall").catch(() => {});
+    } catch (e) {
+      alert(e && e.code === "permission-denied"
+        ? "Grup araması başlatılamadı: Firestore kurallarının güncellenmesi gerekiyor."
+        : "Grup araması başlatılamadı: " + e.message);
+      return;
+    }
+    await joinGroupCall(ref.id);
+  }
+
+  async function joinGroupCall(callId) {
+    if (gc) return;
+    if (activeCallId) { alert("Önce mevcut aramayı bitir."); return; }
+    const ref = fbDb.collection("groupCalls").doc(callId);
+    let d;
+    try {
+      d = (await ref.get()).data();
+    } catch (e) {
+      alert("Aramaya katılınamadı: " + e.message);
+      return;
+    }
+    if (!d || d.status !== "active") { alert("Bu grup araması sona erdi."); return; }
+    if (gcFresh(d.participants).filter(u => u !== myUid).length >= GROUP_CALL_MAX) {
+      alert("Bu aramada en fazla " + GROUP_CALL_MAX + " kişi olabilir.");
+      return;
+    }
+    const video = d.media === "video";
+    let stream;
+    try {
+      stream = await getMic(video);
+    } catch (e) {
+      alert(e.message);
+      return;
+    }
+    const conv = conversations.get(d.convId);
+    gc = {
+      id: callId, ref, convId: d.convId, video, stream, peers: new Map(), unsubs: [],
+      muted: false, camOff: false, ice: await callIceConfig(), names: conv ? conv.participantNicknames : {}, last: d,
+    };
+    hideGcIncoming();
+    document.getElementById("gc-title").textContent = (video ? "📹 " : "📞 ") + (conv ? conv.groupName : "Grup araması");
+    document.getElementById("gc-camera-btn").classList.toggle("hidden", !video);
+    document.getElementById("gc-mute-btn").textContent = "Sessize Al";
+    document.getElementById("gc-camera-btn").textContent = "Kamerayı Kapat";
+    gcGrid.innerHTML = "";
+    gcScreen.classList.remove("hidden");
+    gcTile(myUid).video.srcObject = stream;
+    const beat = () => ref.update({ [`participants.${myUid}`]: firebase.firestore.FieldValue.serverTimestamp() });
+    await beat().catch(() => {});
+    gc.heartbeat = setInterval(() => beat().catch(() => {}), GC_HEARTBEAT_MS);
+    gc.unsubs.push(ref.onSnapshot(snap => onGcDoc(snap.data()), () => {}));
+  }
+
+  function onGcDoc(d) {
+    if (!gc || !d) return;
+    gc.last = d;
+    if (d.status === "ended") { leaveGroupCall(); return; }
+    const fresh = new Set(gcFresh(d.participants));
+    fresh.delete(myUid);
+    fresh.forEach(uid => { if (!gc.peers.has(uid)) gcConnect(uid); });
+    [...gc.peers.keys()].forEach(uid => { if (!fresh.has(uid)) gcDropPeer(uid); });
+    updateGcStatus();
+  }
+
+  function gcConnect(uid) {
+    const offerer = myUid < uid;
+    const pairRef = gc.ref.collection("peers").doc(gcPairId(myUid, uid));
+    const pc = new RTCPeerConnection(gc.ice);
+    gc.stream.getTracks().forEach(t => pc.addTrack(t, gc.stream));
+    const peer = { pc, unsubs: [], sid: offerer ? crypto.getRandomValues(new Uint32Array(2)).join("") : null, remote: [], applied: 0 };
+    gc.peers.set(uid, peer);
+    gcTile(uid);
+    // Remote candidates can arrive before the offer / answer they belong to.
+    const flush = () => {
+      if (!pc.remoteDescription || !peer.sid) return;
+      for (; peer.applied < peer.remote.length; peer.applied++) {
+        const c = peer.remote[peer.applied];
+        if (c.sid === peer.sid) pc.addIceCandidate(new RTCIceCandidate(c.c)).catch(() => {});
+      }
+    };
+    pc.onicecandidate = e => {
+      if (e.candidate && peer.sid) {
+        pairRef.collection("candidates").add({ from: myUid, sid: peer.sid, c: e.candidate.toJSON() }).catch(() => {});
+      }
+    };
+    pc.ontrack = e => {
+      const tile = gcTile(uid);
+      if (tile.video.srcObject !== e.streams[0]) tile.video.srcObject = e.streams[0];
+      tile.el.classList.add("live");
+    };
+    pc.onconnectionstatechange = () => {
+      updateGcStatus();
+      // Reconnected on the next heartbeat.
+      if (pc.connectionState === "failed" && gc && gc.peers.get(uid) === peer) gcDropPeer(uid);
+    };
+    peer.unsubs.push(pairRef.collection("candidates").where("from", "==", uid).onSnapshot(snap => {
+      snap.docChanges().forEach(ch => { if (ch.type === "added") peer.remote.push(ch.doc.data()); });
+      flush();
+    }, () => {}));
+    if (offerer) {
+      (async () => {
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+        await pairRef.set({ offerer: myUid, sid: peer.sid, offer: { type: offer.type, sdp: offer.sdp }, answer: null, answerSid: null });
+        peer.unsubs.push(pairRef.onSnapshot(async snap => {
+          const p = snap.data();
+          if (!p || !p.answer || p.answerSid !== peer.sid || pc.currentRemoteDescription) return;
+          await pc.setRemoteDescription(new RTCSessionDescription(p.answer)).catch(() => {});
+          flush();
+        }, () => {}));
+      })().catch(() => {});
+    } else {
+      peer.unsubs.push(pairRef.onSnapshot(async snap => {
+        const p = snap.data();
+        if (!p || !p.offer || p.offerer !== uid || p.sid === peer.sid) return;
+        if (peer.sid) { // they started over: so do we
+          gcDropPeer(uid);
+          gcConnect(uid);
+          return;
+        }
+        peer.sid = p.sid;
+        try {
+          await pc.setRemoteDescription(new RTCSessionDescription(p.offer));
+          flush();
+          const answer = await pc.createAnswer();
+          await pc.setLocalDescription(answer);
+          await pairRef.update({ answer: { type: answer.type, sdp: answer.sdp }, answerSid: p.sid });
+        } catch (e) { /* retried when they offer again */ }
+      }, () => {}));
+    }
+  }
+
+  function gcDropPeer(uid) {
+    const peer = gc && gc.peers.get(uid);
+    if (!peer) return;
+    peer.unsubs.forEach(u => u());
+    try { peer.pc.close(); } catch (e) {}
+    gc.peers.delete(uid);
+    const tile = gcGrid.querySelector('[data-uid="' + CSS.escape(uid) + '"]');
+    if (tile) tile.remove();
+    updateGcGridLayout();
+  }
+
+  // The tile for a participant: video (also plays the sound), or their
+  // photo in a voice call.
+  function gcTile(uid) {
+    let el = gcGrid.querySelector('[data-uid="' + CSS.escape(uid) + '"]');
+    if (!el) {
+      el = document.createElement("div");
+      el.className = "gc-tile" + (uid === myUid ? " me live" : "") + (gc && gc.video ? " video" : "");
+      el.dataset.uid = uid;
+      const video = document.createElement("video");
+      video.autoplay = true;
+      video.playsInline = true;
+      if (uid === myUid) video.muted = true;
+      const av = document.createElement("span");
+      av.className = "avatar large";
+      watchProfile(uid);
+      paintAvatar(av, uid, uid === myUid ? myNickname : ((gc && gc.names[uid]) || nicknameOf(uid)));
+      const name = document.createElement("span");
+      name.className = "gc-name";
+      name.textContent = gcName(uid);
+      el.append(video, av, name);
+      gcGrid.appendChild(el);
+      updateGcGridLayout();
+    }
+    return { el, video: el.querySelector("video") };
+  }
+
+  function updateGcGridLayout() {
+    gcGrid.dataset.count = String(gcGrid.children.length);
+  }
+
+  function updateGcStatus() {
+    if (!gc) return;
+    const peers = [...gc.peers.values()];
+    const connected = peers.filter(p => p.pc.connectionState === "connected").length;
+    document.getElementById("gc-status").textContent = !peers.length
+      ? "Diğerlerinin katılması bekleniyor…"
+      : (peers.length + 1) + " kişi" + (connected < peers.length ? " · bağlanıyor…" : "");
+  }
+
+  async function leaveGroupCall() {
+    if (!gc) return;
+    const call = gc;
+    gc = null;
+    clearInterval(call.heartbeat);
+    call.unsubs.forEach(u => u());
+    call.peers.forEach(peer => {
+      peer.unsubs.forEach(u => u());
+      try { peer.pc.close(); } catch (e) {}
+    });
+    call.stream.getTracks().forEach(t => t.stop());
+    gcGrid.innerHTML = "";
+    gcScreen.classList.add("hidden");
+    const others = gcFresh(call.last && call.last.participants).filter(u => u !== myUid);
+    await call.ref.update({ [`participants.${myUid}`]: firebase.firestore.FieldValue.delete() }).catch(() => {});
+    // The last one out ends the call.
+    if (!others.length) await call.ref.update({ status: "ended" }).catch(() => {});
+  }
+
+  document.getElementById("gc-leave-btn").addEventListener("click", leaveGroupCall);
+  document.getElementById("gc-mute-btn").addEventListener("click", e => {
+    if (!gc) return;
+    gc.muted = !gc.muted;
+    gc.stream.getAudioTracks().forEach(t => { t.enabled = !gc.muted; });
+    e.currentTarget.classList.toggle("active", gc.muted);
+    e.currentTarget.textContent = gc.muted ? "Sesi Aç" : "Sessize Al";
+  });
+  document.getElementById("gc-camera-btn").addEventListener("click", e => {
+    if (!gc) return;
+    gc.camOff = !gc.camOff;
+    gc.stream.getVideoTracks().forEach(t => { t.enabled = !gc.camOff; });
+    e.currentTarget.classList.toggle("active", gc.camOff);
+    e.currentTarget.textContent = gc.camOff ? "Kamerayı Aç" : "Kamerayı Kapat";
+  });
+
+  // Ringing: a group call started in one of my groups in the last two
+  // minutes that I'm not in yet.
+  function listenForGroupCalls() {
+    stopGroupCallListener();
+    gcIncomingUnsub = fbDb.collection("groupCalls").where("members", "array-contains", myUid).onSnapshot(snap => {
+      const now = Date.now();
+      const ringing = snap.docs.map(doc => ({ id: doc.id, d: doc.data() })).find(({ id, d }) =>
+        d.status === "active" && d.from !== myUid && !gcDismissed.has(id) && !(gc && gc.id === id) &&
+        d.createdAt && d.createdAt.toMillis && d.createdAt.toMillis() > now - 120000 &&
+        gcFresh(d.participants).length > 0 && !gcFresh(d.participants).includes(myUid));
+      if (!ringing) { hideGcIncoming(); return; }
+      if (gcIncomingId === ringing.id) return;
+      gcIncomingId = ringing.id;
+      const conv = conversations.get(ringing.d.convId);
+      document.getElementById("gc-incoming-text").textContent = (ringing.d.media === "video" ? "📹 " : "📞 ") +
+        "Grup araması: " + (conv ? conv.groupName : "grup") + " · @" + ((conv && conv.participantNicknames[ringing.d.from]) || "?");
+      gcIncoming.classList.remove("hidden");
+      if (!(conv && conv.muted)) triggerAlarmAlert(ringing.d.convId);
+    }, err => console.error("group calls listen error", err));
+  }
+
+  function hideGcIncoming() {
+    gcIncomingId = null;
+    gcIncoming.classList.add("hidden");
+  }
+
+  function stopGroupCallListener() {
+    if (gcIncomingUnsub) gcIncomingUnsub();
+    gcIncomingUnsub = null;
+    hideGcIncoming();
+  }
+
+  document.getElementById("gc-incoming-join").addEventListener("click", () => {
+    const id = gcIncomingId;
+    hideGcIncoming();
+    if (id) joinGroupCall(id);
+  });
+  document.getElementById("gc-incoming-dismiss").addEventListener("click", () => {
+    if (gcIncomingId) gcDismissed.add(gcIncomingId);
+    hideGcIncoming();
+  });
+
+  function renderGroupCallCard(m) {
+    const box = document.createElement("div");
+    box.className = "event-card";
+    const t = document.createElement("span");
+    t.className = "event-title";
+    t.textContent = (m.groupCall.media === "video" ? "📹 Grup görüntülü araması" : "📞 Grup sesli araması");
+    box.appendChild(t);
+    const b = document.createElement("button");
+    b.className = "event-rsvp-btn gc-join-msg";
+    b.dataset.callId = String(m.groupCall.callId || "");
+    b.textContent = "Katıl";
+    box.appendChild(b);
+    return box;
+  }
+
+  /* ---------------- Linked devices ----------------
+     A new device (a computer's browser) shows a QR code with a one-time
+     ECDH key; the phone scans it, gets a sign-in token for the account
+     from the push server ({ kind: "link-token" }) and leaves it, with the
+     account's keys, in deviceLinks/{id}, encrypted to that one-time key.
+     The new device picks it up, signs in and has the same chats. */
+
+  const LINK_PREFIX = "calcut-baglan:";
+  const LINK_TTL_MS = 3 * 60 * 1000;
+  const linkModal = document.getElementById("link-modal");
+  let linkPoll = null;
+
+  async function linkAesKey(privateKey, peerPubB64) {
+    const peerPub = await crypto.subtle.importKey("raw", b64decode(peerPubB64), { name: "ECDH", namedCurve: "P-256" }, false, []);
+    return crypto.subtle.deriveKey({ name: "ECDH", public: peerPub }, privateKey, { name: "AES-GCM", length: 256 }, false, ["encrypt", "decrypt"]);
+  }
+
+  function stopLinkPoll() {
+    clearInterval(linkPoll);
+    linkPoll = null;
+  }
+
+  // On the new device (signed out, on the sign-in screen).
+  document.getElementById("link-device-btn").addEventListener("click", async () => {
+    if (typeof qrcode !== "function") return;
+    const pair = await crypto.subtle.generateKey({ name: "ECDH", namedCurve: "P-256" }, false, ["deriveKey"]);
+    const pub = b64encode(await crypto.subtle.exportKey("raw", pair.publicKey));
+    const linkId = Array.from(crypto.getRandomValues(new Uint8Array(16)), b => b.toString(16).padStart(2, "0")).join("");
+    const qr = qrcode(0, "M");
+    qr.addData(LINK_PREFIX + linkId + ":" + pub, "Byte");
+    qr.make();
+    document.getElementById("link-qr").innerHTML = qr.createSvgTag({ cellSize: 5, margin: 4, scalable: true });
+    const statusEl = document.getElementById("link-status");
+    statusEl.textContent = "Telefonunda calcut → Ayarlar → \"Bilgisayarı / başka cihazı bağla\" ile bu kodu okut.";
+    linkModal.classList.remove("hidden");
+    const started = Date.now();
+    let busy = false;
+    stopLinkPoll();
+    linkPoll = setInterval(async () => {
+      if (busy) return;
+      if (Date.now() - started > LINK_TTL_MS) {
+        stopLinkPoll();
+        statusEl.textContent = "Süre doldu. Kapatıp yeniden dene.";
+        return;
+      }
+      busy = true;
+      try {
+        const snap = await fbDb.collection("deviceLinks").doc(linkId).get();
+        if (snap.exists) {
+          stopLinkPoll();
+          statusEl.textContent = "Bağlanıyor…";
+          await finishDeviceLink(snap, pair.privateKey);
+          linkModal.classList.add("hidden");
+        }
+      } catch (e) {
+        if (!linkPoll) statusEl.textContent = "Bağlanamadı: " + e.message;
+      }
+      busy = false;
+    }, 2000);
+  });
+
+  document.getElementById("link-cancel").addEventListener("click", () => {
+    stopLinkPoll();
+    linkModal.classList.add("hidden");
+  });
+
+  async function finishDeviceLink(snap, privateKey) {
+    const d = snap.data();
+    const key = await linkAesKey(privateKey, d.pub);
+    const plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv: new Uint8Array(b64decode(d.iv)) }, key, b64decode(d.box));
+    const box = JSON.parse(new TextDecoder().decode(plain));
+    const cred = await fbAuth.signInWithCustomToken(box.token);
+    snap.ref.delete().catch(() => {});
+    const uid = cred.user.uid;
+    const data = (await fbDb.collection("users").doc(uid).get()).data() || {};
+    myUid = uid;
+    myNickname = data.nickname || box.nickname;
+    myPrivateKey = await crypto.subtle.importKey("jwk", box.privateKeyJwk, { name: "RSA-OAEP", hash: "SHA-256" }, true, ["decrypt"]);
+    myPublicKey = await crypto.subtle.importKey("jwk", box.publicKeyJwk, { name: "RSA-OAEP", hash: "SHA-256" }, true, ["encrypt"]);
+    myStatus = data.status === undefined ? "approved" : data.status;
+    myReferredByNickname = data.referredByNickname || null;
+    myBlocked = data.blocked || {};
+    publicKeyCache.set(uid, myPublicKey);
+    await persistSession();
+    if (myStatus === "approved") enterMessenger();
+    else openPendingPanel();
+  }
+
+  function parseLinkQr(text) {
+    const m = /^calcut-baglan:([0-9a-f]{32}):([A-Za-z0-9+/=]{40,200})$/.exec((text || "").trim());
+    return m ? { linkId: m[1], pub: m[2] } : null;
+  }
+
+  // On the phone: scan the new device's QR code.
+  async function sendDeviceLink(text) {
+    const link = parseLinkQr(text);
+    if (!link) return false;
+    closeQrModal();
+    if (!confirm("Bu cihazda hesabın açılsın mı? Mesajlarının anahtarı o cihaza da aktarılır. Yalnızca kendi bilgisayarın / cihazınsa onayla.")) return true;
+    try {
+      showToast("Bağlanıyor…");
+      const r = await requestPush({ kind: "link-token" });
+      const token = r && r.status === 200 && r.data && r.data.token;
+      if (!token) {
+        const why = r.error || (r.data && r.data.error) || ("sunucu " + r.status);
+        throw new Error("bildirim sunucusu giriş anahtarı vermedi (" + why + "). Apps Script'teki Code.gs en son sürüm mü (v4)?");
+      }
+      const pair = await crypto.subtle.generateKey({ name: "ECDH", namedCurve: "P-256" }, false, ["deriveKey"]);
+      const key = await linkAesKey(pair.privateKey, link.pub);
+      const iv = crypto.getRandomValues(new Uint8Array(12));
+      const payload = {
+        token,
+        nickname: myNickname,
+        privateKeyJwk: await crypto.subtle.exportKey("jwk", myPrivateKey),
+        publicKeyJwk: await crypto.subtle.exportKey("jwk", myPublicKey),
+      };
+      const box = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, new TextEncoder().encode(JSON.stringify(payload)));
+      await fbDb.collection("deviceLinks").doc(link.linkId).set({
+        box: b64encode(box), iv: b64encode(iv.buffer), pub: b64encode(await crypto.subtle.exportKey("raw", pair.publicKey)),
+        expiresAt: firebase.firestore.Timestamp.fromMillis(Date.now() + LINK_TTL_MS),
+      });
+      showToast("Cihaz bağlandı ✓", 3000);
+    } catch (e) {
+      hideToast();
+      alert("Bağlanamadı: " + e.message);
+    }
+    return true;
+  }
+
+  document.getElementById("link-scan-btn").addEventListener("click", () => {
+    startQrScan("Cihazı bağla", "Kamerayı bilgisayardaki QR koduna tut.", sendDeviceLink);
+  });
 
   const viewOnceInput = document.getElementById("viewonce-input");
   document.getElementById("attach-viewonce-btn").addEventListener("click", () => {

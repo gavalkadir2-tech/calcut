@@ -88,14 +88,26 @@ service cloud.firestore {
       allow update, delete: if false;
     }
 
+    // In a channel, or a group set to "only admins can send", only admins post.
+    function mayPost(conversationId) {
+      let conv = get(/databases/$(database)/documents/conversations/$(conversationId)).data;
+      return !(conv.get('onlyAdmins', false) == true || conv.get('isChannel', false) == true) ||
+        request.auth.uid in conv.get('admins', [conv.get('createdBy', '')]);
+    }
+
     // ---------------- conversations ----------------
     match /conversations/{conversationId} {
       allow read: if isSignedIn() && request.auth.uid in resource.data.participants;
 
+      // Channels (isChannel): only admins post, up to 256 subscribers.
+      function maxMembers(d) {
+        return d.get('isChannel', false) == true ? 256 : 20;
+      }
+
       allow create: if isSignedIn() &&
         request.auth.uid in request.resource.data.participants &&
-        request.resource.data.participants.size() >= 2 &&
-        request.resource.data.participants.size() <= 20;
+        request.resource.data.participants.size() >= (request.resource.data.get('isChannel', false) == true ? 1 : 2) &&
+        request.resource.data.participants.size() <= maxMembers(request.resource.data);
 
       // Groups made before admins existed treat their creator as the admin.
       function groupAdmins() {
@@ -119,7 +131,7 @@ service cloud.firestore {
           request.resource.data.get('joinCode', '') == resource.data.inviteCode &&
           changedKeys().hasOnly(['participants', 'participantNicknames', 'unreadCount', 'updatedAt', 'joinCode']) &&
           request.resource.data.participants.toSet() == resource.data.participants.toSet().union([request.auth.uid].toSet()) &&
-          request.resource.data.participants.size() <= 20 &&
+          request.resource.data.participants.size() <= maxMembers(resource.data) &&
           onlyOwnEntryChanged('participantNicknames') && onlyOwnEntryChanged('unreadCount');
       }
 
@@ -130,10 +142,11 @@ service cloud.firestore {
           (request.resource.data.pinnedMessage is string && request.resource.data.pinnedMessage.size() <= 64))) ||
         // Group admins: name, photo, members and admins.
         (isGroupConv() && request.auth.uid in groupAdmins() &&
-         changedKeys().hasOnly(['groupName', 'groupAvatar', 'participants', 'admins', 'participantNicknames', 'unreadCount', 'updatedAt', 'inviteCode']) &&
+         changedKeys().hasOnly(['groupName', 'groupAvatar', 'participants', 'admins', 'participantNicknames', 'unreadCount', 'updatedAt', 'inviteCode', 'onlyAdmins']) &&
+         (!changedKeys().hasAny(['onlyAdmins']) || request.resource.data.onlyAdmins is bool) &&
          (!changedKeys().hasAny(['inviteCode']) || !('inviteCode' in request.resource.data) ||
           (request.resource.data.inviteCode is string && request.resource.data.inviteCode.size() >= 16 && request.resource.data.inviteCode.size() <= 64)) &&
-         request.resource.data.participants.size() >= 1 && request.resource.data.participants.size() <= 20 &&
+         request.resource.data.participants.size() >= 1 && request.resource.data.participants.size() <= maxMembers(resource.data) &&
          request.resource.data.get('admins', []).size() >= 1 &&
          adminsWithinParticipants(request.resource.data) &&
          (!changedKeys().hasAny(['groupName']) || (request.resource.data.groupName is string && request.resource.data.groupName.size() <= 60)) &&
@@ -156,7 +169,7 @@ service cloud.firestore {
         allow read: if isConversationParticipant(conversationId);
 
         allow create: if isConversationParticipant(conversationId) &&
-          request.resource.data.from == request.auth.uid;
+          request.resource.data.from == request.auth.uid && mayPost(conversationId);
 
         allow update: if isConversationParticipant(conversationId) && (
           // read / delivered / voice message played receipts, set by the recipient.
@@ -212,6 +225,45 @@ service cloud.firestore {
           request.resource.data.data is string && request.resource.data.data.size() < 1000000;
         allow delete: if isSignedIn() && resource.data.from == request.auth.uid;
       }
+    }
+
+    // ---------------- group calls ----------------
+    // { convId, members, from, media, status, createdAt, participants: { uid: last heartbeat } }.
+    // Each pair of participants signals in peers/{a_b} (uids sorted).
+    match /groupCalls/{callId} {
+      allow read: if isSignedIn() && request.auth.uid in resource.data.members;
+      allow create: if isSignedIn() &&
+        request.resource.data.from == request.auth.uid &&
+        request.resource.data.members is list && request.resource.data.members.size() <= 256 &&
+        request.auth.uid in request.resource.data.members &&
+        request.auth.uid in get(/databases/$(database)/documents/conversations/$(request.resource.data.convId)).data.participants;
+      allow update: if isSignedIn() && request.auth.uid in resource.data.members && (
+        (changedKeys().hasOnly(['participants']) && onlyOwnEntryChanged('participants')) ||
+        (changedKeys().hasOnly(['status']) && request.resource.data.status == 'ended'));
+
+      function isPairMember(pairId) {
+        return isSignedIn() && request.auth.uid in pairId.split('_') &&
+          request.auth.uid in get(/databases/$(database)/documents/groupCalls/$(callId)).data.members;
+      }
+      match /peers/{pairId} {
+        allow read, write: if isPairMember(pairId);
+        match /candidates/{candidateId} {
+          allow read, write: if isPairMember(pairId);
+        }
+      }
+    }
+
+    // ---------------- linking another device ----------------
+    // The new device shows a one-time key in a QR code; the phone leaves
+    // the session here encrypted to it. Anyone may read one by its random
+    // id (the new device isn't signed in yet); the content is useless
+    // without that device's key.
+    match /deviceLinks/{linkId} {
+      allow get: if true;
+      allow create: if isSignedIn() &&
+        request.resource.data.keys().hasOnly(['box', 'iv', 'pub', 'expiresAt']) &&
+        request.resource.data.box is string && request.resource.data.box.size() < 40000;
+      allow delete: if isSignedIn();
     }
 
     // ---------------- calls ----------------

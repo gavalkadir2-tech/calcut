@@ -17,7 +17,7 @@
 // JSON of a Firebase service account key; then Deploy > New deployment >
 // Web app, Execute as: Me, Who has access: Anyone.
 
-const WORKER_VERSION = 3;
+const WORKER_VERSION = 4;
 // The Firebase web API key (public, same as in firebase-config.js); only used
 // to ask Google whether an ID token is valid.
 const FIREBASE_API_KEY = "AIzaSyB0JTRgod2uk5KtYtnd4OLiG0LQ5qwxEwI";
@@ -35,6 +35,7 @@ function doPost(e) {
     const uid = verifyIdToken_(body.idToken);
     if (!uid) return json_({ error: "unauthorized", v: WORKER_VERSION });
     if (body.kind === "ice-servers") return json_({ iceServers: turnIceServers_(), v: WORKER_VERSION });
+    if (body.kind === "link-token") return json_({ token: customToken_(sa, uid), v: WORKER_VERSION });
     const sent = handle_(body, uid, sa);
     return json_({ sent: sent, v: WORKER_VERSION });
   } catch (err) {
@@ -219,6 +220,23 @@ function getAccessToken_(sa) {
   // Cache a bit shorter than the token lives.
   cache.put("access_token", json.access_token, Math.max(60, Math.min(3000, json.expires_in - 300)));
   return json.access_token;
+}
+
+// A Firebase custom token for this user, so a device being linked can sign
+// in. The phone encrypts it, with the keys, to that device's one-time key.
+function customToken_(sa, uid) {
+  const now = Math.floor(Date.now() / 1000);
+  const header = b64url_(JSON.stringify({ alg: "RS256", typ: "JWT" }));
+  const claims = b64url_(JSON.stringify({
+    iss: sa.client_email,
+    sub: sa.client_email,
+    aud: "https://identitytoolkit.googleapis.com/google.identity.identitytoolkit.v1.IdentityToolkit",
+    iat: now,
+    exp: now + 3600,
+    uid: uid,
+  }));
+  const signature = Utilities.computeRsaSha256Signature(header + "." + claims, sa.private_key);
+  return header + "." + claims + "." + Utilities.base64EncodeWebSafe(signature).replace(/=+$/, "");
 }
 
 function b64url_(str) {
