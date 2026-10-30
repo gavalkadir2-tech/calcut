@@ -163,6 +163,7 @@
         <button id="attach-event-btn">📅 Etkinlik</button>
         <button id="attach-schedule-btn">⏰ Zamanla</button>
         <button id="attach-vnote-btn">⭕ Görüntülü not</button>
+        <button id="attach-vanish-btn">💨 Okununca yok olsun</button>
       </div>
       <p id="upload-status" class="hidden"></p>
       <div id="mention-picker" class="hidden"></div>
@@ -285,6 +286,12 @@
         <button id="clear-duress-pin-btn" class="ghost">Yanılgı PIN'ini Kaldır</button>
         <p id="duress-pin-msg"></p>
         <hr>
+        <label>Otomatik yanıt</label>
+        <p class="hint">Açıkken birebir sohbetlerde sana yazanlara, telefonun kapalı olsa bile en fazla 6 saatte bir bu yanıt gider. Yanıt uçtan uca şifreli kalır.</p>
+        <textarea id="away-text" rows="2" maxlength="500" placeholder="Şu an müsait değilim, sonra yazacağım."></textarea>
+        <button id="away-toggle-btn" class="ghost">🤖 Otomatik yanıt</button>
+        <p id="away-msg"></p>
+        <hr>
         <label>Gizlilik koruması</label>
         <p class="hint">Uygulamadan çıkınca ekran hemen hesap makinesine döner. Android uygulamasında ekran görüntüsü ve ekran kaydı zaten engellidir.</p>
         <label for="bg-lock-select" class="sub-label">Arka plana geçince kilitle</label>
@@ -313,7 +320,7 @@
         <button id="enable-alarm-btn">Bildirimleri Etkinleştir</button>
         <button id="test-push-btn" class="ghost">Test bildirimi gönder</button>
         <p id="alarm-msg"></p>
-        <p class="app-version">Sürüm: 45</p>
+        <p class="app-version">Sürüm: 46</p>
         <div id="app-update-section" class="hidden">
           <hr>
           <label>Uygulama güncellemesi</label>
@@ -383,6 +390,8 @@
     <button id="call-speaker-btn" class="call-btn mute hidden">Hoparlör</button>
     <button id="call-camera-btn" class="call-btn mute hidden">Kamerayı Kapat</button>
     <button id="call-flip-btn" class="call-btn mute hidden">🔄 Kamerayı Çevir</button>
+    <button id="call-screen-btn" class="call-btn mute hidden">🖥️ Ekranı Paylaş</button>
+    <button id="call-add-btn" class="call-btn mute hidden">➕ Kişi Ekle</button>
     <button id="call-hangup-btn" class="call-btn reject">Kapat</button>
   </div>
   <div id="call-actions-outgoing" class="hidden">
@@ -462,6 +471,7 @@
       <button id="new-group-cancel" class="ghost">İptal</button>
       <button id="new-group-create">Grup Oluştur</button>
     </div>
+    <label class="toggle-row"><input id="new-group-community" type="checkbox"><span>🏘️ Topluluk olarak oluştur (duyuru sohbeti + içinde gruplar; üyeler topluluktaki gruplara katılabilir)</span></label>
     <label class="toggle-row"><input id="new-group-channel" type="checkbox"><span>📢 Kanal olarak oluştur (yalnızca yöneticiler yazar, 256 aboneye kadar; aboneler davet koduyla katılır)</span></label>
     <button id="group-join-btn" class="ghost wide">🔗 Davet koduyla gruba / kanala katıl</button>
   </div>
@@ -499,6 +509,11 @@
     </div>
     <input id="group-photo-input" type="file" accept="image/*" class="hidden">
     <p id="group-info-count" class="hint"></p>
+    <div id="community-box" class="hidden">
+      <p class="sub-label">🏘️ Topluluktaki gruplar</p>
+      <ul id="community-groups"></ul>
+      <button id="community-add-group-btn" class="ghost">➕ Grup ekle</button>
+    </div>
     <ul id="group-info-members"></ul>
     <button id="group-leave-btn" class="danger">🚪 Gruptan çık</button>
     <button id="group-info-close" class="ghost">Kapat</button>
@@ -652,6 +667,7 @@
   <div class="gc-actions">
     <button id="gc-mute-btn" class="call-btn mute">Sessize Al</button>
     <button id="gc-camera-btn" class="call-btn mute">Kamerayı Kapat</button>
+    <button id="gc-screen-btn" class="call-btn mute hidden">🖥️ Ekran</button>
     <button id="gc-leave-btn" class="call-btn reject">Ayrıl</button>
   </div>
 </div>

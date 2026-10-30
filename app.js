@@ -1301,6 +1301,7 @@
     listenForIncomingCalls();
     listenForGroupCalls();
     listenForScheduled();
+    refreshAwaySoon();
     startPresence();
     registerPushToken().catch(err => console.error("push token register error", err));
     refreshTurnServers(); // ready before the first call
@@ -1361,6 +1362,8 @@
         let lastIsMissedCall = false;
         if (d.deleted) {
           preview = "Bu mesaj silindi";
+        } else if (d.vanish) {
+          preview = "💨 Okununca yok olan mesaj";
         } else if (d.type === "image") {
           preview = d.viewOnce ? "👁️ Fotoğraf" : "📷 Fotoğraf";
         } else if (d.type === "file") {
@@ -1482,6 +1485,8 @@
             pinnedMessage: typeof d.pinnedMessage === "string" ? d.pinnedMessage : null,
             inviteCode: typeof d.inviteCode === "string" ? d.inviteCode : null,
             isChannel: !!d.isChannel,
+            isCommunity: !!d.isCommunity,
+            groupLinks: parseGroupLinks(d.groupLinks),
             onlyAdmins: !!d.onlyAdmins,
             lastMentionsMe: !!existing.lastMentionsMe,
           });
@@ -1568,7 +1573,8 @@
   // Everything kept per device in the vault, carried over by persistSession
   // and by "Ayarları dışa / içe aktar".
   const DEVICE_PREF_KEYS = ["pinned", "archived", "starred", "hiddenMsgs", "wallpapers", "lockedChats", "broadcastLists",
-    "stickers", "deletedChats", "chatSounds", "statusPrivacy", "defaultDisappearing", "drafts", "recentEmojis"];
+    "stickers", "deletedChats", "chatSounds", "statusPrivacy", "defaultDisappearing", "drafts", "recentEmojis",
+    "chatLists", "awayOn", "awayText"];
 
   function devicePrefsOf(d) {
     const out = {};
@@ -1982,6 +1988,7 @@
   }
 
   function threadMatchesFilter(conv) {
+    if (threadFilter.startsWith("list:")) return chatListMatches(conv);
     if (threadFilter === "unread") return conv.unread > 0;
     if (threadFilter === "groups") return conv.isGroup;
     return true;
@@ -2037,6 +2044,7 @@
   }
 
   function renderThreadList() {
+    renderListChips();
     threadListEl.innerHTML = "";
     if (mainTab === "calls") {
       renderCallsList();
@@ -2073,6 +2081,7 @@
       li.className = "empty-state";
       li.textContent = threadFilter === "unread" ? "Okunmamış sohbet yok."
         : threadFilter === "groups" ? "Henüz grup yok."
+        : threadFilter.startsWith("list:") ? "Bu listede sohbet yok. Değiştirmek için listeye uzun bas."
         : "Henüz sohbet yok. '+' ile bir kişinin kullanıcı adını ekle.";
       li.style.cursor = "default";
       threadListEl.appendChild(li);
@@ -2210,7 +2219,8 @@
         .filter(Boolean)
         .filter(n => n !== myNickname)
     )];
-    const asChannel = document.getElementById("new-group-channel").checked;
+    const asCommunity = document.getElementById("new-group-community").checked;
+    const asChannel = asCommunity || document.getElementById("new-group-channel").checked;
     if (!asChannel && nicknames.length < 2) { alert("Kendin hariç en az 2 kişi eklemelisin."); return; }
     try {
       const participants = [myUid];
@@ -2234,13 +2244,16 @@
         createdBy: myUid,
         admins: [myUid],
         ...(asChannel ? { isChannel: true } : {}),
+        ...(asCommunity ? { isCommunity: true, groupLinks: [] } : {}),
         updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
         ...(defaultDisappearingSeconds() ? { disappearingSeconds: defaultDisappearingSeconds() } : {}),
       });
       document.getElementById("new-group-modal").classList.add("hidden");
       document.getElementById("new-group-channel").checked = false;
+      document.getElementById("new-group-community").checked = false;
       openConversation(convRef.id, null, null, { isGroup: true, groupName, participants });
-      if (asChannel) alert("Kanal oluşturuldu. Abone eklemek için kanal adına dokun → Grup bilgisi → 🔗 Davet kodu ile kodu paylaş.");
+      if (asCommunity) alert("Topluluk oluşturuldu. Topluluk adına dokun → yönettiğin grupları ekle, sonra 🔗 Davet kodu ile üyeleri davet et. Topluluk sohbeti duyurular içindir: yalnızca yöneticiler yazar.");
+      else if (asChannel) alert("Kanal oluşturuldu. Abone eklemek için kanal adına dokun → Grup bilgisi → 🔗 Davet kodu ile kodu paylaş.");
     } catch (e) {
       alert("Grup oluşturulamadı: " + e.message);
     }
@@ -2332,6 +2345,7 @@
 
   document.getElementById("settings-btn").addEventListener("click", () => {
     updateIntruderButton();
+    updateAwayUi();
     threadListPanel.classList.add("hidden");
     threadDetailPanel.classList.add("hidden");
     settingsPanel.classList.remove("hidden");
@@ -3338,7 +3352,8 @@
     }
     document.getElementById("group-info-name").textContent = conv.groupName || "Grup";
     document.getElementById("group-info-admin-actions").classList.toggle("hidden", !isAdmin);
-    document.getElementById("group-info-count").textContent = conv.participants.length + (conv.isChannel ? " abone" : " üye");
+    document.getElementById("group-info-count").textContent = conv.participants.length + (conv.isCommunity ? " üye" : conv.isChannel ? " abone" : " üye");
+    renderCommunityGroups(conv);
     const onlyAdminsBtn = document.getElementById("group-only-admins-btn");
     onlyAdminsBtn.classList.toggle("hidden", conv.isChannel);
     onlyAdminsBtn.textContent = conv.onlyAdmins ? "💬 Herkes yazabilsin" : "🔒 Yalnızca yöneticiler yazsın";
@@ -3746,6 +3761,7 @@
     callLocalVideo.classList.toggle("hidden", !isVideoCall);
     callCameraBtn.classList.toggle("hidden", !isVideoCall);
     callFlipBtn.classList.toggle("hidden", !isVideoCall);
+    updateScreenShareButtons();
     if (isVideoCall && localStream) {
       callLocalVideo.srcObject = localStream;
     }
@@ -3908,6 +3924,7 @@
     callNicknameEl.textContent = "@" + nickname;
     callStatusEl.textContent = "Görüşmede";
     callActionsActive.classList.remove("hidden");
+    document.getElementById("call-add-btn").classList.toggle("hidden", !callLogConvId);
     callTimerEl.classList.remove("hidden");
     callTimerEl.textContent = "00:00";
     isMuted = false;
@@ -4212,6 +4229,7 @@
     clearInterval(callTimerInterval);
     callTimerInterval = null;
     stopRingtone();
+    if (screenTrack) { screenTrack.stop(); screenTrack = null; }
     if (peerConnection) { peerConnection.close(); peerConnection = null; }
     if (localStream) { localStream.getTracks().forEach(t => t.stop()); localStream = null; }
     if (remoteAudioEl) { remoteAudioEl.srcObject = null; }
@@ -4789,6 +4807,8 @@
             liveLocation: d.type === "livelocation" ? parseJson(plain) : null,
             event: d.type === "event" ? parseJson(plain) : null,
             groupCall: d.type === "groupcall" ? parseJson(plain) : null,
+            vanish: d.type === "text" && VANISH_CHOICES.includes(d.vanish) ? d.vanish : 0,
+            autoReply: !!d.autoReply,
             album: d.type === "album" ? parseAlbum(plain) : null,
             videoNote: d.type === "videonote" ? parseVideoNote(plain) : null,
             rsvp: d.rsvp || {},
@@ -5001,6 +5021,7 @@
     if (m.sticker) return "🌟 Çıkartma";
     if (m.event) return "📅 " + (m.event.title || "Etkinlik");
     if (m.groupCall) return "📞 Grup araması";
+    if (m.vanish) return "💨 Okununca yok olan mesaj";
     if (m.album) return "🖼️ " + m.album.length + " fotoğraf";
     if (m.videoNote) return "⭕ Görüntülü not";
     if (m.image) return "📷 Fotoğraf";
@@ -5336,15 +5357,29 @@
         link.appendChild(icon);
         link.appendChild(info);
         div.appendChild(link);
+      } else if (m.vanish) {
+        div.appendChild(renderVanish(m));
       } else {
         const span = document.createElement("span");
         span.className = "msg-text";
         appendHighlightedText(span, m.text, query);
         if (activeIsGroup) highlightMentions(span);
         div.appendChild(span);
+        if (translations.has(m.id)) {
+          const tr = document.createElement("span");
+          tr.className = "msg-translation";
+          tr.textContent = "🌐 " + translations.get(m.id);
+          div.appendChild(tr);
+        }
       }
       const metaRow = document.createElement("span");
       metaRow.className = "msg-meta";
+      if (m.autoReply) {
+        const auto = document.createElement("span");
+        auto.className = "msg-edited";
+        auto.textContent = "🤖 otomatik yanıt";
+        metaRow.appendChild(auto);
+      }
       if (m.edited) {
         const editedSpan = document.createElement("span");
         editedSpan.className = "msg-edited";
@@ -5521,11 +5556,16 @@
       const pinned = activeConv() && activeConv().pinnedMessage === m.id;
       actions.push({ label: pinned ? "📌 Sabitlemeyi kaldır" : "📌 Sabitle", run: () => setPinnedMessage(pinned ? null : m.id) });
     }
-    if (m.text) actions.push({ label: "📋 Kopyala", run: () => copyText(m.text) });
+    if (m.text && !m.vanish) actions.push({ label: "📋 Kopyala", run: () => copyText(m.text) });
+    if (m.text && !m.vanish && !m.deleted) {
+      actions.push(translations.has(m.id)
+        ? { label: "🌐 Çeviriyi gizle", run: () => { translations.delete(m.id); renderMessages(currentMessages); } }
+        : { label: "🌐 Çevir", run: () => translateMessage(m) });
+    }
     if (m.sticker && !chatPrefs().stickers.includes(m.sticker)) {
       actions.push({ label: "🌟 Çıkartmalarıma ekle", run: () => saveSticker(m.sticker) });
     }
-    if (!m.deleted && !m.viewOnce && (m.type === "text" || m.type === "image" || m.type === "file" || m.type === "audio")) {
+    if (!m.deleted && !m.viewOnce && !m.vanish && (m.type === "text" || m.type === "image" || m.type === "file" || m.type === "audio")) {
       actions.push({ label: "➡️ İlet", run: () => openForwardModal(m.id) });
     }
     if (!m.deleted) {
@@ -5534,7 +5574,7 @@
         renderMessages(currentMessages);
       } });
     }
-    if (m.from === "me" && m.type === "text" && !m.deleted) {
+    if (m.from === "me" && m.type === "text" && !m.deleted && !m.vanish) {
       actions.push({ label: "✎ Düzenle", run: () => promptEditMessage(m) });
     }
     if (m.from === "me" && !m.deleted && !m.call) {
@@ -5547,7 +5587,7 @@
     if (m.from === "me" && !m.deleted && !m.call) {
       actions.push({ label: "🗑 Herkesten sil", danger: true, run: () => deleteForEveryone(m.id) });
     }
-    showActionSheet(m.text ? m.text.slice(0, 80) : messageSnippet(m), actions);
+    showActionSheet(m.text && !m.vanish ? m.text.slice(0, 80) : messageSnippet(m), actions);
   }
 
   const largeFileUrls = new Map(); // msg id -> blob: URL of a downloaded large file
@@ -5615,6 +5655,11 @@
     const speedBtn = e.target.closest(".voice-speed");
     if (speedBtn) {
       cycleVoiceSpeed(speedBtn);
+      return;
+    }
+    const vanishBtn = e.target.closest(".vanish-reveal");
+    if (vanishBtn) {
+      revealVanish(vanishBtn.dataset.msgId);
       return;
     }
     const gcJoin = e.target.closest(".gc-join-msg");
@@ -6819,24 +6864,9 @@
       alert("Bu bir davet kodu değil.");
       return;
     }
-    if (conversations.has(invite.convId)) {
-      alert("Zaten bu gruptasın.");
-      return;
-    }
-    try {
-      await fbDb.collection("conversations").doc(invite.convId).update({
-        participants: firebase.firestore.FieldValue.arrayUnion(myUid),
-        [`participantNicknames.${myUid}`]: myNickname,
-        [`unreadCount.${myUid}`]: 0,
-        joinCode: invite.code,
-        updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
-      });
+    if (await joinGroupWithCode(invite.convId, invite.code)) {
       document.getElementById("new-group-modal").classList.add("hidden");
       alert("Gruba katıldın. Katılmadan önceki mesajlar sende görünmez.");
-    } catch (e) {
-      alert(e && (e.code === "permission-denied" || e.code === "not-found")
-        ? "Katılınamadı: kod geçersiz ya da artık kullanılmıyor (grup dolu da olabilir)."
-        : "Katılınamadı: " + e.message);
     }
   });
 
@@ -7720,19 +7750,24 @@
   /* ---------------- Picking contacts (status privacy) ---------------- */
 
   function pickContacts(title, preselected) {
+    return pickItems(title, broadcastContacts().map(c => ({ value: c.uid, label: "@" + c.nickname })), preselected);
+  }
+
+  // items: [{ value, label }]; resolves with the chosen values, or null.
+  function pickItems(title, items, preselected) {
     const modal = document.getElementById("contact-picker-modal");
     const list = document.getElementById("contact-picker-list");
     document.getElementById("contact-picker-title").textContent = title;
     list.innerHTML = "";
-    broadcastContacts().forEach(c => {
+    items.forEach(c => {
       const label = document.createElement("label");
       label.className = "toggle-row";
       const cb = document.createElement("input");
       cb.type = "checkbox";
-      cb.value = c.uid;
-      cb.checked = preselected.includes(c.uid);
+      cb.value = c.value;
+      cb.checked = preselected.includes(c.value);
       const span = document.createElement("span");
-      span.textContent = "@" + c.nickname;
+      span.textContent = c.label;
       label.append(cb, span);
       list.appendChild(label);
     });
@@ -8275,7 +8310,7 @@
      both (mayPost). */
 
   function groupIcon(conv) {
-    return conv && conv.isChannel ? "📢" : "👥";
+    return conv && conv.isCommunity ? "🏘️" : conv && conv.isChannel ? "📢" : "👥";
   }
 
   function maxMembersOf(conv) {
@@ -8389,10 +8424,11 @@
     const conv = conversations.get(d.convId);
     gc = {
       id: callId, ref, convId: d.convId, video, stream, peers: new Map(), unsubs: [],
-      muted: false, camOff: false, ice: await callIceConfig(), names: conv ? conv.participantNicknames : {}, last: d,
+      muted: false, camOff: false, ice: await callIceConfig(), names: Object.assign({}, d.names || {}, conv ? conv.participantNicknames : {}), last: d, shareTrack: null,
     };
     hideGcIncoming();
-    document.getElementById("gc-title").textContent = (video ? "📹 " : "📞 ") + (conv ? conv.groupName : "Grup araması");
+    document.getElementById("gc-title").textContent = (video ? "📹 " : "📞 ") + (conv && conv.isGroup ? conv.groupName : "Grup araması");
+    updateScreenShareButtons();
     document.getElementById("gc-camera-btn").classList.toggle("hidden", !video);
     document.getElementById("gc-mute-btn").textContent = "Sessize Al";
     document.getElementById("gc-camera-btn").textContent = "Kamerayı Kapat";
@@ -8420,7 +8456,7 @@
     const offerer = myUid < uid;
     const pairRef = gc.ref.collection("peers").doc(gcPairId(myUid, uid));
     const pc = new RTCPeerConnection(gc.ice);
-    gc.stream.getTracks().forEach(t => pc.addTrack(t, gc.stream));
+    gc.stream.getTracks().forEach(t => pc.addTrack(t.kind === "video" && gc.shareTrack ? gc.shareTrack : t, gc.stream));
     const peer = { pc, unsubs: [], sid: offerer ? crypto.getRandomValues(new Uint32Array(2)).join("") : null, remote: [], applied: 0 };
     gc.peers.set(uid, peer);
     gcTile(uid);
@@ -8545,6 +8581,7 @@
       try { peer.pc.close(); } catch (e) {}
     });
     call.stream.getTracks().forEach(t => t.stop());
+    if (call.shareTrack) call.shareTrack.stop();
     gcGrid.innerHTML = "";
     gcScreen.classList.add("hidden");
     const others = gcFresh(call.last && call.last.participants).filter(u => u !== myUid);
@@ -8584,7 +8621,8 @@
       gcIncomingId = ringing.id;
       const conv = conversations.get(ringing.d.convId);
       document.getElementById("gc-incoming-text").textContent = (ringing.d.media === "video" ? "📹 " : "📞 ") +
-        "Grup araması: " + (conv ? conv.groupName : "grup") + " · @" + ((conv && conv.participantNicknames[ringing.d.from]) || "?");
+        "Grup araması" + (conv && conv.isGroup ? ": " + conv.groupName : "") + " · @" +
+        ((conv && conv.participantNicknames[ringing.d.from]) || (ringing.d.names && ringing.d.names[ringing.d.from]) || "?");
       gcIncoming.classList.remove("hidden");
       if (!(conv && conv.muted)) triggerAlarmAlert(ringing.d.convId);
     }, err => console.error("group calls listen error", err));
@@ -9721,6 +9759,512 @@
     gifSearchTimer = setTimeout(() => searchGifs(e.target.value.trim()), 400);
   });
 
+  /* ---------------- Screen sharing in video calls ----------------
+     The camera's video track is swapped for the screen's on every
+     connection (no renegotiation), and back when sharing stops. Phones'
+     browsers mostly can't share the screen, so the button only shows
+     where getDisplayMedia exists. */
+
+  const canShareScreen = !!(navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia);
+  let screenTrack = null; // 1:1 call
+
+  async function grabScreen() {
+    const s = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
+    return s.getVideoTracks()[0];
+  }
+
+  function updateScreenShareButtons() {
+    const callBtn = document.getElementById("call-screen-btn");
+    callBtn.classList.toggle("hidden", !(canShareScreen && isVideoCall));
+    callBtn.classList.toggle("active", !!screenTrack);
+    callBtn.textContent = screenTrack ? "Paylaşımı Durdur" : "🖥️ Ekranı Paylaş";
+    const gcBtn = document.getElementById("gc-screen-btn");
+    gcBtn.classList.toggle("hidden", !(canShareScreen && gc && gc.video));
+    gcBtn.classList.toggle("active", !!(gc && gc.shareTrack));
+    gcBtn.textContent = gc && gc.shareTrack ? "Paylaşımı Durdur" : "🖥️ Ekran";
+  }
+
+  async function stopScreenShare() {
+    if (!screenTrack) return;
+    const t = screenTrack;
+    screenTrack = null;
+    t.stop();
+    const cam = localStream && localStream.getVideoTracks()[0];
+    const sender = peerConnection && peerConnection.getSenders().find(s => s.track && s.track.kind === "video");
+    if (sender && cam) await sender.replaceTrack(cam).catch(() => {});
+    if (localStream) callLocalVideo.srcObject = localStream;
+    updateScreenShareButtons();
+  }
+
+  document.getElementById("call-screen-btn").addEventListener("click", async () => {
+    if (screenTrack) { stopScreenShare(); return; }
+    const sender = peerConnection && peerConnection.getSenders().find(s => s.track && s.track.kind === "video");
+    if (!sender) return;
+    let track;
+    try {
+      track = await grabScreen();
+    } catch (e) {
+      return; // cancelled
+    }
+    if (!peerConnection) { track.stop(); return; }
+    await sender.replaceTrack(track);
+    screenTrack = track;
+    track.onended = stopScreenShare;
+    callLocalVideo.srcObject = new MediaStream([track]);
+    updateScreenShareButtons();
+  });
+
+  async function gcSetVideoTrack(track) {
+    if (!gc) return;
+    for (const peer of gc.peers.values()) {
+      const sender = peer.pc.getSenders().find(s => s.track && s.track.kind === "video");
+      if (sender) await sender.replaceTrack(track).catch(() => {});
+    }
+    const me = gcGrid.querySelector('[data-uid="' + CSS.escape(myUid) + '"] video');
+    if (me) me.srcObject = track === gcCameraTrack() ? gc.stream : new MediaStream([track]);
+  }
+
+  function gcCameraTrack() {
+    return gc && gc.stream.getVideoTracks()[0];
+  }
+
+  async function gcStopScreenShare() {
+    if (!gc || !gc.shareTrack) return;
+    const t = gc.shareTrack;
+    gc.shareTrack = null;
+    t.stop();
+    await gcSetVideoTrack(gcCameraTrack());
+    updateScreenShareButtons();
+  }
+
+  document.getElementById("gc-screen-btn").addEventListener("click", async () => {
+    if (!gc) return;
+    if (gc.shareTrack) { gcStopScreenShare(); return; }
+    let track;
+    try {
+      track = await grabScreen();
+    } catch (e) {
+      return;
+    }
+    if (!gc) { track.stop(); return; }
+    gc.shareTrack = track;
+    track.onended = gcStopScreenShare;
+    await gcSetVideoTrack(track);
+    updateScreenShareButtons();
+  });
+
+  /* ---------------- Adding people to a call ----------------
+     A 1:1 call becomes a group call (see Group calls): the new call
+     includes both of us and up to two more, the other side is rung in
+     the chat and by the banner, and this call hangs up. */
+
+  document.getElementById("call-add-btn").addEventListener("click", async () => {
+    if (!activeCallId || !callLogConvId || !callLogOtherUid) return;
+    const media = isVideoCall ? "video" : "audio";
+    const convId = callLogConvId;
+    const other = callLogOtherUid;
+    const otherNick = callLogOtherNickname || nicknameOf(other);
+    const picked = await pickContacts("Aramaya kimi ekleyelim? (en fazla " + (GROUP_CALL_MAX - 2) + ")", []);
+    if (!picked) return;
+    const add = picked.filter(u => u !== other && u !== myUid).slice(0, GROUP_CALL_MAX - 2);
+    if (!add.length) return;
+    if (!activeCallId) { alert("Arama bitti."); return; }
+    const names = { [myUid]: myNickname, [other]: otherNick };
+    broadcastContacts().forEach(c => { if (add.includes(c.uid)) names[c.uid] = c.nickname; });
+    const ref = fbDb.collection("groupCalls").doc();
+    try {
+      await ref.set({
+        convId, members: [myUid, other, ...add], names, from: myUid, media, status: "active",
+        createdAt: firebase.firestore.FieldValue.serverTimestamp(), participants: {},
+      });
+    } catch (e) {
+      alert("Kişi eklenemedi: " + e.message);
+      return;
+    }
+    sendEncryptedTo(convId, [other], JSON.stringify({ callId: ref.id, media }), "groupcall").catch(() => {});
+    hangUpCall();
+    await joinGroupCall(ref.id);
+  });
+
+  /* ---------------- Chat lists ----------------
+     The user's own filters next to "Tümü / Okunmamış / Gruplar" (e.g.
+     Aile, İş), kept in the vault on this device. */
+
+  const MAX_CHAT_LISTS = 10;
+
+  function chatLists() {
+    const v = localSessionData && localSessionData.chatLists;
+    return Array.isArray(v) ? v.filter(l => l && typeof l.id === "string" && typeof l.name === "string" && Array.isArray(l.convIds)) : [];
+  }
+
+  async function saveChatLists(lists) {
+    if (!localSessionData) return;
+    localSessionData.chatLists = lists;
+    await saveLocalPrefs();
+    if (threadFilter.startsWith("list:") && !lists.some(l => "list:" + l.id === threadFilter)) threadFilter = "all";
+    renderThreadList();
+  }
+
+  function chatListOptions() {
+    return [...conversations.values()]
+      .filter(c => !chatHiddenForMe(c))
+      .map(c => ({ value: c.id, label: c.isGroup ? groupIcon(c) + " " + (c.groupName || "Grup") : "@" + c.otherNickname }))
+      .sort((a, b) => a.label.localeCompare(b.label, "tr"));
+  }
+
+  function renderListChips() {
+    const bar = document.getElementById("thread-filters");
+    bar.querySelectorAll(".list-chip").forEach(b => b.remove());
+    chatLists().forEach(l => {
+      const b = document.createElement("button");
+      b.className = "list-chip";
+      b.dataset.filter = "list:" + l.id;
+      b.textContent = l.name;
+      b.classList.toggle("active", threadFilter === b.dataset.filter);
+      b.addEventListener("click", () => {
+        threadFilter = b.dataset.filter;
+        bar.querySelectorAll("button").forEach(x => x.classList.toggle("active", x === b));
+        renderThreadList();
+      });
+      attachLongPress(b, () => showActionSheet(l.name, [
+        { label: "✏️ Sohbetleri seç", run: async () => {
+          const ids = await pickItems(l.name, chatListOptions(), l.convIds);
+          if (ids) saveChatLists(chatLists().map(x => x.id === l.id ? { ...x, convIds: ids } : x));
+        } },
+        { label: "🔤 Yeniden adlandır", run: () => {
+          const name = (prompt("Liste adı:", l.name) || "").trim().slice(0, 24);
+          if (name) saveChatLists(chatLists().map(x => x.id === l.id ? { ...x, name } : x));
+        } },
+        { label: "🗑 Listeyi sil", danger: true, run: () => saveChatLists(chatLists().filter(x => x.id !== l.id)) },
+      ]));
+      bar.appendChild(b);
+    });
+    if (chatLists().length < MAX_CHAT_LISTS) {
+      const add = document.createElement("button");
+      add.className = "list-chip list-add";
+      add.textContent = "＋";
+      add.title = "Yeni liste";
+      add.addEventListener("click", async () => {
+        const name = (prompt("Yeni liste adı (ör. Aile, İş):") || "").trim().slice(0, 24);
+        if (!name) return;
+        const ids = await pickItems(name + " listesindeki sohbetler", chatListOptions(), []);
+        if (!ids) return;
+        const id = Array.from(crypto.getRandomValues(new Uint8Array(6)), b => b.toString(16).padStart(2, "0")).join("");
+        threadFilter = "list:" + id;
+        bar.querySelectorAll("button").forEach(x => x.classList.remove("active"));
+        await saveChatLists([...chatLists(), { id, name, convIds: ids }]);
+      });
+      bar.appendChild(add);
+    }
+  }
+
+  function chatListMatches(conv) {
+    const l = chatLists().find(x => "list:" + x.id === threadFilter);
+    return !!l && l.convIds.includes(conv.id);
+  }
+
+  /* ---------------- Communities ----------------
+     A community is an announcement channel (only admins post) that also
+     lists groups; its members can join those groups with the invite code
+     the community keeps for each (groupLinks). */
+
+  const MAX_COMMUNITY_GROUPS = 20;
+
+  function parseGroupLinks(v) {
+    return Array.isArray(v) ? v.filter(l => l && typeof l.convId === "string" && typeof l.code === "string" && /^[a-z0-9]{16,64}$/.test(l.code))
+      .map(l => ({ convId: l.convId, code: l.code, name: typeof l.name === "string" ? l.name.slice(0, 60) : "Grup" }))
+      .slice(0, MAX_COMMUNITY_GROUPS) : [];
+  }
+
+  async function joinGroupWithCode(convId, code) {
+    if (conversations.has(convId)) { alert("Zaten bu gruptasın."); return false; }
+    try {
+      await fbDb.collection("conversations").doc(convId).update({
+        participants: firebase.firestore.FieldValue.arrayUnion(myUid),
+        [`participantNicknames.${myUid}`]: myNickname,
+        [`unreadCount.${myUid}`]: 0,
+        joinCode: code,
+        updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+      });
+      return true;
+    } catch (e) {
+      alert(e && (e.code === "permission-denied" || e.code === "not-found")
+        ? "Katılınamadı: kod geçersiz ya da artık kullanılmıyor (grup dolu da olabilir)."
+        : "Katılınamadı: " + e.message);
+      return false;
+    }
+  }
+
+  function renderCommunityGroups(conv) {
+    const box = document.getElementById("community-box");
+    box.classList.toggle("hidden", !conv.isCommunity);
+    if (!conv.isCommunity) return;
+    const isAdmin = amGroupAdmin(conv);
+    document.getElementById("community-add-group-btn").classList.toggle("hidden", !isAdmin);
+    const list = document.getElementById("community-groups");
+    list.innerHTML = "";
+    if (!conv.groupLinks.length) {
+      const li = document.createElement("li");
+      li.className = "hint";
+      li.textContent = isAdmin ? "Henüz grup yok. Yönettiğin grupları ekleyebilirsin." : "Henüz grup yok.";
+      list.appendChild(li);
+    }
+    conv.groupLinks.forEach(link => {
+      const li = document.createElement("li");
+      const name = document.createElement("span");
+      name.className = "member-name";
+      name.textContent = "👥 " + link.name;
+      li.appendChild(name);
+      const member = conversations.has(link.convId);
+      const b = document.createElement("button");
+      b.className = "ghost";
+      b.textContent = member ? "Aç" : "Katıl";
+      b.addEventListener("click", async e => {
+        e.stopPropagation();
+        if (member) {
+          const g = conversations.get(link.convId);
+          groupInfoModal.classList.add("hidden");
+          openConversation(g.id, null, null, { isGroup: true, groupName: g.groupName, participants: g.participants });
+        } else if (await joinGroupWithCode(link.convId, link.code)) {
+          showToast("Gruba katıldın: " + link.name, 2500);
+          setTimeout(renderGroupInfo, 1500);
+        }
+      });
+      li.appendChild(b);
+      if (isAdmin) {
+        const x = document.createElement("button");
+        x.className = "ghost";
+        x.textContent = "✕";
+        x.title = "Topluluktan çıkar";
+        x.addEventListener("click", e => {
+          e.stopPropagation();
+          if (confirm(link.name + " topluluktan çıkarılsın mı?")) updateGroup({ groupLinks: conv.groupLinks.filter(l => l.convId !== link.convId) });
+        });
+        li.appendChild(x);
+      }
+      list.appendChild(li);
+    });
+  }
+
+  document.getElementById("community-add-group-btn").addEventListener("click", async () => {
+    const conv = activeGroup();
+    if (!conv || !conv.isCommunity || !amGroupAdmin(conv)) return;
+    const options = [...conversations.values()]
+      .filter(c => c.isGroup && !c.isChannel && amGroupAdmin(c) && !conv.groupLinks.some(l => l.convId === c.id))
+      .map(c => ({ value: c.id, label: "👥 " + (c.groupName || "Grup") }));
+    if (!options.length) { alert("Ekleyebileceğin grup yok: yalnızca yöneticisi olduğun gruplar eklenebilir."); return; }
+    const ids = await pickItems("Topluluğa hangi gruplar eklensin?", options, []);
+    if (!ids || !ids.length) return;
+    const links = [...conv.groupLinks];
+    for (const id of ids) {
+      const g = conversations.get(id);
+      if (!g || links.length >= MAX_COMMUNITY_GROUPS) break;
+      let code = g.inviteCode;
+      if (!code) {
+        code = randomInviteCode();
+        try {
+          await fbDb.collection("conversations").doc(id).update({ admins: g.admins, inviteCode: code });
+        } catch (e) {
+          alert(g.groupName + " eklenemedi: " + e.message);
+          continue;
+        }
+      }
+      links.push({ convId: id, name: (g.groupName || "Grup").slice(0, 60), code });
+    }
+    if (await updateGroup({ groupLinks: links })) renderGroupInfo();
+  });
+
+  /* ---------------- Messages that vanish after reading ----------------
+     1:1 only. The recipient sees the text after a tap, for the chosen
+     number of seconds, then their app deletes the message for both. */
+
+  const VANISH_CHOICES = [10, 30, 60];
+  const vanishDeadlines = new Map(); // msgId -> ms
+  let vanishTick = null;
+
+  document.getElementById("attach-vanish-btn").addEventListener("click", () => {
+    attachMenu.classList.add("hidden");
+    if (activeIsGroup) { alert("Okununca yok olan mesaj yalnızca birebir sohbetlerde gönderilebilir."); return; }
+    const text = messageInput.value.trim() || (prompt("Okununca yok olacak mesaj:") || "").trim();
+    if (!text) return;
+    showActionSheet("Okunduktan kaç saniye sonra silinsin?", VANISH_CHOICES.map(s => ({
+      label: "💨 " + (s < 60 ? s + " saniye" : s / 60 + " dakika"),
+      run: async () => {
+        if (messageInput.value.trim() === text) { messageInput.value = ""; updateComposerMode(); }
+        try {
+          await sendEncrypted(text, "text", { ...(takeReplyFields() || {}), vanish: s });
+        } catch (e) {
+          alert("Gönderilemedi: " + e.message);
+        }
+      },
+    })));
+  });
+
+  function renderVanish(m) {
+    const box = document.createElement("span");
+    box.className = "msg-text vanish";
+    if (m.from === "me") {
+      box.textContent = "💨 " + m.text;
+      const note = document.createElement("span");
+      note.className = "vanish-note";
+      note.textContent = " · okununca " + m.vanish + " sn sonra silinir";
+      box.appendChild(note);
+      return box;
+    }
+    const deadline = vanishDeadlines.get(m.id);
+    if (!deadline) {
+      const b = document.createElement("button");
+      b.className = "vanish-reveal";
+      b.dataset.msgId = m.id;
+      b.textContent = "💨 Okununca yok olan mesaj · görmek için dokun";
+      box.appendChild(b);
+      return box;
+    }
+    box.appendChild(document.createTextNode(m.text + " "));
+    const count = document.createElement("span");
+    count.className = "vanish-count";
+    count.dataset.msgId = m.id;
+    count.textContent = "💨 " + Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
+    box.appendChild(count);
+    return box;
+  }
+
+  function revealVanish(msgId) {
+    const m = currentMessages.find(x => x.id === msgId);
+    if (!m || !m.vanish || vanishDeadlines.has(msgId)) return;
+    vanishDeadlines.set(msgId, Date.now() + m.vanish * 1000);
+    renderMessages(currentMessages);
+    if (!vanishTick) vanishTick = setInterval(tickVanish, 500);
+  }
+
+  function tickVanish() {
+    const now = Date.now();
+    vanishDeadlines.forEach((deadline, msgId) => {
+      const el = messageListEl.querySelector('.vanish-count[data-msg-id="' + CSS.escape(msgId) + '"]');
+      if (el) el.textContent = "💨 " + Math.max(0, Math.ceil((deadline - now) / 1000));
+      if (deadline > now) return;
+      vanishDeadlines.delete(msgId);
+      const convId = activeConvId;
+      if (convId) fbDb.collection("conversations").doc(convId).collection("messages").doc(msgId).delete().catch(() => {});
+    });
+    if (!vanishDeadlines.size) { clearInterval(vanishTick); vanishTick = null; }
+  }
+
+  function forgetVanish() {
+    // Leaving the chat or locking deletes what was revealed right away.
+    const convId = activeConvId;
+    vanishDeadlines.forEach((d, msgId) => {
+      if (convId) fbDb.collection("conversations").doc(convId).collection("messages").doc(msgId).delete().catch(() => {});
+    });
+    vanishDeadlines.clear();
+    clearInterval(vanishTick);
+    vanishTick = null;
+  }
+
+  /* ---------------- Auto-reply (away) ----------------
+     While on, someone who writes in a 1:1 chat gets the chosen reply at
+     most every 6 hours, even with this phone off. It stays end-to-end
+     encrypted: the reply is encrypted here for each chat in advance and
+     left in awayReplies/{me}; the push server only copies it into the
+     chat when a message comes in (Code.gs). The text stays in the vault. */
+
+  function awayPrefs() {
+    const d = localSessionData || {};
+    return { on: d.awayOn === true, text: typeof d.awayText === "string" ? d.awayText : "Şu an müsait değilim, sonra yazacağım." };
+  }
+
+  async function buildAwayReplies(text) {
+    const replies = {};
+    for (const c of broadcastContacts()) {
+      const key = await makeMessageKey([c.uid]);
+      if (!key) continue;
+      const iv = crypto.getRandomValues(new Uint8Array(12));
+      const ct = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key.aesKey, new TextEncoder().encode(text));
+      replies[c.convId] = { iv: b64encode(iv.buffer), ciphertext: b64encode(ct), wrappedKeys: key.wrappedKeys };
+    }
+    return replies;
+  }
+
+  async function publishAway() {
+    const p = awayPrefs();
+    const ref = fbDb.collection("awayReplies").doc(myUid);
+    if (!p.on) {
+      await ref.delete().catch(() => {});
+      return;
+    }
+    await ref.set({ on: true, replies: await buildAwayReplies(p.text), updatedAt: firebase.firestore.FieldValue.serverTimestamp() });
+  }
+
+  function updateAwayUi() {
+    const p = awayPrefs();
+    document.getElementById("away-text").value = p.text;
+    document.getElementById("away-toggle-btn").textContent = p.on ? "🤖 Otomatik yanıt: Açık (kapat)" : "🤖 Otomatik yanıt: Kapalı (aç)";
+  }
+
+  document.getElementById("away-toggle-btn").addEventListener("click", async () => {
+    if (!localSessionData) return;
+    const msg = document.getElementById("away-msg");
+    const text = document.getElementById("away-text").value.trim().slice(0, 500);
+    if (!text) { msg.textContent = "Bir yanıt metni yaz."; return; }
+    localSessionData.awayText = text;
+    localSessionData.awayOn = !awayPrefs().on;
+    await saveLocalPrefs();
+    updateAwayUi();
+    msg.textContent = "Kaydediliyor…";
+    try {
+      await publishAway();
+      msg.textContent = localSessionData.awayOn
+        ? "Açık: birebir sohbetlerde sana yazanlara en fazla 6 saatte bir bu yanıt gider (Code.gs v7 gerekli)."
+        : "Kapatıldı.";
+    } catch (e) {
+      msg.textContent = e && e.code === "permission-denied" ? "Kaydedilemedi: Firestore kurallarının güncellenmesi gerekiyor." : "Kaydedilemedi: " + e.message;
+    }
+  });
+  document.getElementById("away-text").addEventListener("change", async () => {
+    if (!localSessionData) return;
+    localSessionData.awayText = document.getElementById("away-text").value.trim().slice(0, 500);
+    await saveLocalPrefs();
+    if (awayPrefs().on) publishAway().catch(() => {});
+  });
+
+  // New chats since it was turned on get the reply too.
+  let awayRefreshTimer = null;
+  function refreshAwaySoon() {
+    clearTimeout(awayRefreshTimer);
+    if (!awayPrefs().on) return;
+    awayRefreshTimer = setTimeout(() => { if (myUid && awayPrefs().on) publishAway().catch(() => {}); }, 8000);
+  }
+
+  /* ---------------- Translating a message ----------------
+     Through the push server's Google Translate (LanguageApp): the text
+     leaves the app for this, so it is asked once and only on a tap. */
+
+  const translations = new Map(); // msgId -> text
+  const TRANSLATE_OK_KEY = "calcut_translate_ok";
+
+  async function translateMessage(m) {
+    let ok = false;
+    try { ok = localStorage.getItem(TRANSLATE_OK_KEY) === "1"; } catch (e) {}
+    if (!ok) {
+      if (!confirm("Çeviri için bu mesajın metni bildirim sunucun üzerinden Google Çeviri'ye gönderilir (uçtan uca şifrelemenin dışına çıkar). Devam edilsin mi?")) return;
+      try { localStorage.setItem(TRANSLATE_OK_KEY, "1"); } catch (e) {}
+    }
+    showToast("Çevriliyor…");
+    const r = await requestPush({ kind: "translate", text: m.text.slice(0, 4000), to: "tr" });
+    hideToast();
+    let text = r && r.status === 200 && r.data && typeof r.data.text === "string" ? r.data.text : null;
+    if (text && text.trim() === m.text.trim()) {
+      const r2 = await requestPush({ kind: "translate", text: m.text.slice(0, 4000), to: "en" });
+      if (r2 && r2.status === 200 && r2.data && typeof r2.data.text === "string") text = r2.data.text;
+    }
+    if (!text) {
+      alert("Çevrilemedi" + (r && r.data && r.data.error ? ": " + r.data.error : " (Code.gs v7 gerekli)") + ".");
+      return;
+    }
+    translations.set(m.id, text);
+    renderMessages(currentMessages);
+  }
+
   const viewOnceInput = document.getElementById("viewonce-input");
   document.getElementById("attach-viewonce-btn").addEventListener("click", () => {
     attachMenu.classList.add("hidden");
@@ -9986,6 +10530,8 @@
   // Leaving a chat (or locking) drops a pending reply and discards a recording.
   function leaveComposer() {
     stashDraft();
+    forgetVanish();
+    translations.clear();
     cancelReply();
     attachMenu.classList.add("hidden");
     emojiPanel.classList.add("hidden");

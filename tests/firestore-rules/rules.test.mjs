@@ -354,3 +354,35 @@ test("scheduled messages: only the sender sees, cancels and delivers them", asyn
   await assertFails(setDoc(doc(as("bob"), "scheduled/s2"), { ...sched, from: "bob", convId: "g1", msg: { ...msg, from: "bob" } }));
   await assertSucceeds(setDoc(doc(as("alice"), "scheduled/s3"), { ...sched, convId: "g1" }));
 });
+
+test("communities: admins keep a list of up to 20 linked groups", async () => {
+  await seed();
+  await assertSucceeds(setDoc(doc(as("alice"), "conversations/cm1"), { isGroup: true, isChannel: true, isCommunity: true, groupLinks: [], groupName: "köy", createdBy: "alice", admins: ["alice"], participants: ["alice"] }));
+  const link = { convId: "g1", name: "grup", code: "abcdefghijklmnop" };
+  await assertSucceeds(updateDoc(doc(as("alice"), "conversations/cm1"), { groupLinks: [link] }));
+  await assertFails(updateDoc(doc(as("alice"), "conversations/cm1"), { groupLinks: "x" }));
+  await assertFails(updateDoc(doc(as("alice"), "conversations/cm1"), { groupLinks: Array.from({ length: 21 }, () => link) }));
+  await env.withSecurityRulesDisabled(ctx => updateDoc(doc(ctx.firestore(), "conversations/cm1"), { participants: ["alice", "bob"] }));
+  await assertFails(updateDoc(doc(as("bob"), "conversations/cm1"), { groupLinks: [] }));
+  // Members post nothing there (it's a channel) but can read the links.
+  await assertSucceeds(getDoc(doc(as("bob"), "conversations/cm1")));
+  await assertFails(addDoc(collection(as("bob"), "conversations/cm1/messages"), { from: "bob", type: "text", ciphertext: "x", iv: "y", wrappedKeys: {}, ts: serverTimestamp() }));
+});
+
+test("auto-reply: only the owner reads and writes their away replies", async () => {
+  await seed();
+  const away = { on: true, replies: { c1: { iv: "a", ciphertext: "b", wrappedKeys: { alice: "k", bob: "k" } } }, updatedAt: serverTimestamp() };
+  await assertSucceeds(setDoc(doc(as("alice"), "awayReplies/alice"), away));
+  await assertFails(setDoc(doc(as("bob"), "awayReplies/alice"), away));
+  await assertFails(getDoc(doc(as("bob"), "awayReplies/alice")));
+  await assertSucceeds(getDoc(doc(as("alice"), "awayReplies/alice")));
+  await assertFails(setDoc(doc(as("alice"), "awayReplies/alice"), { ...away, lastSent: {} }));
+  await assertFails(setDoc(doc(as("alice"), "awayReplies/alice"), { ...away, on: "yes" }));
+  await assertSucceeds(deleteDoc(doc(as("alice"), "awayReplies/alice")));
+});
+
+test("vanishing and auto-reply messages are ordinary messages; the reader may delete one", async () => {
+  await seed();
+  await assertSucceeds(setDoc(doc(as("alice"), "conversations/c1/messages/v1"), { from: "alice", type: "text", ciphertext: "x", iv: "y", wrappedKeys: {}, vanish: 30, ts: serverTimestamp() }));
+  await assertSucceeds(deleteDoc(doc(as("bob"), "conversations/c1/messages/v1")));
+});

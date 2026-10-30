@@ -142,8 +142,10 @@ service cloud.firestore {
           (request.resource.data.pinnedMessage is string && request.resource.data.pinnedMessage.size() <= 64))) ||
         // Group admins: name, photo, members and admins.
         (isGroupConv() && request.auth.uid in groupAdmins() &&
-         changedKeys().hasOnly(['groupName', 'groupAvatar', 'participants', 'admins', 'participantNicknames', 'unreadCount', 'updatedAt', 'inviteCode', 'onlyAdmins']) &&
+         changedKeys().hasOnly(['groupName', 'groupAvatar', 'participants', 'admins', 'participantNicknames', 'unreadCount', 'updatedAt', 'inviteCode', 'onlyAdmins', 'groupLinks']) &&
          (!changedKeys().hasAny(['onlyAdmins']) || request.resource.data.onlyAdmins is bool) &&
+         // A community's groups: [{ convId, name, code }].
+         (!changedKeys().hasAny(['groupLinks']) || (request.resource.data.groupLinks is list && request.resource.data.groupLinks.size() <= 20)) &&
          (!changedKeys().hasAny(['inviteCode']) || !('inviteCode' in request.resource.data) ||
           (request.resource.data.inviteCode is string && request.resource.data.inviteCode.size() >= 16 && request.resource.data.inviteCode.size() <= 64)) &&
          request.resource.data.participants.size() >= 1 && request.resource.data.participants.size() <= maxMembers(resource.data) &&
@@ -270,6 +272,18 @@ service cloud.firestore {
         request.resource.data.msg is map && request.resource.data.msg.from == request.auth.uid &&
         request.auth.uid in get(/databases/$(database)/documents/conversations/$(request.resource.data.convId)).data.participants &&
         mayPost(request.resource.data.convId);
+    }
+
+    // ---------------- auto-reply (away) ----------------
+    // { on, replies: { convId: { iv, ciphertext, wrappedKeys } }, updatedAt },
+    // encrypted by the owner's app; the push server copies a reply into a
+    // chat when someone writes (Code.gs). Only the owner reads or writes it.
+    match /awayReplies/{uid} {
+      allow read, delete: if isSignedIn() && request.auth.uid == uid;
+      allow create, update: if isSignedIn() && request.auth.uid == uid &&
+        request.resource.data.keys().hasOnly(['on', 'replies', 'updatedAt']) &&
+        request.resource.data.on is bool && request.resource.data.replies is map &&
+        request.resource.data.replies.size() <= 500;
     }
 
     // ---------------- linking another device ----------------

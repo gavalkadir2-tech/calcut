@@ -9,6 +9,7 @@
 //   | { idToken, kind: "test" } | { idToken, kind: "register-token" | "unregister-token", token }
 //   | { idToken, kind: "schedule" } (starts the every-minute delivery of scheduled messages)
 //   | { idToken, kind: "gif-search", q } | { idToken, kind: "gif-fetch", url } (Tenor, script property TENOR_KEY)
+//   | { idToken, kind: "translate", text, to } (Google Translate, no key needed)
 // The ID token is checked with Google (Identity Toolkit accounts:lookup), the
 // sender is verified in Firestore, then a data-only FCM push goes to the
 // recipients' devices (users/{uid}.fcmTokens).
@@ -21,7 +22,7 @@
 // run setup() once from the editor (▶ Run) and allow it: that lets the
 // script start its own every-minute timer.
 
-const WORKER_VERSION = 6;
+const WORKER_VERSION = 7;
 // The Firebase web API key (public, same as in firebase-config.js); only used
 // to ask Google whether an ID token is valid.
 const FIREBASE_API_KEY = "AIzaSyB0JTRgod2uk5KtYtnd4OLiG0LQ5qwxEwI";
@@ -40,6 +41,7 @@ function doPost(e) {
     if (!uid) return json_({ error: "unauthorized", v: WORKER_VERSION });
     if (body.kind === "ice-servers") return json_({ iceServers: turnIceServers_(), v: WORKER_VERSION });
     if (body.kind === "link-token") return json_({ token: customToken_(sa, uid), v: WORKER_VERSION });
+    if (body.kind === "translate") return json_(Object.assign(translate_(body.text, body.to), { v: WORKER_VERSION }));
     if (body.kind === "gif-search") return json_(Object.assign(gifSearch_(body.q), { v: WORKER_VERSION }));
     if (body.kind === "gif-fetch") return json_(Object.assign(gifFetch_(body.url), { v: WORKER_VERSION }));
     if (body.kind === "schedule") {
@@ -127,6 +129,10 @@ function handle_(body, uid, sa) {
     conv.participants
       .filter(u => u !== uid && (!muted[u] || mentions.indexOf(u) >= 0))
       .forEach(r => { sent += pushToUser_(fs, sa, r, uid, { kind: "message" }); });
+    if (!conv.isGroup && conv.participants.length === 2 && !msg.autoReply) {
+      const other = conv.participants.filter(u => u !== uid)[0];
+      try { autoReply_(fs, sa, other, uid, body.convId); } catch (e) { Logger.log("auto-reply: " + e); }
+    }
     return sent;
   }
   if (body.kind === "call" || body.kind === "call-missed") {
@@ -180,6 +186,50 @@ function pushToUser_(fs, sa, toUid, fromUid, data) {
     }
   });
   return sent;
+}
+
+/* ---------------- Translation ---------------- */
+
+function translate_(text, to) {
+  if (typeof text !== "string" || !text.trim() || text.length > 5000) return { error: "bad text" };
+  const target = typeof to === "string" && /^[a-z]{2}(-[A-Z]{2})?$/.test(to) ? to : "tr";
+  return { text: LanguageApp.translate(text, "", target) };
+}
+
+/* ---------------- Auto-reply (away) ----------------
+   awayReplies/{owner}: { on, replies: { convId: { iv, ciphertext, wrappedKeys } } },
+   made and encrypted by the owner's app. When someone writes in a 1:1
+   chat, the reply for that chat is copied in as a message from the
+   owner, at most every AWAY_EVERY_MS per chat. */
+
+const AWAY_EVERY_MS = 6 * 3600 * 1000;
+
+function autoReply_(fs, sa, owner, toUid, convId) {
+  const doc = fs.getRaw(`awayReplies/${owner}`);
+  const f = doc && doc.fields;
+  if (!f || !f.on || f.on.booleanValue !== true) return;
+  const reply = f.replies && f.replies.mapValue && f.replies.mapValue.fields && f.replies.mapValue.fields[convId];
+  const r = reply && reply.mapValue && reply.mapValue.fields;
+  if (!r || !r.iv || !r.ciphertext || !r.wrappedKeys) return;
+  const last = f.lastSent && f.lastSent.mapValue && f.lastSent.mapValue.fields && f.lastSent.mapValue.fields[convId];
+  if (last && Date.now() - Number(last.integerValue || 0) < AWAY_EVERY_MS) return;
+  const ownerUser = fs.get(`users/${owner}`);
+  if (ownerUser && ownerUser.blocked && ownerUser.blocked[toUid]) return;
+  const quote = k => "`" + k.replace(/\\/g, "\\\\").replace(/`/g, "\\`") + "`";
+  const id = Utilities.getUuid().replace(/-/g, "").slice(0, 20);
+  fs.commit([
+    { update: { name: fs.name(`conversations/${convId}/messages/${id}`), fields: {
+        from: { stringValue: owner }, type: { stringValue: "text" }, iv: r.iv, ciphertext: r.ciphertext,
+        wrappedKeys: r.wrappedKeys, read: { booleanValue: false }, autoReply: { booleanValue: true } } },
+      currentDocument: { exists: false },
+      updateTransforms: [{ fieldPath: "ts", setToServerValue: "REQUEST_TIME" }] },
+    { transform: { document: fs.name(`conversations/${convId}`), fieldTransforms: [
+      { fieldPath: "updatedAt", setToServerValue: "REQUEST_TIME" },
+      { fieldPath: "unreadCount." + quote(toUid), increment: { integerValue: "1" } }] } },
+    { update: { name: doc.name, fields: { lastSent: { mapValue: { fields: { [convId]: { integerValue: String(Date.now()) } } } } } },
+      updateMask: { fieldPaths: ["lastSent." + quote(convId)] } },
+  ]);
+  pushToUser_(fs, sa, toUid, owner, { kind: "message" });
 }
 
 /* ---------------- GIF search (Tenor) ----------------
@@ -400,6 +450,17 @@ class Firestore_ {
     if (res.getResponseCode() !== 200) {
       throw new Error("firestore patch " + res.getResponseCode() + ": " + res.getContentText().slice(0, 300));
     }
+  }
+
+  // The REST document ({ name, fields }), or null.
+  getRaw(path) {
+    const res = UrlFetchApp.fetch(this.base + path, {
+      headers: { Authorization: "Bearer " + getAccessToken_(this.sa) },
+      muteHttpExceptions: true,
+    });
+    if (res.getResponseCode() === 404) return null;
+    if (res.getResponseCode() !== 200) throw new Error("firestore get " + res.getResponseCode());
+    return JSON.parse(res.getContentText());
   }
 
   name(path) {
