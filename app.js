@@ -1574,7 +1574,7 @@
   // and by "Ayarları dışa / içe aktar".
   const DEVICE_PREF_KEYS = ["pinned", "archived", "starred", "hiddenMsgs", "wallpapers", "lockedChats", "broadcastLists",
     "stickers", "deletedChats", "chatSounds", "statusPrivacy", "defaultDisappearing", "drafts", "recentEmojis",
-    "chatLists", "awayOn", "awayText"];
+    "chatLists", "awayOn", "awayText", "clearedChats"];
 
   function devicePrefsOf(d) {
     const out = {};
@@ -1713,13 +1713,18 @@
      chat comes back to the list with the next new message. The person
      stays in Kişiler. "Herkesten sil" erases every message for everyone. */
 
+  // Messages up to this time are gone for me: the chat was deleted or cleared.
   function chatDeletedAt(convId) {
+    return Math.max(chatRemovedAt(convId), chatClearedAt(convId));
+  }
+
+  function chatRemovedAt(convId) {
     const d = localSessionData && localSessionData.deletedChats;
     return (d && typeof d === "object" && Number(d[convId])) || 0;
   }
 
   function chatHiddenForMe(conv) {
-    const at = chatDeletedAt(conv.id);
+    const at = chatRemovedAt(conv.id);
     return !!at && (conv.lastTs || conv.updatedAt || 0) <= at;
   }
 
@@ -2126,6 +2131,7 @@
       } else {
         const previewEl = li.querySelector(".thread-preview");
         if (isChatLocked(conv.id)) previewEl.textContent = "🔒 Kilitli sohbet";
+        else if ((conv.lastTs || 0) && conv.lastTs <= chatClearedAt(conv.id) && !draftOf(conv.id)) previewEl.textContent = "🧹 Sohbet temizlendi";
         else if (draftOf(conv.id) && conv.id !== activeConvId) {
           const tag = document.createElement("span");
           tag.className = "draft-tag";
@@ -3401,7 +3407,10 @@
     ]);
   }
 
-  document.querySelector(".thread-header-titles").addEventListener("click", () => openChatMenu());
+  document.querySelector(".thread-header-titles").addEventListener("click", () => {
+    if (activeIsGroup) openChatMenu();
+    else openContactInfo();
+  });
   document.getElementById("group-info-close").addEventListener("click", () => groupInfoModal.classList.add("hidden"));
 
   document.getElementById("group-rename-btn").addEventListener("click", () => {
@@ -5204,6 +5213,11 @@
   let shownMsgConv = null;
 
   function renderMessages(msgs) {
+    renderMessagesInto(msgs);
+    if (selectedIds) updateSelection();
+  }
+
+  function renderMessagesInto(msgs) {
     messageListEl.innerHTML = "";
     const query = searchQuery.trim();
     let matchCount = 0;
@@ -5518,21 +5532,25 @@
   async function deleteForEveryone(msgId) {
     if (!confirm("Bu mesaj herkesten silinsin mi?")) return;
     try {
-      // Erase the content and its keys too, not just hide it: a "deleted"
-      // flag alone would leave the encrypted message readable in Firestore.
-      const erase = firebase.firestore.FieldValue.delete();
-      await fbDb.collection("conversations").doc(activeConvId).collection("messages").doc(msgId).update({
-        deleted: true,
-        deletedAt: firebase.firestore.FieldValue.serverTimestamp(),
-        ciphertext: erase,
-        iv: erase,
-        wrappedKeys: erase,
-      });
-      const deletedMsg = currentMessages.find(m => m.id === msgId);
-      if (deletedMsg) await deleteChunks(deletedMsg.chunked);
+      await eraseForEveryone(msgId);
     } catch (e) {
       alert("Silinemedi: " + e.message);
     }
+  }
+
+  async function eraseForEveryone(msgId) {
+    // Erase the content and its keys too, not just hide it: a "deleted"
+    // flag alone would leave the encrypted message readable in Firestore.
+    const erase = firebase.firestore.FieldValue.delete();
+    const deletedMsg = currentMessages.find(m => m.id === msgId);
+    await fbDb.collection("conversations").doc(activeConvId).collection("messages").doc(msgId).update({
+      deleted: true,
+      deletedAt: firebase.firestore.FieldValue.serverTimestamp(),
+      ciphertext: erase,
+      iv: erase,
+      wrappedKeys: erase,
+    });
+    if (deletedMsg) await deleteChunks(deletedMsg.chunked);
   }
 
   async function promptEditMessage(msg) {
@@ -5561,6 +5579,7 @@
       const pinned = activeConv() && activeConv().pinnedMessage === m.id;
       actions.push({ label: pinned ? "📌 Sabitlemeyi kaldır" : "📌 Sabitle", run: () => setPinnedMessage(pinned ? null : m.id) });
     }
+    actions.push({ label: "☑️ Seç", run: () => startSelecting(m.id) });
     if (m.text && !m.vanish) actions.push({ label: "📋 Kopyala", run: () => copyText(m.text) });
     if (m.text && !m.vanish && !m.deleted) {
       actions.push(translations.has(m.id)
@@ -5763,8 +5782,11 @@
   const forwardThreadList = document.getElementById("forward-thread-list");
   let forwardingMsgId = null;
 
+  // msgId: one id, or several (from selecting).
   function openForwardModal(msgId) {
     forwardingMsgId = msgId;
+    document.getElementById("forward-title").textContent = Array.isArray(msgId) && msgId.length > 1
+      ? msgId.length + " mesajı ilet" : "Mesajı İlet";
     forwardThreadList.innerHTML = "";
     const list = Array.from(conversations.values());
     if (!list.length) {
@@ -5788,12 +5810,20 @@
   document.getElementById("forward-cancel").addEventListener("click", closeForwardModal);
 
   async function forwardMessageTo(targetConvId) {
-    const msg = currentMessages.find(m => m.id === forwardingMsgId);
+    const ids = Array.isArray(forwardingMsgId) ? forwardingMsgId : [forwardingMsgId];
     closeForwardModal();
-    if (!msg) return;
+    for (const id of ids) {
+      if (!(await forwardOne(currentMessages.find(m => m.id === id), targetConvId))) break;
+    }
+    if (ids.length > 1) showToast("➡️ " + ids.length + " mesaj iletildi", 1800);
+  }
+
+  // false when it failed (and the rest shouldn't be tried).
+  async function forwardOne(msg, targetConvId) {
+    if (!msg) return true;
     const targetConv = conversations.get(targetConvId);
     const otherUids = targetConv ? targetConv.otherUids : [];
-    if (!otherUids.length) return;
+    if (!otherUids.length) return false;
     try {
       if (msg.type === "text") {
         await sendEncryptedTo(targetConvId, otherUids, msg.text, "text");
@@ -5803,7 +5833,7 @@
         const url = largeFileUrls.get(msg.id);
         if (!url) {
           alert("Büyük bir dosyayı iletmeden önce bir kez açman gerekiyor.");
-          return;
+          return true;
         }
         const blob = await (await fetch(url)).blob();
         await sendLargeFileTo(targetConvId, otherUids, new File([blob], msg.file.name || "dosya", { type: msg.file.mime || "" }));
@@ -5812,8 +5842,10 @@
       } else if (msg.type === "audio") {
         await sendEncryptedTo(targetConvId, otherUids, msg.audio, "audio");
       }
+      return true;
     } catch (e) {
       alert("İletilemedi: " + e.message);
+      return false;
     }
   }
 
@@ -6168,6 +6200,8 @@
      worker notifies a mentioned member even if they muted the group. */
 
   const NICK_CHARS = "a-z0-9_çğıöşü";
+  // "@herkes" mentions every member (they're told even if they muted the group).
+  const MENTION_ALL = "herkes";
   const mentionPicker = document.getElementById("mention-picker");
 
   function groupMembersForMention() {
@@ -6184,6 +6218,7 @@
   }
 
   function mentionedUids(text) {
+    if (mentionPattern(MENTION_ALL).test(text)) return groupMembersForMention().map(mb => mb.uid);
     return groupMembersForMention().filter(mb => mentionPattern(mb.nickname).test(text)).map(mb => mb.uid);
   }
 
@@ -6193,6 +6228,7 @@
     if (!conv) return;
     const known = new Map(Object.entries(conv.participantNicknames).map(([uid, n]) => [n, uid]));
     known.set(myNickname, myUid);
+    known.set(MENTION_ALL, myUid); // @herkes is for me too
     const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
     const nodes = [];
     while (walker.nextNode()) nodes.push(walker.currentNode);
@@ -6234,16 +6270,21 @@
     if (!match) { hideMentionPicker(); return; }
     const prefix = normalizeNickname(match[2]);
     const members = groupMembersForMention().filter(mb => mb.nickname.startsWith(prefix)).slice(0, 8);
+    if (MENTION_ALL.startsWith(prefix) && groupMembersForMention().length > 1) members.unshift({ uid: null, nickname: MENTION_ALL });
     if (!members.length) { hideMentionPicker(); return; }
     mentionPicker.innerHTML = "";
     members.forEach(mb => {
       const btn = document.createElement("button");
       const av = document.createElement("span");
       av.className = "avatar small";
-      watchProfile(mb.uid);
-      paintAvatar(av, mb.uid, mb.nickname);
+      if (mb.uid) {
+        watchProfile(mb.uid);
+        paintAvatar(av, mb.uid, mb.nickname);
+      } else {
+        av.textContent = "👥";
+      }
       const label = document.createElement("span");
-      label.textContent = "@" + mb.nickname;
+      label.textContent = "@" + mb.nickname + (mb.uid ? "" : " · gruptaki herkes");
       btn.append(av, label);
       // Keep the keyboard open while picking.
       btn.addEventListener("mousedown", e => e.preventDefault());
@@ -6644,6 +6685,8 @@
     const actions = [];
     if (activeIsGroup) {
       actions.push({ label: "👥 Grup bilgisi", run: () => { renderGroupInfo(); groupInfoModal.classList.remove("hidden"); } });
+    } else {
+      actions.push({ label: "👤 Kişi bilgisi", run: openContactInfo });
     }
     actions.push({ label: "🎨 Duvar kağıdı", run: chooseWallpaper });
     actions.push({ label: "🔔 Bildirim sesi" + (chatSoundFor(convId) ? " (özel)" : ""), run: chooseChatSound });
@@ -6655,6 +6698,7 @@
     const archived = archivedConvIds().includes(convId);
     if (!archived) actions.push({ label: pinned ? "📌 Sabitlemeyi kaldır" : "📌 Sabitle", run: () => togglePin(convId) });
     actions.push({ label: archived ? "🗄️ Arşivden çıkar" : "🗄️ Arşivle", run: () => toggleArchive(convId) });
+    actions.push({ label: "🧹 Sohbeti temizle", run: () => clearChatForMe(conv) });
     actions.push({ label: "🗑 Sohbeti sil", danger: true, run: () => askDeleteChat(conv) });
     return actions;
   }
@@ -10468,6 +10512,160 @@
   }
   jumpDateInput.addEventListener("change", () => jumpToDate(jumpDateInput.value));
 
+  /* ---------------- Selecting several messages ----------------
+     "☑️ Seç" on a message starts it; taps then add / remove messages, and
+     the bar above the input stars, copies, forwards or deletes them all. */
+
+  const selectBar = document.getElementById("select-bar");
+  let selectedIds = null; // Set while selecting
+
+  function startSelecting(msgId) {
+    selectedIds = new Set([msgId]);
+    attachMenu.classList.add("hidden");
+    updateSelection();
+  }
+
+  function stopSelecting() {
+    if (!selectedIds) return;
+    selectedIds = null;
+    updateSelection();
+  }
+
+  function selectedMessages() {
+    return selectedIds ? currentMessages.filter(m => selectedIds.has(m.id)) : [];
+  }
+
+  function updateSelection() {
+    const on = !!selectedIds;
+    selectBar.classList.toggle("hidden", !on);
+    messageListEl.classList.toggle("selecting", on);
+    messageListEl.querySelectorAll(".msg-bubble[data-msg-id]").forEach(el =>
+      el.classList.toggle("selected", on && selectedIds.has(el.dataset.msgId)));
+    if (!on) return;
+    const msgs = selectedMessages();
+    document.getElementById("select-count").textContent = msgs.length + " seçili";
+    const live = msgs.filter(m => !m.deleted);
+    document.getElementById("select-forward").disabled = !live.length || live.some(m => m.viewOnce || m.vanish || !["text", "image", "file", "audio"].includes(m.type));
+    document.getElementById("select-copy").disabled = !live.some(m => m.text && !m.vanish);
+    document.getElementById("select-star").disabled = !live.length;
+    document.getElementById("select-delete-all").classList.toggle("hidden", !live.length || live.some(m => m.from !== "me" || m.call));
+  }
+
+  // Taps on messages select instead of doing their usual thing.
+  messageListEl.addEventListener("click", e => {
+    if (!selectedIds) return;
+    const bubble = e.target.closest(".msg-bubble[data-msg-id]");
+    e.stopImmediatePropagation();
+    e.preventDefault();
+    if (!bubble) return;
+    const id = bubble.dataset.msgId;
+    if (selectedIds.has(id)) selectedIds.delete(id); else selectedIds.add(id);
+    if (!selectedIds.size) stopSelecting(); else updateSelection();
+  }, true);
+
+  document.getElementById("select-cancel").addEventListener("click", stopSelecting);
+  document.getElementById("select-star").addEventListener("click", async () => {
+    const msgs = selectedMessages().filter(m => !m.deleted);
+    const convId = activeConvId;
+    const allStarred = msgs.every(m => msgFlag("starred", convId, m.id));
+    for (const m of msgs) await setMsgFlag("starred", convId, m.id, !allStarred);
+    stopSelecting();
+    renderMessages(currentMessages);
+    showToast(allStarred ? "Yıldızlar kaldırıldı" : "⭐ " + msgs.length + " mesaj yıldızlandı", 1800);
+  });
+  document.getElementById("select-copy").addEventListener("click", () => {
+    const msgs = selectedMessages().filter(m => m.text && !m.vanish && !m.deleted);
+    const conv = activeConv();
+    const name = m => m.from === "me" ? myNickname : (m.fromNickname || (conv && conv.otherNickname) || "?");
+    copyText(msgs.length === 1 ? msgs[0].text : msgs.map(m =>
+      "[" + new Date(m.ts).toLocaleString("tr-TR", { dateStyle: "short", timeStyle: "short" }) + "] @" + name(m) + ": " + m.text).join("\n"));
+    stopSelecting();
+  });
+  document.getElementById("select-forward").addEventListener("click", () => {
+    const ids = selectedMessages().filter(m => !m.deleted).map(m => m.id);
+    stopSelecting();
+    if (ids.length) openForwardModal(ids);
+  });
+  document.getElementById("select-hide").addEventListener("click", async () => {
+    const msgs = selectedMessages();
+    if (!confirm(msgs.length + " mesaj senden silinsin mi?")) return;
+    const convId = activeConvId;
+    for (const m of msgs) await setMsgFlag("hiddenMsgs", convId, m.id, true);
+    stopSelecting();
+    renderMessages(currentMessages);
+  });
+  document.getElementById("select-delete-all").addEventListener("click", async () => {
+    const msgs = selectedMessages().filter(m => !m.deleted && m.from === "me");
+    if (!msgs.length || !confirm(msgs.length + " mesaj herkesten silinsin mi?")) return;
+    stopSelecting();
+    for (const m of msgs) await eraseForEveryone(m.id).catch(e => alert("Silinemedi: " + e.message));
+  });
+
+  /* ---------------- Contact info ----------------
+     Tapping a 1:1 chat's name: photo, about, last seen, groups in common
+     and the usual chat actions. */
+
+  const contactInfoModal = document.getElementById("contact-info-modal");
+
+  function commonGroupsWith(uid) {
+    return [...conversations.values()]
+      .filter(c => c.isGroup && !c.isChannel && c.participants.includes(uid) && c.participants.includes(myUid))
+      .sort((a, b) => (a.groupName || "").localeCompare(b.groupName || "", "tr"));
+  }
+
+  function openContactInfo() {
+    const conv = activeConv();
+    if (!conv || conv.isGroup || !conv.otherUid) return;
+    const uid = conv.otherUid;
+    watchProfile(uid);
+    paintAvatar(document.getElementById("contact-info-avatar"), uid, conv.otherNickname);
+    document.getElementById("contact-info-name").textContent = "@" + conv.otherNickname;
+    document.getElementById("contact-info-presence").textContent = presenceText(uid) || "";
+    document.getElementById("contact-info-about").textContent = aboutOf(uid) || "";
+    const list = document.getElementById("contact-info-groups");
+    list.innerHTML = "";
+    const groups = commonGroupsWith(uid);
+    document.getElementById("contact-info-groups-title").textContent = groups.length
+      ? "Ortak gruplar (" + groups.length + ")" : "Ortak grup yok";
+    groups.forEach(g => {
+      const li = document.createElement("li");
+      li.textContent = groupIcon(g) + " " + (g.groupName || "Grup");
+      li.addEventListener("click", () => {
+        contactInfoModal.classList.add("hidden");
+        openConversation(g.id, null, null, { isGroup: true, groupName: g.groupName, participants: g.participants });
+      });
+      list.appendChild(li);
+    });
+    contactInfoModal.classList.remove("hidden");
+  }
+
+  const contactInfoAction = (id, run) => document.getElementById(id).addEventListener("click", () => {
+    contactInfoModal.classList.add("hidden");
+    run();
+  });
+  contactInfoAction("contact-info-media", () => document.getElementById("thread-media-btn").click());
+  contactInfoAction("contact-info-search", () => document.getElementById("thread-search-btn").click());
+  contactInfoAction("contact-info-more", openChatMenu);
+  document.getElementById("contact-info-close").addEventListener("click", () => contactInfoModal.classList.add("hidden"));
+
+  /* ---------------- Clearing a chat ----------------
+     Hides every message up to now on this device; unlike deleting it,
+     the chat stays in the list. */
+
+  function chatClearedAt(convId) {
+    const d = localSessionData && localSessionData.clearedChats;
+    return (d && typeof d === "object" && Number(d[convId])) || 0;
+  }
+
+  async function clearChatForMe(conv) {
+    if (!localSessionData || !currentLocalKey) return;
+    if (!confirm("Bu sohbetteki tüm mesajlar bu cihazdan silinsin mi? Sohbet listede kalır; karşı tarafta mesajlar durur.")) return;
+    localSessionData.clearedChats = { ...(localSessionData.clearedChats || {}), [conv.id]: Date.now() };
+    await saveLocalPrefs();
+    renderMessages(currentMessages);
+    renderThreadList();
+  }
+
   const viewOnceInput = document.getElementById("viewonce-input");
   document.getElementById("attach-viewonce-btn").addEventListener("click", () => {
     attachMenu.classList.add("hidden");
@@ -10732,6 +10930,7 @@
 
   // Leaving a chat (or locking) drops a pending reply and discards a recording.
   function leaveComposer() {
+    stopSelecting();
     stashDraft();
     forgetVanish();
     translations.clear();

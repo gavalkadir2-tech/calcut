@@ -14,3 +14,9 @@ test("only whole @nicknames count as mentions", () => {
   assert.deepStrictEqual(mentionedUids("mail@ali.com"), []);
   assert.deepStrictEqual(mentionedUids("@alis"), []);
 });
+
+test("@herkes mentions every member", () => {
+  assert.deepStrictEqual(mentionedUids("@herkes toplantı 5'te"), ["u1", "u2", "u3"]);
+  assert.deepStrictEqual(mentionedUids("herkes gelsin"), []);
+  assert.deepStrictEqual(mentionedUids("@herkesi"), []);
+});
