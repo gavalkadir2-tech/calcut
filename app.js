@@ -2817,6 +2817,7 @@
       messageInput.disabled = false;
       document.getElementById("message-send-btn").disabled = false;
       attachPhotoBtn.disabled = false;
+      document.getElementById("composer-camera-btn").disabled = false;
       document.getElementById("voice-btn").disabled = false;
       threadBlockedBanner.classList.add("hidden");
     } else {
@@ -2830,6 +2831,7 @@
     hideMentionPicker();
     mediaGallery.classList.add("hidden");
     applyWallpaper();
+    updateComposerMode();
     updateDisappearingUi();
     updateMuteUi();
   }
@@ -3363,6 +3365,7 @@
     messageInput.disabled = isBlocked;
     document.getElementById("message-send-btn").disabled = isBlocked;
     attachPhotoBtn.disabled = isBlocked;
+    document.getElementById("composer-camera-btn").disabled = isBlocked;
     document.getElementById("voice-btn").disabled = isBlocked;
     document.getElementById("thread-call-btn").disabled = isBlocked;
     document.getElementById("thread-video-call-btn").disabled = isBlocked;
@@ -5005,11 +5008,23 @@
       ? { day: "numeric", month: "long" } : { day: "numeric", month: "long", year: "numeric" });
   }
 
+  // Ids already on screen, so only newly arrived messages animate in.
+  let shownMsgIds = new Set();
+  let shownMsgConv = null;
+
   function renderMessages(msgs) {
     messageListEl.innerHTML = "";
     const query = searchQuery.trim();
     let matchCount = 0;
     let lastDay = null;
+    // A run of messages from the same person: only the first has a tail.
+    let lastFrom = null;
+    const animate = shownMsgConv === activeConvId;
+    const decorate = (el, m) => {
+      if (m.from !== lastFrom) el.classList.add("tail");
+      lastFrom = m.from;
+      if (animate && !shownMsgIds.has(m.id)) el.classList.add("appear");
+    };
     msgs.forEach(m => {
       if (m.expiresAtMillis && m.expiresAtMillis <= Date.now()) return;
       if (msgFlag("hiddenMsgs", activeConvId, m.id)) return; // deleted for me
@@ -5025,6 +5040,7 @@
       const day = new Date(m.ts).toDateString();
       if (day !== lastDay) {
         lastDay = day;
+        lastFrom = null;
         const sep = document.createElement("div");
         sep.className = "day-sep";
         sep.textContent = dayLabel(m.ts);
@@ -5042,11 +5058,13 @@
         timeSpan.className = "msg-time";
         timeSpan.textContent = time;
         div.appendChild(timeSpan);
+        decorate(div, m);
         attachLongPress(div, () => showMessageActions(m));
         messageListEl.appendChild(div);
         return;
       }
       if (m.call) {
+        lastFrom = null;
         const callDiv = document.createElement("div");
         const missedOrRejected = isMissedIncomingCall(m.from === "me", m.call.outcome) || m.call.outcome === "rejected";
         callDiv.className = "msg-bubble call-log" + (missedOrRejected ? " call-missed" : "");
@@ -5203,10 +5221,13 @@
         });
         div.appendChild(row);
       }
+      decorate(div, m);
       attachLongPress(div, () => showMessageActions(m));
       attachSwipeReply(div, () => startReply(m.id));
       messageListEl.appendChild(div);
     });
+    shownMsgIds = new Set(msgs.map(x => x.id));
+    shownMsgConv = activeConvId;
     messageListEl.scrollTop = messageListEl.scrollHeight;
     renderPinnedBar();
     // Opened from a search result: show that message.
@@ -5739,10 +5760,22 @@
   });
   messageInput.addEventListener("input", notifyTyping);
 
+  // Like WhatsApp: 🎤 while the box is empty, ➤ once there is text.
+  const messageInputRow = document.querySelector(".message-input-row");
+  function updateComposerMode() {
+    messageInputRow.classList.toggle("has-text", !!messageInput.value.trim());
+  }
+  messageInput.addEventListener("input", updateComposerMode);
+  document.getElementById("composer-camera-btn").addEventListener("click", () => {
+    attachMenu.classList.add("hidden");
+    cameraInput.click();
+  });
+
   async function sendMessage() {
     const text = messageInput.value.trim();
     if (!text) return;
     messageInput.value = "";
+    updateComposerMode();
     hideMentionPicker();
     try {
       const fields = takeReplyFields() || {};
@@ -5979,6 +6012,7 @@
         const start = caret - match[2].length - 1;
         const insert = "@" + mb.nickname + " ";
         messageInput.value = value.slice(0, start) + insert + value.slice(caret);
+        updateComposerMode();
         const pos = start + insert.length;
         messageInput.setSelectionRange(pos, pos);
         messageInput.focus();
@@ -6252,6 +6286,38 @@
   }));
   document.getElementById("media-gallery-close").addEventListener("click", () => mediaGallery.classList.add("hidden"));
 
+  /* ---------------- Theme ----------------
+     Dark, light or the phone's setting. Only the messenger changes; the
+     calculator in front always looks the same. A plain localStorage value:
+     it says nothing about what's inside the vault. */
+
+  const THEME_KEY = "calcut_theme";
+  const themeSelect = document.getElementById("theme-select");
+  const darkQuery = window.matchMedia ? window.matchMedia("(prefers-color-scheme: dark)") : null;
+
+  function storedTheme() {
+    try {
+      const t = localStorage.getItem(THEME_KEY);
+      return ["dark", "light", "system"].includes(t) ? t : "dark";
+    } catch (e) {
+      return "dark";
+    }
+  }
+
+  function applyTheme() {
+    const t = storedTheme();
+    const light = t === "light" || (t === "system" && !!darkQuery && !darkQuery.matches);
+    document.documentElement.dataset.theme = light ? "light" : "dark";
+    themeSelect.value = t;
+  }
+
+  themeSelect.addEventListener("change", () => {
+    try { localStorage.setItem(THEME_KEY, themeSelect.value); } catch (e) {}
+    applyTheme();
+  });
+  if (darkQuery && darkQuery.addEventListener) darkQuery.addEventListener("change", applyTheme);
+  applyTheme();
+
   /* ---------------- Per-device chat settings ----------------
      Wallpapers, locked chats, broadcast lists and saved stickers live in
      the PIN-encrypted vault (localSessionData), like pins and stars: they
@@ -6302,9 +6368,37 @@
   /* ---------------- Chat menu (tap the chat's name) ---------------- */
 
   function openChatMenu() {
+    const conv = activeConv();
+    if (!conv) return;
+    const about = activeIsGroup ? "" : aboutOf(conv.otherUid);
+    showActionSheet(activeIsGroup ? conv.groupName : "@" + conv.otherNickname + (about ? " · " + about : ""), chatMenuActions());
+  }
+
+  // ⋮ in the chat header: the chat's own buttons (kept hidden in
+  // .thread-actions, so their handlers and states stay where they are),
+  // then the chat menu.
+  function openThreadMenu() {
+    const conv = activeConv();
+    if (!conv) return;
+    const btn = id => document.getElementById(id);
+    const actions = [
+      { label: "🔍 Sohbette ara", run: () => btn("thread-search-btn").click() },
+      { label: "🖼 Medya, dosyalar ve bağlantılar", run: () => btn("thread-media-btn").click() },
+      { label: "⏳ Kaybolan mesajlar" + (conv.disappearingSeconds ? " (açık)" : ""), run: () => btn("thread-disappearing-btn").click() },
+      { label: (conv.muted ? "🔔 " : "🔕 ") + btn("thread-mute-btn").title, run: () => btn("thread-mute-btn").click() },
+    ];
+    if (!btn("thread-block-btn").classList.contains("hidden")) {
+      actions.push({ label: "🚫 " + btn("thread-block-btn").title, danger: !myBlocked[activeOtherUid], run: () => btn("thread-block-btn").click() });
+    }
+    showActionSheet(activeIsGroup ? conv.groupName : "@" + conv.otherNickname, actions.concat(chatMenuActions()));
+  }
+
+  document.getElementById("thread-menu-btn").addEventListener("click", openThreadMenu);
+
+  function chatMenuActions() {
     const convId = activeConvId;
     const conv = activeConv();
-    if (!convId || !conv) return;
+    if (!convId || !conv) return [];
     const actions = [];
     if (activeIsGroup) {
       actions.push({ label: "👥 Grup bilgisi", run: () => { renderGroupInfo(); groupInfoModal.classList.remove("hidden"); } });
@@ -6319,8 +6413,7 @@
     if (!archived) actions.push({ label: pinned ? "📌 Sabitlemeyi kaldır" : "📌 Sabitle", run: () => togglePin(convId) });
     actions.push({ label: archived ? "🗄️ Arşivden çıkar" : "🗄️ Arşivle", run: () => toggleArchive(convId) });
     actions.push({ label: "🗑 Sohbeti sil", danger: true, run: () => askDeleteChat(conv) });
-    const about = activeIsGroup ? "" : aboutOf(conv.otherUid);
-    showActionSheet(activeIsGroup ? conv.groupName : "@" + conv.otherNickname + (about ? " · " + about : ""), actions);
+    return actions;
   }
 
   /* ---------------- Wallpapers ---------------- */

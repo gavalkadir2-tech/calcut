@@ -112,20 +112,23 @@
     </div>
 
     <div id="thread-detail-panel" class="hidden">
-      <div class="vault-header">
-        <button id="thread-back-btn" class="ghost">←</button>
+      <div class="vault-header chat-header">
+        <button id="thread-back-btn" class="ghost" title="Geri">←</button>
+        <span id="thread-avatar" class="avatar small hidden"></span>
         <div class="thread-header-titles">
-          <div class="thread-title-row">
-            <span id="thread-avatar" class="avatar small hidden"></span>
-            <h2 id="thread-title">Sohbet</h2>
-          </div>
+          <h2 id="thread-title">Sohbet</h2>
           <p id="thread-typing" class="hidden">yazıyor...</p>
           <p id="thread-presence" class="hidden"></p>
         </div>
+        <div class="chat-header-actions">
+          <button id="thread-video-call-btn" title="Görüntülü ara">📹</button>
+          <button id="thread-call-btn" title="Sesli ara">📞</button>
+          <button id="thread-menu-btn" title="Diğer">⋮</button>
+        </div>
       </div>
+      <!-- Shown in the ⋮ menu (see openThreadMenu); kept as buttons so their
+           existing handlers and states stay as they are. -->
       <div class="thread-actions">
-        <button id="thread-call-btn" title="Sesli ara">📞</button>
-        <button id="thread-video-call-btn" title="Görüntülü ara">📹</button>
         <button id="thread-search-btn" title="Sohbette ara">🔍</button>
         <button id="thread-media-btn" title="Medya, dosyalar ve bağlantılar">🖼</button>
         <button id="thread-disappearing-btn" title="Kaybolan mesajlar">⏳</button>
@@ -173,13 +176,16 @@
         <button id="voice-preview-send">Gönder</button>
       </div>
       <div class="message-input-row">
-        <button id="attach-photo-btn" title="Dosya ekle">📎</button>
+        <div class="composer-pill">
+          <button id="attach-photo-btn" title="Dosya ekle">📎</button>
+          <input id="message-input" type="text" placeholder="Mesaj">
+          <button id="composer-camera-btn" title="Fotoğraf çek">📷</button>
+        </div>
         <input id="photo-input" type="file" multiple class="hidden">
         <input id="camera-input" type="file" accept="image/*" capture="environment" class="hidden">
         <input id="viewonce-input" type="file" accept="image/*" class="hidden">
-        <input id="message-input" type="text" placeholder="Mesaj yaz...">
-        <button id="voice-btn" title="Sesli mesaj kaydet">🎤</button>
-        <button id="message-send-btn">Gönder</button>
+        <button id="voice-btn" class="composer-round" title="Sesli mesaj kaydet">🎤</button>
+        <button id="message-send-btn" class="composer-round" title="Gönder">➤</button>
         <div id="voice-recording">
           <button id="voice-cancel-btn" title="Kaydı sil">✕</button>
           <span class="rec-dot"></span>
@@ -213,9 +219,15 @@
         <p class="hint">Kapatırsan başkalarının çevrimiçi ve son görülme bilgisini de göremezsin.</p>
         <label class="toggle-row">
           <input id="read-receipts-toggle" type="checkbox" checked>
-          <span>Okundu bilgisi gönder (mavi tik)</span>
+          <span>Okundu bilgisi gönder (renkli çift tik)</span>
         </label>
         <p class="hint">Kapatırsan başkalarının okundu bilgisini de göremezsin. Sesli mesajların dinlendi bilgisi her zaman gönderilir.</p>
+        <label>Görünüm</label>
+        <select id="theme-select">
+          <option value="dark">Koyu</option>
+          <option value="light">Açık</option>
+          <option value="system">Telefona göre</option>
+        </select>
         <label>Hakkımda</label>
         <div class="about-row">
           <input id="about-input" type="text" maxlength="140" placeholder="Örn. Meşgulüm, sadece acil aramalar">
@@ -258,7 +270,7 @@
         <button id="enable-alarm-btn">Bildirimleri Etkinleştir</button>
         <button id="test-push-btn" class="ghost">Test bildirimi gönder</button>
         <p id="alarm-msg"></p>
-        <p class="app-version">Sürüm: 37</p>
+        <p class="app-version">Sürüm: 38</p>
         <div id="app-update-section" class="hidden">
           <hr>
           <label>Uygulama güncellemesi</label>
