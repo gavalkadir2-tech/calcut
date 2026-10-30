@@ -405,6 +405,7 @@
       return;
     }
     lockPanel.classList.add("hidden");
+    showIntruderReport();
 
     if (!myPrivateKey && localSessionData && localSessionData.uid && localSessionData.privateKeyJwk) {
       const restored = await restoreSession(localSessionData);
@@ -488,6 +489,7 @@
       publicKeyJwk,
       ...localPrefsOf(localSessionData),
       ...devicePrefsOf(localSessionData),
+      intruderKey: localSessionData && localSessionData.intruderKey,
     };
     await saveLocalBlob(currentLocalKey, await sealSession(localSessionData)).catch(() => {});
   }
@@ -576,6 +578,7 @@
       errorEl.textContent = bioFailText();
     } else {
       errorEl.textContent = "Yanlış PIN.";
+      recordIntruder();
     }
   });
   pinInput.addEventListener("keydown", (e) => {
@@ -588,6 +591,7 @@
     localStorage.removeItem(STORAGE_BLOB);
     localStorage.removeItem(STORAGE_SALT);
     localStorage.removeItem(STORAGE_BIOMETRIC);
+    localStorage.removeItem(INTRUDER_PUB_KEY); // its private half was in the old vault
     forgetBiometricKey();
     clearDuressPin();
     openVaultLockScreen();
@@ -2240,7 +2244,7 @@
     closeQrModal();
     forgetStatusVideos();
     hideToast();
-    ["event-modal", "storage-modal"].forEach(id => document.getElementById(id).classList.add("hidden"));
+    ["event-modal", "storage-modal", "schedule-modal", "intruder-modal"].forEach(id => document.getElementById(id).classList.add("hidden"));
     ["sticker-picker", "broadcast-modal", "chat-unlock-modal", "contact-picker-modal"].forEach(id => document.getElementById(id).classList.add("hidden"));
     stopAllMessengerListeners();
     myPrivateKey = null;
@@ -2287,7 +2291,7 @@
 
   function autoLockNow() {
     if (!isVaultUnlockedView()) return;
-    if (activeCallId) return; // locking would hang up the call (screen off mid-call)
+    if (activeCallId || gc) return; // locking would hang up the call (screen off mid-call)
     lockVault();
   }
 
@@ -2305,15 +2309,20 @@
     if (document.hidden) {
       clearTimeout(backgroundTimer);
       if (!isVaultUnlockedView()) return;
-      backgroundTimer = setTimeout(autoLockNow, BACKGROUND_LOCK_MS);
+      setPrivacyCover(true);
+      const ms = backgroundLockMs();
+      if (ms === 0) autoLockNow();
+      else backgroundTimer = setTimeout(autoLockNow, ms);
     } else {
       clearTimeout(backgroundTimer);
+      setPrivacyCover(false);
       resetInactivityTimer();
       writeLastSeen();
     }
   });
 
   document.getElementById("settings-btn").addEventListener("click", () => {
+    updateIntruderButton();
     threadListPanel.classList.add("hidden");
     threadDetailPanel.classList.add("hidden");
     settingsPanel.classList.remove("hidden");
@@ -8999,6 +9008,279 @@
       list.appendChild(row);
     });
   }
+
+  /* ---------------- Privacy guard ----------------
+     When the app leaves the screen the calculator covers it at once (so
+     the app switcher's preview shows a calculator), and it locks after
+     the chosen delay. The Android app also blocks screenshots
+     (FLAG_SECURE, MainActivity). Kept in localStorage: these apply while
+     the vault is still locked. */
+
+  const BG_LOCK_KEY = "calcut_bg_lock_ms";
+  const BG_LOCK_CHOICES = [0, 30000, 300000];
+  const bgLockSelect = document.getElementById("bg-lock-select");
+
+  function backgroundLockMs() {
+    try {
+      const v = Number(localStorage.getItem(BG_LOCK_KEY));
+      if (localStorage.getItem(BG_LOCK_KEY) !== null && BG_LOCK_CHOICES.includes(v)) return v;
+    } catch (e) {}
+    return BACKGROUND_LOCK_MS;
+  }
+
+  bgLockSelect.value = String(backgroundLockMs());
+  bgLockSelect.addEventListener("change", () => {
+    try { localStorage.setItem(BG_LOCK_KEY, bgLockSelect.value); } catch (e) {}
+  });
+
+  function setPrivacyCover(on) {
+    document.body.classList.toggle("privacy-cover", on && !vaultView.classList.contains("hidden"));
+  }
+  window.addEventListener("pagehide", () => setPrivacyCover(true));
+  window.addEventListener("pageshow", () => setPrivacyCover(false));
+
+  /* ---------------- Intruder photo ----------------
+     After a wrong PIN on the lock screen, the front camera quietly takes a
+     photo. It is encrypted to a key whose private half is inside the vault
+     (ECDH P-256), so only the owner sees it, after unlocking. */
+
+  const INTRUDER_PUB_KEY = "calcut_intruder_pub";
+  const INTRUDER_LOG_KEY = "calcut_intruder_log";
+  const INTRUDER_MAX = 10;
+  let intruderBusy = false;
+
+  function intruderEnabled() {
+    try { return !!localStorage.getItem(INTRUDER_PUB_KEY); } catch (e) { return false; }
+  }
+
+  function intruderLog() {
+    try {
+      const v = JSON.parse(localStorage.getItem(INTRUDER_LOG_KEY) || "[]");
+      return Array.isArray(v) ? v : [];
+    } catch (e) {
+      return [];
+    }
+  }
+
+  function saveIntruderLog(list) {
+    // Photos are dropped first if storage is full; the times are kept.
+    for (let keep = list.length; keep >= 0; keep--) {
+      try {
+        localStorage.setItem(INTRUDER_LOG_KEY, JSON.stringify(list.slice(-INTRUDER_MAX).map((e, i, a) => i < a.length - keep ? { ts: e.ts } : e)));
+        return;
+      } catch (e) {}
+    }
+  }
+
+  function updateIntruderButton() {
+    document.getElementById("intruder-toggle-btn").textContent = intruderEnabled()
+      ? "📸 İzinsiz giriş fotoğrafı: Açık (kapat)"
+      : "📸 İzinsiz giriş fotoğrafı: Kapalı (aç)";
+  }
+
+  document.getElementById("intruder-toggle-btn").addEventListener("click", async () => {
+    const msg = document.getElementById("privacy-msg");
+    if (!localSessionData || !currentLocalKey) return;
+    if (intruderEnabled()) {
+      try { localStorage.removeItem(INTRUDER_PUB_KEY); } catch (e) {}
+      delete localSessionData.intruderKey;
+      await saveLocalPrefs();
+      updateIntruderButton();
+      msg.textContent = "İzinsiz giriş fotoğrafı kapatıldı.";
+      return;
+    }
+    // Ask for the camera now, so later photos need no prompt.
+    try {
+      const s = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" }, audio: false });
+      s.getTracks().forEach(t => t.stop());
+    } catch (e) {
+      msg.textContent = "Kamera izni verilmedi: " + e.message;
+      return;
+    }
+    const pair = await crypto.subtle.generateKey({ name: "ECDH", namedCurve: "P-256" }, true, ["deriveKey"]);
+    localSessionData.intruderKey = await crypto.subtle.exportKey("jwk", pair.privateKey);
+    await saveLocalPrefs();
+    try {
+      localStorage.setItem(INTRUDER_PUB_KEY, b64encode(await crypto.subtle.exportKey("raw", pair.publicKey)));
+    } catch (e) {
+      msg.textContent = "Bu cihazda kaydedilemedi.";
+      return;
+    }
+    updateIntruderButton();
+    msg.textContent = "Açıldı: kilit ekranında yanlış PIN girilirse ön kamerayla fotoğraf çekilir ve burada gösterilir.";
+  });
+
+  async function grabFrontPhoto() {
+    const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user", width: 640 }, audio: false });
+    try {
+      const video = document.createElement("video");
+      video.muted = true;
+      video.playsInline = true;
+      video.srcObject = stream;
+      await video.play();
+      await new Promise(r => setTimeout(r, 700)); // let the exposure settle
+      const scale = Math.min(1, 480 / Math.max(video.videoWidth, video.videoHeight));
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.round(video.videoWidth * scale);
+      canvas.height = Math.round(video.videoHeight * scale);
+      canvas.getContext("2d").drawImage(video, 0, 0, canvas.width, canvas.height);
+      return canvas.toDataURL("image/jpeg", 0.7);
+    } finally {
+      stream.getTracks().forEach(t => t.stop());
+    }
+  }
+
+  async function recordIntruder() {
+    if (!intruderEnabled() || intruderBusy) return;
+    intruderBusy = true;
+    const entry = { ts: Date.now() };
+    try {
+      const photo = await grabFrontPhoto();
+      const ownerPub = await crypto.subtle.importKey("raw", b64decode(localStorage.getItem(INTRUDER_PUB_KEY)), { name: "ECDH", namedCurve: "P-256" }, false, []);
+      const eph = await crypto.subtle.generateKey({ name: "ECDH", namedCurve: "P-256" }, true, ["deriveKey"]);
+      const key = await crypto.subtle.deriveKey({ name: "ECDH", public: ownerPub }, eph.privateKey, { name: "AES-GCM", length: 256 }, false, ["encrypt"]);
+      const iv = crypto.getRandomValues(new Uint8Array(12));
+      entry.pub = b64encode(await crypto.subtle.exportKey("raw", eph.publicKey));
+      entry.iv = b64encode(iv.buffer);
+      entry.box = b64encode(await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, new TextEncoder().encode(photo)));
+    } catch (e) {
+      // No camera: the attempt's time is still worth knowing.
+    }
+    saveIntruderLog([...intruderLog(), entry]);
+    intruderBusy = false;
+  }
+
+  async function openIntruderEntry(entry, privateJwk) {
+    if (!entry.box || !privateJwk) return null;
+    const priv = await crypto.subtle.importKey("jwk", privateJwk, { name: "ECDH", namedCurve: "P-256" }, false, ["deriveKey"]);
+    const pub = await crypto.subtle.importKey("raw", b64decode(entry.pub), { name: "ECDH", namedCurve: "P-256" }, false, []);
+    const key = await crypto.subtle.deriveKey({ name: "ECDH", public: pub }, priv, { name: "AES-GCM", length: 256 }, false, ["decrypt"]);
+    const plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv: new Uint8Array(b64decode(entry.iv)) }, key, b64decode(entry.box));
+    const url = new TextDecoder().decode(plain);
+    return /^data:image\/jpeg;base64,[A-Za-z0-9+/=]+$/.test(url) ? url : null;
+  }
+
+  async function showIntruderReport() {
+    const log = intruderLog();
+    if (!log.length) return;
+    const list = document.getElementById("intruder-list");
+    list.innerHTML = "";
+    const privateJwk = localSessionData && localSessionData.intruderKey;
+    for (const entry of log.slice().reverse()) {
+      const row = document.createElement("div");
+      row.className = "intruder-row";
+      const when = document.createElement("span");
+      when.textContent = new Date(entry.ts).toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
+      row.appendChild(when);
+      const url = await openIntruderEntry(entry, privateJwk).catch(() => null);
+      if (url) {
+        const img = document.createElement("img");
+        img.src = url;
+        img.alt = "";
+        row.appendChild(img);
+      } else {
+        const none = document.createElement("span");
+        none.className = "hint";
+        none.textContent = "fotoğraf yok";
+        row.appendChild(none);
+      }
+      list.appendChild(row);
+    }
+    document.getElementById("intruder-summary").textContent = log.length + " kez yanlış PIN girildi.";
+    document.getElementById("intruder-modal").classList.remove("hidden");
+  }
+
+  document.getElementById("intruder-clear").addEventListener("click", () => {
+    try { localStorage.removeItem(INTRUDER_LOG_KEY); } catch (e) {}
+    document.getElementById("intruder-list").innerHTML = "";
+    document.getElementById("intruder-modal").classList.add("hidden");
+  });
+  document.getElementById("intruder-close").addEventListener("click", () => {
+    document.getElementById("intruder-list").innerHTML = "";
+    document.getElementById("intruder-modal").classList.add("hidden");
+  });
+
+  /* ---------------- Panic gesture ----------------
+     Shaking the phone, or turning it face down, locks the vault and goes
+     back to the calculator. Face down is ignored during a call (phones
+     get put down on tables). */
+
+  const PANIC_KEY = "calcut_panic";
+  const panicSelect = document.getElementById("panic-select");
+
+  function panicMode() {
+    try {
+      const v = localStorage.getItem(PANIC_KEY);
+      return ["shake", "facedown", "both"].includes(v) ? v : "off";
+    } catch (e) {
+      return "off";
+    }
+  }
+
+  // Feed it accelerometer samples (with gravity, m/s², t in ms); returns
+  // "shake", "facedown" or null.
+  function makePanicDetector(mode) {
+    const peaks = [];
+    let downSince = null;
+    let lastFire = -Infinity;
+    return function feed(s) {
+      if (s.t - lastFire < 2000) return null;
+      const g = Math.hypot(s.x, s.y, s.z);
+      if (mode === "shake" || mode === "both") {
+        if (Math.abs(g - 9.81) > 15 && (!peaks.length || s.t - peaks[peaks.length - 1] > 120)) peaks.push(s.t);
+        while (peaks.length && s.t - peaks[0] > 1200) peaks.shift();
+        if (peaks.length >= 3) {
+          peaks.length = 0;
+          lastFire = s.t;
+          return "shake";
+        }
+      }
+      if (mode === "facedown" || mode === "both") {
+        const down = s.z < -8 && Math.abs(g - 9.81) < 2.5;
+        downSince = down ? (downSince === null ? s.t : downSince) : null;
+        if (downSince !== null && s.t - downSince > 800) {
+          downSince = null;
+          lastFire = s.t;
+          return "facedown";
+        }
+      }
+      return null;
+    };
+  }
+
+  let panicFeed = null;
+  function onDeviceMotion(e) {
+    const a = e.accelerationIncludingGravity;
+    if (!panicFeed || !a || a.x === null) return;
+    const hit = panicFeed({ x: a.x, y: a.y, z: a.z, t: e.timeStamp || Date.now() });
+    if (!hit || vaultView.classList.contains("hidden")) return;
+    if (hit === "facedown" && (activeCallId || gc)) return;
+    if (isVaultUnlockedView()) lockVault();
+    else closeVaultToCalculator();
+  }
+
+  function applyPanicMode() {
+    const mode = panicMode();
+    panicSelect.value = mode;
+    window.removeEventListener("devicemotion", onDeviceMotion);
+    panicFeed = mode === "off" ? null : makePanicDetector(mode);
+    if (panicFeed) window.addEventListener("devicemotion", onDeviceMotion);
+  }
+
+  panicSelect.addEventListener("change", async () => {
+    // iOS asks for motion access, and only from a tap.
+    if (panicSelect.value !== "off" && typeof DeviceMotionEvent !== "undefined" && DeviceMotionEvent.requestPermission) {
+      try {
+        if (await DeviceMotionEvent.requestPermission() !== "granted") throw new Error("izin yok");
+      } catch (e) {
+        document.getElementById("privacy-msg").textContent = "Hareket sensörü izni verilmedi.";
+        panicSelect.value = "off";
+      }
+    }
+    try { localStorage.setItem(PANIC_KEY, panicSelect.value); } catch (e) {}
+    applyPanicMode();
+  });
+  applyPanicMode();
 
   const viewOnceInput = document.getElementById("viewonce-input");
   document.getElementById("attach-viewonce-btn").addEventListener("click", () => {
