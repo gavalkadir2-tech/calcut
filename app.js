@@ -1574,7 +1574,7 @@
   // and by "Ayarları dışa / içe aktar".
   const DEVICE_PREF_KEYS = ["pinned", "archived", "starred", "hiddenMsgs", "wallpapers", "lockedChats", "broadcastLists",
     "stickers", "deletedChats", "chatSounds", "statusPrivacy", "defaultDisappearing", "drafts", "recentEmojis",
-    "chatLists", "awayOn", "awayText", "clearedChats"];
+    "chatLists", "awayOn", "awayText", "clearedChats", "liveTranslate"];
 
   function devicePrefsOf(d) {
     const out = {};
@@ -2918,6 +2918,9 @@
     mediaGallery.classList.add("hidden");
     applyWallpaper();
     restoreDraft(convId);
+    ltDraft = null;
+    ltPending = false;
+    updateLiveTranslateBar();
     updateComposerAccess();
     updateScheduledBar();
     updateDisappearingUi();
@@ -4822,6 +4825,7 @@
             groupCall: d.type === "groupcall" ? parseJson(plain) : null,
             vanish: d.type === "text" && VANISH_CHOICES.includes(d.vanish) ? d.vanish : 0,
             autoReply: !!d.autoReply,
+            lt: typeof d.lt === "string" && LT_LANGS[d.lt] ? d.lt : null,
             album: d.type === "album" ? parseAlbum(plain) : null,
             videoNote: d.type === "videonote" ? parseVideoNote(plain) : null,
             rsvp: d.rsvp || {},
@@ -4855,6 +4859,7 @@
         currentMessages = rendered;
         renderMessages(rendered);
         maybeAutoDownload();
+        autoTranslateIncoming();
       }, err => console.error("messages listen error", err));
 
     pruneExpiredMessages(convId);
@@ -5405,6 +5410,12 @@
       }
       const metaRow = document.createElement("span");
       metaRow.className = "msg-meta";
+      if (m.lt) {
+        const lt = document.createElement("span");
+        lt.className = "msg-edited";
+        lt.textContent = "🌐 " + ltToName(m.lt) + " çevrildi";
+        metaRow.appendChild(lt);
+      }
       if (m.autoReply) {
         const auto = document.createElement("span");
         auto.className = "msg-edited";
@@ -6063,15 +6074,22 @@
   });
 
   async function sendMessage() {
-    const text = messageInput.value.trim();
-    if (!text) return;
+    const typed = messageInput.value.trim();
+    if (!typed || ltSending) return;
+    // Live translation: what goes is the other side's language.
+    ltSending = true;
+    const lt = await liveTranslateOutgoing(typed).finally(() => { ltSending = false; });
+    if (!lt) return;
+    const text = lt.text;
     messageInput.value = "";
     updateComposerMode();
+    updateLiveTranslateBar();
     hideMentionPicker();
     try {
       const fields = takeReplyFields() || {};
-      const mentions = activeIsGroup ? mentionedUids(text) : [];
+      const mentions = activeIsGroup ? mentionedUids(typed) : [];
       if (mentions.length) fields.mentions = mentions;
+      if (lt.lang) fields.lt = lt.lang;
       await sendEncrypted(text, "text", Object.keys(fields).length ? fields : null, takeLinkPreview(text));
     } catch (e) {
       alert("Mesaj gönderilemedi: " + e.message);
@@ -6707,6 +6725,7 @@
     } else {
       actions.push({ label: "👤 Kişi bilgisi", run: openContactInfo });
     }
+    actions.push({ label: "🌐 Anlık çeviri" + (liveTranslateLang(convId) ? " (" + LT_LANGS[liveTranslateLang(convId)] + ")" : ""), run: chooseLiveTranslate });
     actions.push({ label: "🎨 Duvar kağıdı", run: chooseWallpaper });
     actions.push({ label: "🔔 Bildirim sesi" + (chatSoundFor(convId) ? " (özel)" : ""), run: chooseChatSound });
     actions.push(isChatLocked(convId)
@@ -10826,6 +10845,167 @@
     try { localStorage.setItem(LINK_PREVIEW_KEY, linkPreviewToggle.checked ? "on" : "off"); } catch (e) {}
     if (!linkPreviewToggle.checked) clearLinkDraft();
   });
+
+  /* ---------------- Live translation ----------------
+     Per chat: what I type goes in the other side's language, shown
+     translated as I type, and their messages show translated into
+     Turkish. Natural phrasing (idioms, slang) comes from Gemini when the
+     push server has a GEMINI_KEY, else plain Google Translate. The text
+     leaves the app for this, so it is turned on per chat, knowingly. */
+
+  const LT_LANGS = {
+    en: "İngilizce", de: "Almanca", fr: "Fransızca", es: "İspanyolca", it: "İtalyanca", pt: "Portekizce", nl: "Felemenkçe",
+    ru: "Rusça", uk: "Ukraynaca", ar: "Arapça", fa: "Farsça", ku: "Kürtçe", az: "Azerbaycanca", el: "Yunanca", bg: "Bulgarca",
+    ro: "Rumence", pl: "Lehçe", ja: "Japonca", zh: "Çince", ko: "Korece", hi: "Hintçe", tr: "Türkçe",
+  };
+  // For the prompt: the language's own name helps the model.
+  const LT_NATIVE = {
+    en: "English", de: "German (Deutsch)", fr: "French (Français)", es: "Spanish (Español)", it: "Italian (Italiano)",
+    pt: "Portuguese (Português)", nl: "Dutch (Nederlands)", ru: "Russian (Русский)", uk: "Ukrainian (Українська)",
+    ar: "Arabic (العربية)", fa: "Persian (فارسی)", ku: "Kurdish (Kurmancî)", az: "Azerbaijani (Azərbaycan)", el: "Greek (Ελληνικά)",
+    bg: "Bulgarian (Български)", ro: "Romanian (Română)", pl: "Polish (Polski)", ja: "Japanese (日本語)", zh: "Chinese (中文)",
+    ko: "Korean (한국어)", hi: "Hindi (हिन्दी)", tr: "Turkish (Türkçe)",
+  };
+  const LT_MINE = "tr";
+
+  // "Almanca" → "Almancaya", "İngilizce" → "İngilizceye" (vowel harmony).
+  function ltToName(lang) {
+    const name = LT_LANGS[lang] || "";
+    const v = (name.toLocaleLowerCase("tr").match(/[aeıioöuü](?=[^aeıioöuü]*$)/) || [""])[0];
+    const back = "aıou".includes(v);
+    return name + (/[aeıioöuü]$/.test(name.toLocaleLowerCase("tr")) ? (back ? "ya" : "ye") : (back ? "a" : "e"));
+  }
+  const ltBar = document.getElementById("live-translate-bar");
+  let ltDraft = null; // { src, out } the translation of what's typed
+  let ltTimer = null;
+  let ltSeq = 0;
+  let ltPending = false;
+  let ltSending = false;
+  const ltIncomingDone = new Set();
+
+  function liveTranslateLang(convId) {
+    const m = localSessionData && localSessionData.liveTranslate;
+    const v = m && typeof m === "object" ? m[convId] : null;
+    return LT_LANGS[v] && v !== LT_MINE ? v : null;
+  }
+
+  async function setLiveTranslate(convId, lang) {
+    if (!localSessionData) return;
+    const m = { ...(localSessionData.liveTranslate || {}) };
+    if (lang) m[convId] = lang; else delete m[convId];
+    localSessionData.liveTranslate = m;
+    await saveLocalPrefs();
+    ltDraft = null;
+    updateLiveTranslateBar();
+    if (lang) autoTranslateIncoming();
+  }
+
+  async function translateText(text, to) {
+    const r = await requestPush({ kind: "translate", text: text.slice(0, 4000), to, toName: LT_NATIVE[to], natural: true });
+    const out = r && r.status === 200 && r.data && typeof r.data.text === "string" ? r.data.text.trim() : "";
+    if (!out) throw new Error((r && (r.error || (r.data && r.data.error))) || "çeviri yok");
+    return { text: out, engine: r.data.engine || "google" };
+  }
+
+  function chooseLiveTranslate() {
+    const convId = activeConvId;
+    if (!convId) return;
+    const current = liveTranslateLang(convId);
+    const options = Object.keys(LT_LANGS).filter(l => l !== LT_MINE).map(l => ({
+      label: (l === current ? "✓ " : "") + LT_LANGS[l],
+      run: () => {
+        if (!current && !confirm("Anlık çeviri açılsın mı?\n\nBu sohbette yazdıkların " + ltToName(l) + " çevrilerek gider, gelen mesajlar Türkçeye çevrilerek gösterilir. Çeviri için metinler bildirim sunucun üzerinden Google'a (Gemini / Google Çeviri) gönderilir, yani uçtan uca şifrelemenin dışına çıkar.")) return;
+        setLiveTranslate(convId, l);
+      },
+    }));
+    if (current) options.unshift({ label: "⛔ Anlık çeviriyi kapat", danger: true, run: () => setLiveTranslate(convId, null) });
+    showActionSheet("🌐 Karşı tarafın dili", options);
+  }
+
+  function updateLiveTranslateBar() {
+    const lang = activeConvId ? liveTranslateLang(activeConvId) : null;
+    ltBar.classList.toggle("hidden", !lang);
+    if (!lang) return;
+    const text = messageInput.value.trim();
+    document.getElementById("lt-status").textContent = "🌐 " + ltToName(lang) + " çevrilerek gidecek" +
+      (text && ltPending ? " · çevriliyor…" : "");
+    document.getElementById("lt-preview").textContent = text && ltDraft && ltDraft.src === text ? ltDraft.out : "";
+  }
+
+  messageInput.addEventListener("input", () => {
+    clearTimeout(ltTimer);
+    const lang = activeConvId ? liveTranslateLang(activeConvId) : null;
+    updateLiveTranslateBar();
+    if (!lang) return;
+    const text = messageInput.value.trim();
+    if (!text || (ltDraft && ltDraft.src === text)) return;
+    ltPending = true;
+    updateLiveTranslateBar();
+    ltTimer = setTimeout(async () => {
+      const seq = ++ltSeq;
+      try {
+        const r = await translateText(text, lang);
+        if (seq !== ltSeq) return;
+        ltDraft = { src: text, out: r.text, lang };
+        ltPending = false;
+      } catch (e) {
+        if (seq !== ltSeq) return;
+        ltPending = false;
+        document.getElementById("lt-status").textContent = "🌐 Çevrilemedi: " + e.message;
+        return;
+      }
+      updateLiveTranslateBar();
+    }, 600);
+  });
+  document.getElementById("lt-off").addEventListener("click", () => {
+    if (activeConvId && confirm("Bu sohbette anlık çeviri kapatılsın mı?")) setLiveTranslate(activeConvId, null);
+  });
+
+  // The text to send: translated if live translation is on; null = don't send.
+  async function liveTranslateOutgoing(text) {
+    const lang = activeConvId ? liveTranslateLang(activeConvId) : null;
+    if (!lang) return { text, lang: null };
+    if (ltDraft && ltDraft.src === text && ltDraft.lang === lang) {
+      const out = ltDraft.out;
+      ltDraft = null;
+      return { text: out, lang };
+    }
+    try {
+      showToast("🌐 Çevriliyor…");
+      const r = await translateText(text, lang);
+      hideToast();
+      return { text: r.text, lang };
+    } catch (e) {
+      hideToast();
+      return confirm("Çevrilemedi (" + e.message + "). Çevirmeden gönderilsin mi?") ? { text, lang: null } : null;
+    }
+  }
+
+  // Their recent messages, shown in Turkish under each (one at a time).
+  let ltIncomingBusy = false;
+  async function autoTranslateIncoming() {
+    const convId = activeConvId;
+    if (ltIncomingBusy || !convId || !liveTranslateLang(convId)) return;
+    ltIncomingBusy = true;
+    try {
+      const todo = currentMessages.filter(m => m.from === "them" && m.type === "text" && m.text && !m.vanish && !m.deleted &&
+        !m.lt && !translations.has(m.id) && !ltIncomingDone.has(m.id)).slice(-20);
+      for (const m of todo) {
+        if (activeConvId !== convId) return;
+        ltIncomingDone.add(m.id);
+        try {
+          const r = await translateText(m.text, LT_MINE);
+          if (activeConvId !== convId) return;
+          if (r.text && r.text !== m.text.trim()) {
+            translations.set(m.id, r.text);
+            renderMessages(currentMessages);
+          }
+        } catch (e) { /* shown untranslated */ }
+      }
+    } finally {
+      ltIncomingBusy = false;
+    }
+  }
 
   const viewOnceInput = document.getElementById("viewonce-input");
   document.getElementById("attach-viewonce-btn").addEventListener("click", () => {
