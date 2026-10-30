@@ -1296,6 +1296,7 @@
     listenForIncomingCalls();
     startPresence();
     registerPushToken().catch(err => console.error("push token register error", err));
+    refreshTurnServers(); // ready before the first call
     checkForAppUpdate();
     resetInactivityTimer();
     // Refresh the blocked list in case it changed on another device.
@@ -2618,6 +2619,8 @@
       msgEl.textContent = "⚠️ Bildirim sunucusunun kodu eski, güncellenmesi gerekiyor.";
     } else if (r.status === 200 && r.data && r.data.sent > 0) {
       msgEl.textContent = "✅ Test bildirimi gönderildi. Birkaç saniye içinde \"Alarm\" bildirimi gelmeli. Geldiyse kurulum tamam.";
+      const turn = await refreshTurnServers(true);
+      msgEl.textContent += turn ? " · Arama aktarma sunucusu (TURN): açık ✅" : " · Arama aktarma sunucusu (TURN): kurulu değil";
     } else if (r.status === 200) {
       msgEl.textContent = "⚠️ Sunucu bu cihaza ulaşamadı (gönderilen: 0). Bildirimleri Etkinleştir'e tekrar bas.";
     } else {
@@ -3553,6 +3556,37 @@
     { urls: "stun:stun.l.google.com:19302" },
     { urls: "stun:stun1.l.google.com:19302" },
   ] };
+
+  /* TURN: when two phones can't reach each other directly (different
+     mobile networks, strict NAT), the call is relayed through Cloudflare's
+     TURN servers. The push server hands out short-lived credentials
+     ({ kind: "ice-servers" }) once its TURN_KEY_ID / TURN_KEY_TOKEN are
+     set; until then calls use STUN only. The media stays end-to-end
+     encrypted (DTLS-SRTP): a relay only passes the packets on. */
+  const TURN_CACHE_MS = 12 * 60 * 60 * 1000; // credentials live 24 h
+  let turnIceServers = null;
+  let turnFetchedAt = 0;
+  let turnFetch = null;
+
+  function refreshTurnServers(force) {
+    if (!force && turnFetchedAt && Date.now() - turnFetchedAt < TURN_CACHE_MS) return Promise.resolve(turnIceServers);
+    if (!turnFetch) {
+      turnFetch = requestPush({ kind: "ice-servers" }).then(r => {
+        const list = r && r.status === 200 && r.data && Array.isArray(r.data.iceServers) ? r.data.iceServers : null;
+        turnIceServers = list && list.length ? list : null;
+        turnFetchedAt = Date.now();
+        return turnIceServers;
+      }).catch(() => turnIceServers).finally(() => { turnFetch = null; });
+    }
+    return turnFetch;
+  }
+
+  // The ICE servers for a new call: STUN, plus TURN if available. Waits at
+  // most a few seconds so a slow push server never holds a call up.
+  async function callIceConfig() {
+    const turn = await Promise.race([refreshTurnServers(), new Promise(r => setTimeout(() => r(turnIceServers), 4000))]);
+    return { iceServers: ICE_SERVERS.iceServers.concat(turn || []) };
+  }
   const CALL_RING_TIMEOUT_MS = 45000;
 
   const callScreen = document.getElementById("call-screen");
@@ -3872,8 +3906,8 @@
     }
   }
 
-  function createPeerConnection(callId, role, docAlreadyExists) {
-    const pc = new RTCPeerConnection(ICE_SERVERS);
+  function createPeerConnection(callId, role, docAlreadyExists, iceConfig) {
+    const pc = new RTCPeerConnection(iceConfig || ICE_SERVERS);
     const candidatesCollection = role === "caller" ? "callerCandidates" : "calleeCandidates";
     const pendingCandidates = [];
     let docReady = !!docAlreadyExists;
@@ -3984,7 +4018,7 @@
       const callDocRef = fbDb.collection("calls").doc();
       activeCallId = callDocRef.id;
 
-      peerConnection = createPeerConnection(activeCallId, "caller", false);
+      peerConnection = createPeerConnection(activeCallId, "caller", false, await callIceConfig());
       localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
 
       const offer = await peerConnection.createOffer();
@@ -4048,7 +4082,7 @@
     activeCallId = id;
     activeCallRole = "callee";
     try {
-      peerConnection = createPeerConnection(id, "callee", true);
+      peerConnection = createPeerConnection(id, "callee", true, await callIceConfig());
       localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
 
       await peerConnection.setRemoteDescription(new RTCSessionDescription(data.offer));

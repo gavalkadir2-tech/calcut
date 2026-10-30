@@ -34,11 +34,38 @@ function doPost(e) {
     const body = JSON.parse((e && e.postData && e.postData.contents) || "{}");
     const uid = verifyIdToken_(body.idToken);
     if (!uid) return json_({ error: "unauthorized", v: WORKER_VERSION });
+    if (body.kind === "ice-servers") return json_({ iceServers: turnIceServers_(), v: WORKER_VERSION });
     const sent = handle_(body, uid, sa);
     return json_({ sent: sent, v: WORKER_VERSION });
   } catch (err) {
     return json_({ error: String((err && err.message) || err), v: WORKER_VERSION });
   }
+}
+
+// Short-lived TURN credentials from Cloudflare Realtime, for calls between
+// phones that can't reach each other directly. Needs the script properties
+// TURN_KEY_ID and TURN_KEY_TOKEN; without them the app uses STUN only.
+function turnIceServers_() {
+  const props = PropertiesService.getScriptProperties();
+  const keyId = props.getProperty("TURN_KEY_ID");
+  const token = props.getProperty("TURN_KEY_TOKEN");
+  if (!keyId || !token) return null;
+  const res = UrlFetchApp.fetch("https://rtc.live.cloudflare.com/v1/turn/keys/" + keyId + "/credentials/generate-ice-servers", {
+    method: "post",
+    contentType: "application/json",
+    headers: { Authorization: "Bearer " + token },
+    payload: JSON.stringify({ ttl: 86400 }),
+    muteHttpExceptions: true,
+  });
+  if (res.getResponseCode() >= 300) throw new Error("TURN " + res.getResponseCode());
+  const list = JSON.parse(res.getContentText()).iceServers;
+  // Browsers block port 53, so those URLs would only time out.
+  return (Array.isArray(list) ? list : [list]).filter(Boolean).map(function (s) {
+    const urls = (Array.isArray(s.urls) ? s.urls : [s.urls]).filter(function (u) {
+      return typeof u === "string" && !/:53(\?|$)/.test(u);
+    });
+    return { urls: urls, username: s.username, credential: s.credential };
+  }).filter(function (s) { return s.urls.length; });
 }
 
 function json_(obj) {
