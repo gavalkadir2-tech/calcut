@@ -9,7 +9,8 @@
 //   | { idToken, kind: "test" } | { idToken, kind: "register-token" | "unregister-token", token }
 //   | { idToken, kind: "schedule" } (starts the every-minute delivery of scheduled messages)
 //   | { idToken, kind: "gif-search", q } | { idToken, kind: "gif-fetch", url } (Tenor, script property TENOR_KEY)
-//   | { idToken, kind: "translate", text, to } (Google Translate, no key needed)
+//   | { idToken, kind: "translate", text, to, toName?, natural? } (Google Translate, no key needed;
+//     natural: Gemini with script property GEMINI_KEY, keeping idioms and slang)
 //   | { idToken, kind: "link-preview", url } (title, description and image of a page)
 // The ID token is checked with Google (Identity Toolkit accounts:lookup), the
 // sender is verified in Firestore, then a data-only FCM push goes to the
@@ -23,7 +24,7 @@
 // run setup() once from the editor (▶ Run) and allow it: that lets the
 // script start its own every-minute timer.
 
-const WORKER_VERSION = 8;
+const WORKER_VERSION = 9;
 // The Firebase web API key (public, same as in firebase-config.js); only used
 // to ask Google whether an ID token is valid.
 const FIREBASE_API_KEY = "AIzaSyB0JTRgod2uk5KtYtnd4OLiG0LQ5qwxEwI";
@@ -43,7 +44,7 @@ function doPost(e) {
     if (body.kind === "ice-servers") return json_({ iceServers: turnIceServers_(), v: WORKER_VERSION });
     if (body.kind === "link-token") return json_({ token: customToken_(sa, uid), v: WORKER_VERSION });
     if (body.kind === "link-preview") return json_(Object.assign(linkPreview_(body.url), { v: WORKER_VERSION }));
-    if (body.kind === "translate") return json_(Object.assign(translate_(body.text, body.to), { v: WORKER_VERSION }));
+    if (body.kind === "translate") return json_(Object.assign(translate_(body.text, body.to, body.natural ? body.toName : null), { v: WORKER_VERSION }));
     if (body.kind === "gif-search") return json_(Object.assign(gifSearch_(body.q), { v: WORKER_VERSION }));
     if (body.kind === "gif-fetch") return json_(Object.assign(gifFetch_(body.url), { v: WORKER_VERSION }));
     if (body.kind === "schedule") {
@@ -246,10 +247,41 @@ function decodeHtml_(s) {
 
 /* ---------------- Translation ---------------- */
 
-function translate_(text, to) {
+// naturalName (e.g. "German (Deutsch)"): translate like a native speaker
+// would write it, with Gemini (free key from aistudio.google.com, script
+// property GEMINI_KEY; GEMINI_MODEL optional); else Google Translate.
+function translate_(text, to, naturalName) {
   if (typeof text !== "string" || !text.trim() || text.length > 5000) return { error: "bad text" };
   const target = typeof to === "string" && /^[a-z]{2}(-[A-Z]{2})?$/.test(to) ? to : "tr";
-  return { text: LanguageApp.translate(text, "", target) };
+  const key = PropertiesService.getScriptProperties().getProperty("GEMINI_KEY");
+  if (key && typeof naturalName === "string" && /^[\p{L} ()]{2,40}$/u.test(naturalName)) {
+    try {
+      const out = geminiTranslate_(key, text, naturalName);
+      if (out) return { text: out, engine: "gemini" };
+    } catch (e) { /* fall back to Google Translate */ }
+  }
+  return { text: LanguageApp.translate(text, "", target), engine: "google" };
+}
+
+function geminiTranslate_(key, text, languageName) {
+  const model = PropertiesService.getScriptProperties().getProperty("GEMINI_MODEL") || "gemini-2.5-flash";
+  const prompt = "You translate chat messages between friends. Translate the message below into " + languageName +
+    " the way a native speaker would naturally write it in a casual chat: keep the tone, emotion and emojis; " +
+    "replace idioms, slang and jokes with natural equivalents in that language instead of translating them word for word; " +
+    "keep names, @mentions, links and numbers as they are. If it is already in that language, return it unchanged. " +
+    "Reply with only the translated message, nothing else.\n\nMessage:\n" + text;
+  const res = UrlFetchApp.fetch("https://generativelanguage.googleapis.com/v1beta/models/" + encodeURIComponent(model) +
+    ":generateContent?key=" + encodeURIComponent(key), {
+    method: "post",
+    contentType: "application/json",
+    muteHttpExceptions: true,
+    payload: JSON.stringify({ contents: [{ role: "user", parts: [{ text: prompt }] }], generationConfig: { temperature: 0.4 } }),
+  });
+  if (res.getResponseCode() !== 200) throw new Error("gemini " + res.getResponseCode());
+  const c = (JSON.parse(res.getContentText()).candidates || [])[0];
+  const parts = c && c.content && c.content.parts;
+  const out = parts ? parts.map(p => p.text || "").join("").trim() : "";
+  return out.length <= 8000 ? out : "";
 }
 
 /* ---------------- Auto-reply (away) ----------------

@@ -50,6 +50,11 @@ için "Alarm" görünümlü, sesli ve titreşimli bildirim gelir. Firebase'in
       *Komut dosyası özelliği ekle* → Özellik: `TENOR_KEY`, Değer: anahtar.
       Aramalar ve seçilen GIF bu sunucudan geçer; önizleme küçük resimleri
       Tenor'dan (media.tenor.com) yüklenir.
+  10. (İsteğe bağlı) Doğal anlık çeviri (deyim ve argoyu koruyan): https://aistudio.google.com/apikey
+      → *Create API key* (ücretsiz, kart istemez) → anahtarı kopyala. Apps Script →
+      ⚙️ *Proje Ayarları* → *Komut dosyası özelliği ekle* → Özellik: `GEMINI_KEY`,
+      Değer: anahtar. (Model değiştirmek için `GEMINI_MODEL`, varsayılan
+      `gemini-2.5-flash`.) Anahtar yoksa çeviri Google Çeviri ile yapılır.
 4. **Firestore kuralı gerekmez:** Cihaz anahtarları (`users/{uid}.fcmTokens`)
    sunucu tarafından servis hesabıyla kaydedilir.
 5. Siteyi her zamanki gibi HTTPS üzerinden yayınla.
