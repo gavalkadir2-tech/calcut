@@ -1381,6 +1381,10 @@
           preview = "📅 Etkinlik";
         } else if (d.type === "groupcall") {
           preview = "📞 Grup araması";
+        } else if (d.type === "album") {
+          preview = "🖼️ Albüm";
+        } else if (d.type === "videonote") {
+          preview = "⭕ Görüntülü not";
         } else if (d.type === "call") {
           if (mainTab === "calls") loadCallHistory();
           const raw = await decryptMessage(d).catch(() => null);
@@ -1564,7 +1568,7 @@
   // Everything kept per device in the vault, carried over by persistSession
   // and by "Ayarları dışa / içe aktar".
   const DEVICE_PREF_KEYS = ["pinned", "archived", "starred", "hiddenMsgs", "wallpapers", "lockedChats", "broadcastLists",
-    "stickers", "deletedChats", "chatSounds", "statusPrivacy", "defaultDisappearing"];
+    "stickers", "deletedChats", "chatSounds", "statusPrivacy", "defaultDisappearing", "drafts", "recentEmojis"];
 
   function devicePrefsOf(d) {
     const out = {};
@@ -2113,7 +2117,12 @@
       } else {
         const previewEl = li.querySelector(".thread-preview");
         if (isChatLocked(conv.id)) previewEl.textContent = "🔒 Kilitli sohbet";
-        else if (conv.lastPreview) appendFormatted(previewEl, conv.lastPreview);
+        else if (draftOf(conv.id) && conv.id !== activeConvId) {
+          const tag = document.createElement("span");
+          tag.className = "draft-tag";
+          tag.textContent = "✏️ Taslak: ";
+          previewEl.append(tag, document.createTextNode(draftOf(conv.id)));
+        } else if (conv.lastPreview) appendFormatted(previewEl, conv.lastPreview);
         else previewEl.textContent = "Aç ve sohbet et";
         if (conv.lastIsMissedCall && !isChatLocked(conv.id)) li.classList.add("missed-call");
       }
@@ -2244,7 +2253,7 @@
     closeQrModal();
     forgetStatusVideos();
     hideToast();
-    ["event-modal", "storage-modal", "schedule-modal", "intruder-modal"].forEach(id => document.getElementById(id).classList.add("hidden"));
+    ["event-modal", "storage-modal", "schedule-modal", "intruder-modal", "emoji-panel"].forEach(id => document.getElementById(id).classList.add("hidden"));
     ["sticker-picker", "broadcast-modal", "chat-unlock-modal", "contact-picker-modal"].forEach(id => document.getElementById(id).classList.add("hidden"));
     stopAllMessengerListeners();
     myPrivateKey = null;
@@ -2811,6 +2820,8 @@
         else if (m.type === "sticker") text = "🌟 Çıkartma";
         else if (m.type === "event") text = "📅 Etkinlik";
         else if (m.type === "groupcall") text = "📞 Grup araması";
+        else if (m.type === "album") text = "🖼️ Albüm";
+        else if (m.type === "videonote") text = "⭕ Görüntülü not";
         else if (m.type === "call") text = "📞 Arama kaydı";
         else text = m.content + (m.edited ? " (düzenlendi)" : "");
         line.appendChild(document.createTextNode(text));
@@ -2882,7 +2893,7 @@
     hideMentionPicker();
     mediaGallery.classList.add("hidden");
     applyWallpaper();
-    updateComposerMode();
+    restoreDraft(convId);
     updateComposerAccess();
     updateScheduledBar();
     updateDisappearingUi();
@@ -4774,10 +4785,12 @@
             type: d.type,
             from: d.from === myUid ? "me" : "them",
             fromNickname,
-            text: ["image", "file", "call", "audio", "poll", "location", "contact", "livelocation", "sticker", "event", "groupcall"].includes(d.type) ? null : plain,
+            text: ["image", "file", "call", "audio", "poll", "location", "contact", "livelocation", "sticker", "event", "groupcall", "album", "videonote"].includes(d.type) ? null : plain,
             liveLocation: d.type === "livelocation" ? parseJson(plain) : null,
             event: d.type === "event" ? parseJson(plain) : null,
             groupCall: d.type === "groupcall" ? parseJson(plain) : null,
+            album: d.type === "album" ? parseAlbum(plain) : null,
+            videoNote: d.type === "videonote" ? parseVideoNote(plain) : null,
             rsvp: d.rsvp || {},
             sticker: d.type === "sticker" && isSticker(plain) ? plain : null,
             contact: d.type === "contact" ? parseJson(plain) : null,
@@ -4988,6 +5001,8 @@
     if (m.sticker) return "🌟 Çıkartma";
     if (m.event) return "📅 " + (m.event.title || "Etkinlik");
     if (m.groupCall) return "📞 Grup araması";
+    if (m.album) return "🖼️ " + m.album.length + " fotoğraf";
+    if (m.videoNote) return "⭕ Görüntülü not";
     if (m.image) return "📷 Fotoğraf";
     if (m.audio) return "🎤 Sesli mesaj";
     if (m.file) return "📄 " + (m.file.name || "Dosya");
@@ -5251,6 +5266,11 @@
         div.appendChild(renderEvent(m));
       } else if (m.groupCall) {
         div.appendChild(renderGroupCallCard(m));
+      } else if (m.album) {
+        div.appendChild(renderAlbum(m));
+      } else if (m.videoNote) {
+        div.classList.add("vnote-bubble");
+        div.appendChild(renderVideoNote(m));
       } else if (m.sticker) {
         div.classList.add("sticker");
         const img = document.createElement("img");
@@ -6379,7 +6399,8 @@
     const msgs = galleryMessages();
     const dateOf = m => new Date(m.ts).toLocaleDateString("tr-TR");
     if (mediaTab === "media") {
-      const items = msgs.filter(m => (m.image && !m.viewOnce) || isVideoFile(m));
+      const items = msgs.flatMap(m => m.album ? m.album.map(image => ({ ...m, image })) : [m])
+        .filter(m => (m.image && !m.viewOnce) || isVideoFile(m));
       if (!items.length) return galleryEmpty("Bu sohbette henüz fotoğraf ya da video yok.");
       const grid = document.createElement("div");
       grid.className = "media-grid";
@@ -7076,7 +7097,7 @@
     copy.height = peCanvas.height;
     copy.getContext("2d").drawImage(peCanvas, 0, 0);
     peHistory.push(copy);
-    if (peHistory.length > 6) peHistory.shift();
+    if (peHistory.length > (peHd ? 3 : 6)) peHistory.shift(); // HD canvases are big
   }
 
   function peSetCanvasFrom(source, w, h) {
@@ -7265,6 +7286,7 @@
   function closePhotoEditor(result) {
     photoEditor.classList.add("hidden");
     peHistory = [];
+    peSource = null;
     const resolve = peResolve;
     peResolve = null;
     if (resolve) resolve(result);
@@ -7272,12 +7294,34 @@
 
   document.getElementById("pe-cancel").addEventListener("click", () => closePhotoEditor(null));
   document.getElementById("pe-send").addEventListener("click", () => {
+    const hd = peHd;
     peCanvas.toBlob(blob => {
-      closePhotoEditor(blob ? new File([blob], "foto.jpg", { type: "image/jpeg" }) : null);
-    }, "image/jpeg", 0.9);
+      const file = blob ? new File([blob], "foto.jpg", { type: "image/jpeg" }) : null;
+      if (file) file.calcutHd = hd;
+      closePhotoEditor(file);
+    }, "image/jpeg", hd ? 0.92 : 0.9);
   });
 
   // Resolves with the edited photo as a File, or null if cancelled.
+  // HD: the photo is edited and sent at up to PHOTO_HD_SIDE px.
+  let peHd = false;
+  let peSource = null;
+  function peLoadSource() {
+    const side = peHd ? PHOTO_HD_SIDE : PE_MAX_SIDE;
+    const scale = Math.min(1, side / Math.max(peSource.naturalWidth, peSource.naturalHeight));
+    peSetCanvasFrom(peSource, Math.round(peSource.naturalWidth * scale), Math.round(peSource.naturalHeight * scale));
+    peHistory = [];
+    document.getElementById("pe-hd").classList.toggle("active", peHd);
+  }
+
+  document.getElementById("pe-hd").addEventListener("click", () => {
+    if (!peSource) return;
+    if (peHistory.length && !confirm("HD'ye geçince yaptığın düzenlemeler sıfırlanır. Devam edilsin mi?")) return;
+    peHd = !peHd;
+    peLoadSource();
+    showToast(peHd ? "HD: fotoğraf yüksek çözünürlükte gönderilecek" : "Standart kalite", 2000);
+  });
+
   async function openPhotoEditor(file) {
     let img;
     try {
@@ -7285,9 +7329,9 @@
     } catch (e) {
       return file; // a format the browser can't draw (e.g. HEIC): send as it is
     }
-    const scale = Math.min(1, PE_MAX_SIDE / Math.max(img.naturalWidth, img.naturalHeight));
-    peSetCanvasFrom(img, Math.round(img.naturalWidth * scale), Math.round(img.naturalHeight * scale));
-    peHistory = [];
+    peSource = img;
+    peHd = false;
+    peLoadSource();
     peSetTool("draw");
     photoEditor.classList.remove("hidden");
     return new Promise(resolve => { peResolve = resolve; });
@@ -9282,6 +9326,401 @@
   });
   applyPanicMode();
 
+  /* ---------------- Drafts ----------------
+     A half-written message stays with its chat (in the vault, on this
+     device) and the chat list shows it as "✏️ Taslak". */
+
+  function draftOf(convId) {
+    const d = localSessionData && localSessionData.drafts;
+    return (d && typeof d === "object" && typeof d[convId] === "string") ? d[convId] : "";
+  }
+
+  // Keeps the composer's text as the open chat's draft, and empties the box.
+  function stashDraft() {
+    if (!activeConvId || !localSessionData || !currentLocalKey) return;
+    const text = messageInput.value.trim() ? messageInput.value.slice(0, 4000) : "";
+    messageInput.value = "";
+    updateComposerMode();
+    if (text === draftOf(activeConvId)) return;
+    const drafts = { ...(localSessionData.drafts || {}) };
+    if (text) drafts[activeConvId] = text; else delete drafts[activeConvId];
+    localSessionData.drafts = drafts;
+    saveLocalPrefs();
+    renderThreadList();
+  }
+
+  function restoreDraft(convId) {
+    messageInput.value = draftOf(convId);
+    updateComposerMode();
+  }
+
+  /* ---------------- Albums and HD photos ----------------
+     Several photos picked together go as one album message (up to
+     ALBUM_MAX per message) after a preview where "HD" can be ticked: HD
+     keeps up to PHOTO_HD_SIDE px instead of PHOTO_MAX_SIDE. */
+
+  const ALBUM_MAX = 10;
+  const PHOTO_HD_SIDE = 4096;
+  const albumModal = document.getElementById("album-modal");
+  let albumResolve = null;
+
+  function albumChunks(list) {
+    const out = [];
+    for (let i = 0; i < list.length; i += ALBUM_MAX) out.push(list.slice(i, i + ALBUM_MAX));
+    return out;
+  }
+
+  // Resolves with { hd } to send, or null if cancelled.
+  function openAlbumPreview(images) {
+    const grid = document.getElementById("album-preview");
+    grid.innerHTML = "";
+    const urls = images.map(f => URL.createObjectURL(f));
+    urls.forEach(u => {
+      const img = document.createElement("img");
+      img.src = u;
+      img.alt = "";
+      grid.appendChild(img);
+    });
+    document.getElementById("album-title").textContent = "🖼️ " + images.length + " fotoğraf";
+    document.getElementById("album-hd").checked = false;
+    document.getElementById("album-send").textContent = "Gönder (" + images.length + ") ➤";
+    albumModal.classList.remove("hidden");
+    return new Promise(resolve => {
+      albumResolve = result => {
+        albumResolve = null;
+        albumModal.classList.add("hidden");
+        grid.innerHTML = "";
+        urls.forEach(u => URL.revokeObjectURL(u));
+        resolve(result);
+      };
+    });
+  }
+  document.getElementById("album-cancel").addEventListener("click", () => albumResolve && albumResolve(null));
+  document.getElementById("album-send").addEventListener("click", () => albumResolve && albumResolve({ hd: document.getElementById("album-hd").checked }));
+
+  function renderAlbum(m) {
+    const grid = document.createElement("div");
+    const n = m.album.length;
+    grid.className = "album-grid" + (n === 1 ? " one" : "");
+    const shown = m.all || n <= 4 ? n : 4;
+    m.album.slice(0, shown).forEach((src, i) => {
+      const cell = document.createElement("div");
+      cell.className = "album-cell";
+      const img = document.createElement("img");
+      img.src = src;
+      img.alt = "";
+      cell.appendChild(img);
+      if (i === shown - 1 && n > shown) {
+        const more = document.createElement("button");
+        more.className = "album-more";
+        more.textContent = "+" + (n - shown);
+        more.addEventListener("click", e => {
+          e.stopPropagation();
+          grid.replaceWith(renderAlbum({ album: m.album, all: true }));
+        });
+        cell.appendChild(more);
+      }
+      grid.appendChild(cell);
+    });
+    return grid;
+  }
+
+  function parseAlbum(plain) {
+    const v = parseJson(plain);
+    const list = v && Array.isArray(v.images) ? v.images : [];
+    const ok = list.filter(s => typeof s === "string" && /^data:image\/(jpeg|png|gif|webp);base64,/.test(s));
+    return ok.length ? ok : null;
+  }
+
+  /* ---------------- Video notes ----------------
+     A short round selfie video (up to VNOTE_MAX_S seconds), recorded in the
+     app and sent like a photo (encrypted, chunked if big). */
+
+  const VNOTE_MAX_S = 60;
+  const vnoteScreen = document.getElementById("vnote-screen");
+  const vnoteVideo = document.getElementById("vnote-video");
+  let vnote = null;
+
+  function vnoteMime() {
+    if (typeof MediaRecorder === "undefined") return null;
+    return ["video/webm;codecs=vp8,opus", "video/webm", "video/mp4"].find(t => MediaRecorder.isTypeSupported(t)) || "";
+  }
+
+  function vnoteShow(state) {
+    vnoteScreen.dataset.state = state;
+    document.getElementById("vnote-record").textContent = state === "recording" ? "⏹" : "⏺";
+    document.getElementById("vnote-record").classList.toggle("hidden", state === "review");
+    document.getElementById("vnote-send").classList.toggle("hidden", state !== "review");
+    document.getElementById("vnote-retake").classList.toggle("hidden", state !== "review");
+  }
+
+  async function openVideoNote() {
+    attachMenu.classList.add("hidden");
+    if (vnoteMime() === null) { alert("Bu cihaz görüntülü not kaydedemiyor."); return; }
+    if (activeCallId || gc) { alert("Arama sırasında görüntülü not kaydedilemez."); return; }
+    let stream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user", width: { ideal: 480 }, height: { ideal: 480 } }, audio: true });
+    } catch (e) {
+      alert("Kamera açılamadı: " + e.message);
+      return;
+    }
+    vnote = { stream, convId: activeConvId, otherUids: activeOtherUids, blob: null, url: null };
+    vnoteVideo.muted = true;
+    vnoteVideo.loop = false;
+    vnoteVideo.srcObject = stream;
+    vnoteVideo.play().catch(() => {});
+    document.getElementById("vnote-timer").textContent = "0:00";
+    vnoteShow("ready");
+    vnoteScreen.classList.remove("hidden");
+  }
+
+  function vnoteStart() {
+    const mime = vnoteMime();
+    const rec = new MediaRecorder(vnote.stream, Object.assign({ videoBitsPerSecond: 600000, audioBitsPerSecond: 48000 }, mime ? { mimeType: mime } : {}));
+    const parts = [];
+    rec.ondataavailable = e => { if (e.data && e.data.size) parts.push(e.data); };
+    rec.onstop = () => {
+      if (!vnote) return;
+      vnote.blob = new Blob(parts, { type: (rec.mimeType || mime || "video/webm").split(";")[0] });
+      vnote.duration = Math.round((Date.now() - vnote.started) / 1000);
+      vnote.url = URL.createObjectURL(vnote.blob);
+      vnoteVideo.srcObject = null;
+      vnoteVideo.src = vnote.url;
+      vnoteVideo.muted = false;
+      vnoteVideo.loop = true;
+      vnoteVideo.play().catch(() => {});
+      vnoteShow("review");
+    };
+    vnote.rec = rec;
+    vnote.started = Date.now();
+    rec.start(1000);
+    vnoteShow("recording");
+    vnote.tick = setInterval(() => {
+      const s = Math.floor((Date.now() - vnote.started) / 1000);
+      document.getElementById("vnote-timer").textContent = Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0");
+      if (s >= VNOTE_MAX_S) vnoteStop();
+    }, 250);
+  }
+
+  function vnoteStop() {
+    if (!vnote || !vnote.rec || vnote.rec.state === "inactive") return;
+    clearInterval(vnote.tick);
+    vnote.rec.stop();
+  }
+
+  function closeVideoNote() {
+    if (!vnote) return;
+    clearInterval(vnote.tick);
+    const v = vnote;
+    vnote = null;
+    if (v.rec && v.rec.state !== "inactive") { try { v.rec.stop(); } catch (e) {} }
+    v.stream.getTracks().forEach(t => t.stop());
+    if (v.url) URL.revokeObjectURL(v.url);
+    vnoteVideo.pause();
+    vnoteVideo.srcObject = null;
+    vnoteVideo.removeAttribute("src");
+    vnoteScreen.classList.add("hidden");
+  }
+
+  document.getElementById("attach-vnote-btn").addEventListener("click", openVideoNote);
+  document.getElementById("vnote-record").addEventListener("click", () => {
+    if (vnote && vnote.rec && vnote.rec.state === "recording") vnoteStop();
+    else if (vnote) vnoteStart();
+  });
+  document.getElementById("vnote-cancel").addEventListener("click", closeVideoNote);
+  document.getElementById("vnote-retake").addEventListener("click", () => {
+    if (!vnote) return;
+    if (vnote.url) URL.revokeObjectURL(vnote.url);
+    vnote.blob = vnote.url = vnote.rec = null;
+    vnoteVideo.removeAttribute("src");
+    vnoteVideo.muted = true;
+    vnoteVideo.loop = false;
+    vnoteVideo.srcObject = vnote.stream;
+    vnoteVideo.play().catch(() => {});
+    document.getElementById("vnote-timer").textContent = "0:00";
+    vnoteShow("ready");
+  });
+  document.getElementById("vnote-send").addEventListener("click", async () => {
+    if (!vnote || !vnote.blob) return;
+    const { blob, convId, otherUids, duration } = vnote;
+    closeVideoNote();
+    if (blob.size > 20 * 1024 * 1024) { alert("Görüntülü not çok büyük."); return; }
+    try {
+      showToast("Görüntülü not gönderiliyor…");
+      const dataUrl = await readAsDataUrl(blob);
+      await sendEncryptedTo(convId, otherUids, JSON.stringify({ dataUrl, mime: blob.type, duration }), "videonote", takeReplyFields());
+      hideToast();
+    } catch (e) {
+      hideToast();
+      alert("Görüntülü not gönderilemedi: " + e.message);
+    }
+  });
+
+  function parseVideoNote(plain) {
+    const v = parseJson(plain);
+    return v && typeof v.dataUrl === "string" && /^data:video\/(webm|mp4)[;,]/.test(v.dataUrl) ? v : null;
+  }
+
+  function renderVideoNote(m) {
+    const box = document.createElement("div");
+    box.className = "vnote";
+    const video = document.createElement("video");
+    video.src = m.videoNote.dataUrl;
+    video.playsInline = true;
+    video.preload = "metadata";
+    video.loop = false;
+    box.appendChild(video);
+    const badge = document.createElement("span");
+    badge.className = "vnote-badge";
+    const d = Number(m.videoNote.duration) || 0;
+    badge.textContent = "▶ " + Math.floor(d / 60) + ":" + String(d % 60).padStart(2, "0");
+    box.appendChild(badge);
+    video.addEventListener("play", () => box.classList.add("playing"));
+    video.addEventListener("pause", () => box.classList.remove("playing"));
+    video.addEventListener("ended", () => { box.classList.remove("playing"); video.currentTime = 0; });
+    box.addEventListener("click", () => { if (video.paused) video.play().catch(() => {}); else video.pause(); });
+    return box;
+  }
+
+  /* ---------------- Emoji and GIF picker ---------------- */
+
+  const EMOJI_GROUPS = [
+    ["😀", "😀😃😄😁😆😅🤣😂🙂🙃😉😊😇🥰😍🤩😘😗😚😙😋😛😜🤪😝🤑🤗🤭🤫🤔🤐🤨😐😑😶😏😒🙄😬😮‍💨🤥😌😔😪🤤😴😷🤒🤕🤢🤮🥵🥶🥴😵🤯🤠🥳😎🤓🧐😕😟🙁☹️😮😯😲😳🥺😦😧😨😰😥😢😭😱😖😣😞😓😩😫🥱😤😡😠🤬😈👿💀☠️💩🤡👻👽🤖"],
+    ["👋", "👋🤚🖐️✋🖖👌🤌🤏✌️🤞🤟🤘🤙👈👉👆👇☝️👍👎✊👊🤛🤜👏🙌👐🤲🤝🙏✍️💪🦾🦵🦶👂👃🧠👀👁️👅👄💋🫶🫡🫠🫢"],
+    ["❤️", "❤️🧡💛💚💙💜🖤🤍🤎💔❣️💕💞💓💗💖💘💝💟💯💢💥💫💦💨🕳️💬💭💤✨🎉🎊🎈🎁🔥⭐🌟⚡☀️🌙🌈☔❄️"],
+    ["🐶", "🐶🐱🐭🐹🐰🦊🐻🐼🐨🐯🦁🐮🐷🐸🐵🙈🙉🙊🐔🐧🐦🐤🦆🦅🦉🐺🐴🦄🐝🦋🐌🐞🐢🐍🐙🐠🐟🐬🐳🦈🐊🐘🦒🐪🐑🐐🦌🐕🐈🌸🌹🌻🌷🌱🌲🌳🌴🍀🍁🍂"],
+    ["🍕", "🍏🍎🍐🍊🍋🍌🍉🍇🍓🍒🍑🥭🍍🥥🥝🍅🥑🍆🥔🥕🌽🌶️🥒🥬🧄🧅🍞🥐🥖🧀🥚🍳🥞🥓🥩🍗🍖🌭🍔🍟🍕🥪🌮🌯🥗🍝🍜🍲🍛🍣🍱🥟🍤🍚🍰🎂🧁🍩🍪🍫🍬🍭🍯☕🍵🥤🍺🍷🥂🧃"],
+    ["⚽", "⚽🏀🏈⚾🎾🏐🏉🎱🏓🏸🥅🏒⛳🏹🎣🥊🥋🎽🛹⛸️🎿🏂🏋️🤸⛹️🤺🏊🚴🏆🥇🥈🥉🏅🎖️🎮🎲🧩🎯🎳🎸🎹🥁🎤🎧🎬🎨"],
+    ["🚗", "🚗🚕🚙🚌🚎🏎️🚓🚑🚒🚐🛻🚚🚛🚜🏍️🛵🚲🛴🚨🚔✈️🛫🛬🚀🛸🚁⛵🚤🛳️🚢⚓🗺️🏠🏡🏢🏥🏦🏨🏫🏪🕌⛪🏰🗼🗽⛲🏖️🏝️⛰️🏕️🌋🌃🌉"],
+    ["💡", "⌚📱💻⌨️🖥️🖨️📷📹🎥📞☎️📺📻⏰⌛💡🔦🕯️💸💵💰💳💎🔧🔨🛠️🔑🗝️🔒🔓📦📫✉️📝📌📎✂️📚📖🔍🧸🎀🛒✅❌❓❗⚠️🚫♻️🆗🆕🔴🟠🟡🟢🔵🟣⚫⚪"],
+  ];
+  const emojiPanel = document.getElementById("emoji-panel");
+  let emojiGroup = 0;
+  let emojiTab = "emoji";
+
+  function splitEmoji(s) {
+    if (typeof Intl !== "undefined" && Intl.Segmenter) return [...new Intl.Segmenter("tr", { granularity: "grapheme" }).segment(s)].map(x => x.segment);
+    return s.match(/\p{Extended_Pictographic}(️|‍\p{Extended_Pictographic}️?)*/gu) || [];
+  }
+
+  function recentEmojis() {
+    const r = localSessionData && localSessionData.recentEmojis;
+    return Array.isArray(r) ? r.filter(e => typeof e === "string").slice(0, 24) : [];
+  }
+
+  function insertEmoji(e) {
+    const start = messageInput.selectionStart == null ? messageInput.value.length : messageInput.selectionStart;
+    const end = messageInput.selectionEnd == null ? start : messageInput.selectionEnd;
+    messageInput.value = messageInput.value.slice(0, start) + e + messageInput.value.slice(end);
+    const pos = start + e.length;
+    messageInput.setSelectionRange(pos, pos);
+    updateComposerMode();
+    if (localSessionData) {
+      localSessionData.recentEmojis = [e, ...recentEmojis().filter(x => x !== e)].slice(0, 24);
+      saveLocalPrefs();
+    }
+  }
+
+  function renderEmojiPanel() {
+    emojiPanel.querySelectorAll(".emoji-tabs button").forEach(b => b.classList.toggle("active", b.dataset.tab === emojiTab));
+    document.getElementById("emoji-body").classList.toggle("hidden", emojiTab !== "emoji");
+    document.getElementById("gif-body").classList.toggle("hidden", emojiTab !== "gif");
+    if (emojiTab !== "emoji") return;
+    const groups = document.getElementById("emoji-groups");
+    groups.innerHTML = "";
+    const all = [["🕘", recentEmojis().join("")], ...EMOJI_GROUPS];
+    all.forEach(([icon], i) => {
+      const b = document.createElement("button");
+      b.textContent = icon;
+      b.classList.toggle("active", i === emojiGroup);
+      b.addEventListener("click", () => { emojiGroup = i; renderEmojiPanel(); });
+      groups.appendChild(b);
+    });
+    const grid = document.getElementById("emoji-grid");
+    grid.innerHTML = "";
+    const list = splitEmoji(all[emojiGroup][1]);
+    if (!list.length) grid.textContent = "Henüz son kullanılan emoji yok.";
+    list.forEach(e => {
+      const b = document.createElement("button");
+      b.textContent = e;
+      b.addEventListener("click", () => insertEmoji(e));
+      grid.appendChild(b);
+    });
+  }
+
+  document.getElementById("emoji-btn").addEventListener("click", () => {
+    const open = emojiPanel.classList.contains("hidden");
+    emojiPanel.classList.toggle("hidden", !open);
+    if (open) {
+      attachMenu.classList.add("hidden");
+      if (!recentEmojis().length && emojiGroup === 0) emojiGroup = 1;
+      renderEmojiPanel();
+    }
+  });
+  emojiPanel.querySelectorAll(".emoji-tabs button").forEach(b => b.addEventListener("click", () => {
+    emojiTab = b.dataset.tab;
+    renderEmojiPanel();
+    if (emojiTab === "gif" && !document.getElementById("gif-grid").children.length) searchGifs("");
+  }));
+
+  // GIFs come from Tenor through the push server (script property
+  // TENOR_KEY), which also fetches the chosen one, so the GIF itself is
+  // then sent encrypted like a photo.
+  let gifSearchSeq = 0;
+  async function searchGifs(q) {
+    const seq = ++gifSearchSeq;
+    const grid = document.getElementById("gif-grid");
+    const msg = document.getElementById("gif-msg");
+    msg.textContent = "Yükleniyor…";
+    const r = await requestPush({ kind: "gif-search", q: q.slice(0, 80) });
+    if (seq !== gifSearchSeq) return;
+    grid.innerHTML = "";
+    const results = r && r.status === 200 && r.data && Array.isArray(r.data.results) ? r.data.results : null;
+    if (!results) {
+      const err = (r && (r.error || (r.data && r.data.error))) || "";
+      msg.textContent = /TENOR_KEY/.test(err)
+        ? "GIF araması kapalı: Apps Script'e TENOR_KEY eklenmeli (README'de anlatılıyor)."
+        : "GIF'ler yüklenemedi" + (err ? " (" + err + ")" : "") + ".";
+      return;
+    }
+    msg.textContent = results.length ? "Tenor ile" : "Sonuç yok.";
+    results.forEach(g => {
+      if (!g || typeof g.preview !== "string" || !/^https:\/\/media\.tenor\.com\//.test(g.preview)) return;
+      const b = document.createElement("button");
+      b.className = "gif-cell";
+      const img = document.createElement("img");
+      img.src = g.preview;
+      img.alt = "";
+      img.loading = "lazy";
+      img.referrerPolicy = "no-referrer";
+      b.appendChild(img);
+      b.addEventListener("click", () => sendGif(g.url));
+      grid.appendChild(b);
+    });
+  }
+
+  async function sendGif(url) {
+    emojiPanel.classList.add("hidden");
+    try {
+      showToast("GIF gönderiliyor…");
+      const r = await requestPush({ kind: "gif-fetch", url });
+      const dataUrl = r && r.status === 200 && r.data && r.data.dataUrl;
+      if (!dataUrl || !/^data:image\/gif;base64,/.test(dataUrl)) throw new Error((r && r.data && r.data.error) || "alınamadı");
+      await sendEncrypted(dataUrl, "image", takeReplyFields());
+      hideToast();
+    } catch (e) {
+      hideToast();
+      alert("GIF gönderilemedi: " + e.message);
+    }
+  }
+
+  let gifSearchTimer = null;
+  document.getElementById("gif-search").addEventListener("input", e => {
+    clearTimeout(gifSearchTimer);
+    gifSearchTimer = setTimeout(() => searchGifs(e.target.value.trim()), 400);
+  });
+
   const viewOnceInput = document.getElementById("viewonce-input");
   document.getElementById("attach-viewonce-btn").addEventListener("click", () => {
     attachMenu.classList.add("hidden");
@@ -9310,14 +9749,40 @@
     opts = opts || {};
     if (!files.length) return;
     // A single photo can be drawn on, captioned, cropped or rotated first.
+    let hd = false;
     if (files.length === 1 && files[0].type.startsWith("image/") && files[0].type !== "image/gif") {
       const edited = await openPhotoEditor(files[0]);
       if (!edited) return;
+      hd = !!edited.calcutHd;
       files = [edited];
     }
     if (files.length > MAX_FILES_PER_SEND) {
       alert("Tek seferde en fazla " + MAX_FILES_PER_SEND + " dosya seçebilirsin.");
       return;
+    }
+    // Two or more photos: one album message (per ALBUM_MAX), after a preview.
+    const albumPhotos = opts.viewOnce ? [] : files.filter(f => f.type.startsWith("image/") && f.size <= 50 * 1024 * 1024);
+    if (albumPhotos.length >= 2) {
+      const choice = await openAlbumPreview(albumPhotos);
+      if (!choice) return;
+      files = files.filter(f => !albumPhotos.includes(f));
+      let albumReply = takeReplyFields();
+      const albumFailed = [];
+      for (const group of albumChunks(albumPhotos)) {
+        try {
+          uploadStatusEl.textContent = "🖼️ " + group.length + " fotoğraf gönderiliyor…";
+          uploadStatusEl.classList.remove("hidden");
+          const images = [];
+          for (const f of group) images.push(await shrinkPhoto(await readAsDataUrl(f), f.type, choice.hd));
+          await sendEncrypted(JSON.stringify({ images }), "album", albumReply);
+          albumReply = null;
+        } catch (e) {
+          albumFailed.push(e.message);
+        }
+      }
+      uploadStatusEl.classList.add("hidden");
+      if (albumFailed.length) alert("Albüm gönderilemedi: " + albumFailed.join(", "));
+      if (!files.length) return;
     }
     // Large payloads are split over chunk documents (see CHUNK_CHARS), but
     // a file is still held several times over in memory while it's encoded
@@ -9344,7 +9809,7 @@
           uploadStatusEl.classList.add("hidden");
         } else if (isImage) {
           const fields = opts.viewOnce ? { ...(replyFields || {}), viewOnce: true } : replyFields;
-          await sendEncrypted(await shrinkPhoto(dataUrl, file.type), "image", fields);
+          await sendEncrypted(await shrinkPhoto(dataUrl, file.type, hd), "image", fields);
         } else if (opts.viewOnce) {
           throw new Error("tek seferlik yalnızca fotoğraf olabilir");
         } else {
@@ -9378,7 +9843,7 @@
   // already small enough go as they are.
   const PHOTO_MAX_SIDE = 1600;
 
-  async function shrinkPhoto(dataUrl, mime) {
+  async function shrinkPhoto(dataUrl, mime, hd) {
     if (mime === "image/gif") return dataUrl;
     try {
       const img = await new Promise((resolve, reject) => {
@@ -9387,12 +9852,12 @@
         i.onerror = () => reject(new Error("decode"));
         i.src = dataUrl;
       });
-      const scale = Math.min(1, PHOTO_MAX_SIDE / Math.max(img.naturalWidth, img.naturalHeight));
+      const scale = Math.min(1, (hd ? PHOTO_HD_SIDE : PHOTO_MAX_SIDE) / Math.max(img.naturalWidth, img.naturalHeight));
       const canvas = document.createElement("canvas");
       canvas.width = Math.round(img.naturalWidth * scale);
       canvas.height = Math.round(img.naturalHeight * scale);
       canvas.getContext("2d").drawImage(img, 0, 0, canvas.width, canvas.height);
-      const jpeg = canvas.toDataURL("image/jpeg", 0.82);
+      const jpeg = canvas.toDataURL("image/jpeg", hd ? 0.92 : 0.82);
       return jpeg.length < dataUrl.length ? jpeg : dataUrl;
     } catch (e) {
       return dataUrl; // a format the browser can't draw (e.g. HEIC): send the original
@@ -9520,8 +9985,12 @@
 
   // Leaving a chat (or locking) drops a pending reply and discards a recording.
   function leaveComposer() {
+    stashDraft();
     cancelReply();
     attachMenu.classList.add("hidden");
+    emojiPanel.classList.add("hidden");
+    closeVideoNote();
+    if (albumResolve) albumResolve(null);
     stopVoiceRecording(false);
     discardVoicePreview();
   }

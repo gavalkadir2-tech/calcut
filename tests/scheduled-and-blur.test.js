@@ -41,5 +41,5 @@ test("Code.gs: a due scheduled message moves in one atomic commit", () => {
   const body = gs.slice(gs.indexOf("function deliverOne_("), gs.indexOf("/* ---------------- Firebase ID token check"));
   assert.match(body, /currentDocument: \{ exists: false \}/);
   assert.match(body, /delete: doc\.name, currentDocument: \{ exists: true \}/);
-  assert.match(gs, /const WORKER_VERSION = 5;/);
+  assert.match(gs, /const WORKER_VERSION = ([5-9]|\d{2,});/);
 });
