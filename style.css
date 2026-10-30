@@ -1602,3 +1602,18 @@ body.privacy-cover #calculator-view { position: fixed; inset: 0; z-index: 10000;
 #contact-info-groups { list-style: none; margin: 0 0 10px; padding: 0; width: 100%; text-align: left; max-height: 30vh; overflow-y: auto; }
 #contact-info-groups li { padding: 10px 4px; border-bottom: 1px solid var(--border); cursor: pointer; }
 .contact-info-box > button { width: 100%; }
+
+/* Link previews */
+#link-preview-bar { display: flex; align-items: center; gap: 6px; padding: 6px 10px; background: var(--surface); border-top: 1px solid var(--border); }
+#link-preview-bar.hidden { display: none; }
+#link-preview-bar .link-card { flex: 1; margin: 0; }
+#link-preview-close { background: none; border: none; color: var(--muted); font-size: 18px; cursor: pointer; padding: 4px 6px; }
+.link-card { display: flex; gap: 8px; align-items: stretch; background: rgba(0, 0, 0, 0.18); border-left: 3px solid var(--accent); border-radius: 8px; overflow: hidden; margin-top: 6px; text-decoration: none; color: inherit; min-width: 0; }
+.msg-bubble a.link-card { text-decoration: none; color: inherit; word-break: normal; }
+.link-card img { width: 64px; min-height: 64px; object-fit: cover; flex-shrink: 0; border-radius: 0; cursor: pointer; }
+.link-card-text { display: flex; flex-direction: column; gap: 2px; padding: 6px 8px 6px 0; min-width: 0; }
+.link-card:not(:has(img)) .link-card-text { padding-left: 8px; }
+.link-card-text b { font-size: 14px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.link-card-text small { font-size: 12px; opacity: 0.8; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.link-card-text .link-card-host { opacity: 0.6; }
+:root[data-theme="light"] .link-card { background: rgba(0, 0, 0, 0.05); }

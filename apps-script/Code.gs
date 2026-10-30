@@ -10,6 +10,7 @@
 //   | { idToken, kind: "schedule" } (starts the every-minute delivery of scheduled messages)
 //   | { idToken, kind: "gif-search", q } | { idToken, kind: "gif-fetch", url } (Tenor, script property TENOR_KEY)
 //   | { idToken, kind: "translate", text, to } (Google Translate, no key needed)
+//   | { idToken, kind: "link-preview", url } (title, description and image of a page)
 // The ID token is checked with Google (Identity Toolkit accounts:lookup), the
 // sender is verified in Firestore, then a data-only FCM push goes to the
 // recipients' devices (users/{uid}.fcmTokens).
@@ -22,7 +23,7 @@
 // run setup() once from the editor (▶ Run) and allow it: that lets the
 // script start its own every-minute timer.
 
-const WORKER_VERSION = 7;
+const WORKER_VERSION = 8;
 // The Firebase web API key (public, same as in firebase-config.js); only used
 // to ask Google whether an ID token is valid.
 const FIREBASE_API_KEY = "AIzaSyB0JTRgod2uk5KtYtnd4OLiG0LQ5qwxEwI";
@@ -41,6 +42,7 @@ function doPost(e) {
     if (!uid) return json_({ error: "unauthorized", v: WORKER_VERSION });
     if (body.kind === "ice-servers") return json_({ iceServers: turnIceServers_(), v: WORKER_VERSION });
     if (body.kind === "link-token") return json_({ token: customToken_(sa, uid), v: WORKER_VERSION });
+    if (body.kind === "link-preview") return json_(Object.assign(linkPreview_(body.url), { v: WORKER_VERSION }));
     if (body.kind === "translate") return json_(Object.assign(translate_(body.text, body.to), { v: WORKER_VERSION }));
     if (body.kind === "gif-search") return json_(Object.assign(gifSearch_(body.q), { v: WORKER_VERSION }));
     if (body.kind === "gif-fetch") return json_(Object.assign(gifFetch_(body.url), { v: WORKER_VERSION }));
@@ -186,6 +188,60 @@ function pushToUser_(fs, sa, toUid, fromUid, data) {
     }
   });
   return sent;
+}
+
+/* ---------------- Link previews ----------------
+   The page's og: / twitter: / <title> tags and a small image, so the app
+   can send them (encrypted) with a message that has a link. */
+
+function linkPreview_(url) {
+  if (typeof url !== "string" || url.length > 2000 || !/^https?:\/\/[^\s/]+/.test(url)) return { error: "bad url" };
+  let res;
+  try {
+    res = UrlFetchApp.fetch(url, { muteHttpExceptions: true, followRedirects: true, headers: { "Accept-Language": "tr,en;q=0.8" } });
+  } catch (e) {
+    return { error: "unreachable" };
+  }
+  if (res.getResponseCode() >= 400) return { error: "http " + res.getResponseCode() };
+  const type = String(res.getHeaders()["Content-Type"] || res.getHeaders()["content-type"] || "");
+  if (type && !/html/i.test(type)) return { error: "not html" };
+  const html = res.getContentText().slice(0, 300000);
+  const title = metaContent_(html, ["og:title", "twitter:title"]) || ((/<title[^>]*>([^<]{1,300})<\/title>/i.exec(html) || [])[1] || "");
+  const desc = metaContent_(html, ["og:description", "twitter:description", "description"]);
+  let image = null;
+  const imageUrl = metaContent_(html, ["og:image", "og:image:url", "twitter:image"]);
+  if (imageUrl) {
+    try {
+      const abs = /^https?:\/\//.test(imageUrl) ? imageUrl
+        : imageUrl.indexOf("//") === 0 ? "https:" + imageUrl
+        : url.replace(/^(https?:\/\/[^/]+).*$/, "$1") + (imageUrl.charAt(0) === "/" ? "" : "/") + imageUrl;
+      const img = UrlFetchApp.fetch(abs, { muteHttpExceptions: true, followRedirects: true });
+      const imgType = String(img.getHeaders()["Content-Type"] || img.getHeaders()["content-type"] || "").split(";")[0];
+      const bytes = img.getContent();
+      if (img.getResponseCode() === 200 && /^image\/(jpeg|png|gif|webp)$/.test(imgType) && bytes.length <= 600000) {
+        image = "data:" + imgType + ";base64," + Utilities.base64Encode(bytes);
+      }
+    } catch (e) { /* no image */ }
+  }
+  if (!title && !desc) return { error: "no preview" };
+  return { title: decodeHtml_(title).slice(0, 200), desc: decodeHtml_(desc || "").slice(0, 300), image: image };
+}
+
+function metaContent_(html, names) {
+  for (let i = 0; i < names.length; i++) {
+    const n = names[i].replace(/[.:]/g, "\\$&");
+    const m = new RegExp("<meta[^>]+(?:property|name)=[\"']" + n + "[\"'][^>]*content=[\"']([^\"']*)[\"']", "i").exec(html) ||
+      new RegExp("<meta[^>]+content=[\"']([^\"']*)[\"'][^>]*(?:property|name)=[\"']" + n + "[\"']", "i").exec(html);
+    if (m && m[1].trim()) return m[1].trim();
+  }
+  return "";
+}
+
+function decodeHtml_(s) {
+  return String(s).replace(/&#(\d+);/g, (m, c) => String.fromCharCode(Number(c)))
+    .replace(/&#x([0-9a-f]+);/gi, (m, c) => String.fromCharCode(parseInt(c, 16)))
+    .replace(/&quot;/g, '"').replace(/&#39;|&apos;/g, "'").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&")
+    .replace(/\s+/g, " ").trim();
 }
 
 /* ---------------- Translation ---------------- */

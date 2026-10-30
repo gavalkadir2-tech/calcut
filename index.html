@@ -175,6 +175,10 @@
         <button id="reply-bar-cancel" title="Yanıtı iptal et">✕</button>
       </div>
       <button id="scheduled-bar" class="hidden"></button>
+      <div id="link-preview-bar" class="hidden">
+        <div id="link-preview-card" class="link-card"></div>
+        <button id="link-preview-close" title="Önizlemeyi kaldır">✕</button>
+      </div>
       <div id="select-bar" class="hidden">
         <button id="select-cancel" title="Seçimi bitir">✕</button>
         <span id="select-count"></span>
@@ -294,6 +298,11 @@
             <span>Okundu bilgisi gönder (renkli çift tik)</span>
           </label>
           <p class="hint">Kapatırsan başkalarının okundu bilgisini de göremezsin. Sesli mesajların dinlendi bilgisi her zaman gönderilir.</p>
+          <label class="toggle-row">
+            <input id="link-preview-toggle" type="checkbox" checked>
+            <span>Bağlantı önizlemeleri oluştur</span>
+          </label>
+          <p class="hint">Bir bağlantı yazınca başlığı ve görseli bildirim sunucun üzerinden alınır ve mesajla birlikte şifreli gider. Karşı tarafın telefonu siteye hiç bağlanmaz.</p>
           <label>Yeni sohbetlerde kaybolan mesajlar</label>
           <select id="default-disappearing">
             <option value="0">Kapalı</option>
@@ -426,7 +435,7 @@
         </section>
 
         <section class="settings-section hidden" data-section="about" data-title="Hakkında ve hesap">
-          <p class="app-version">Sürüm: 48</p>
+          <p class="app-version">Sürüm: 49</p>
           <div id="app-update-section" class="hidden">
             <label>Uygulama güncellemesi</label>
             <p id="app-update-msg" class="hint"></p>
