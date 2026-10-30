@@ -50,11 +50,18 @@ export default {
   },
 };
 
-// Short-lived TURN credentials from Cloudflare Realtime, for calls between
-// phones that can't reach each other directly (different mobile networks,
-// strict NAT). Needs the secrets TURN_KEY_ID and TURN_KEY_TOKEN; without
-// them the app keeps using STUN only.
+// TURN credentials for calls between phones that can't reach each other
+// directly (different mobile networks, strict NAT). Either Cloudflare
+// Realtime (secrets TURN_KEY_ID + TURN_KEY_TOKEN) or Metered / Open Relay,
+// which needs no credit card (secrets METERED_APP = the "xyz" of
+// xyz.metered.live, and METERED_API_KEY). Without either the app keeps
+// using STUN only.
 async function turnIceServers(env) {
+  if (env.METERED_APP && env.METERED_API_KEY && !(env.TURN_KEY_ID && env.TURN_KEY_TOKEN)) {
+    const res = await fetch(`https://${encodeURIComponent(env.METERED_APP)}.metered.live/api/v1/turn/credentials?apiKey=${encodeURIComponent(env.METERED_API_KEY)}`);
+    if (!res.ok) throw new Error("TURN " + res.status);
+    return cleanIceServers(await res.json());
+  }
   if (!env.TURN_KEY_ID || !env.TURN_KEY_TOKEN) return null;
   const res = await fetch(`https://rtc.live.cloudflare.com/v1/turn/keys/${env.TURN_KEY_ID}/credentials/generate-ice-servers`, {
     method: "POST",

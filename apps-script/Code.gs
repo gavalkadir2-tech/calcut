@@ -42,23 +42,36 @@ function doPost(e) {
   }
 }
 
-// Short-lived TURN credentials from Cloudflare Realtime, for calls between
-// phones that can't reach each other directly. Needs the script properties
-// TURN_KEY_ID and TURN_KEY_TOKEN; without them the app uses STUN only.
+// TURN credentials for calls between phones that can't reach each other
+// directly. Either Cloudflare Realtime (script properties TURN_KEY_ID +
+// TURN_KEY_TOKEN) or Metered / Open Relay, which needs no credit card
+// (METERED_APP = the "xyz" of xyz.metered.live, and METERED_API_KEY).
+// Without either the app uses STUN only.
 function turnIceServers_() {
   const props = PropertiesService.getScriptProperties();
   const keyId = props.getProperty("TURN_KEY_ID");
   const token = props.getProperty("TURN_KEY_TOKEN");
-  if (!keyId || !token) return null;
-  const res = UrlFetchApp.fetch("https://rtc.live.cloudflare.com/v1/turn/keys/" + keyId + "/credentials/generate-ice-servers", {
-    method: "post",
-    contentType: "application/json",
-    headers: { Authorization: "Bearer " + token },
-    payload: JSON.stringify({ ttl: 86400 }),
-    muteHttpExceptions: true,
-  });
-  if (res.getResponseCode() >= 300) throw new Error("TURN " + res.getResponseCode());
-  const list = JSON.parse(res.getContentText()).iceServers;
+  const meteredApp = props.getProperty("METERED_APP");
+  const meteredKey = props.getProperty("METERED_API_KEY");
+  let list;
+  if (keyId && token) {
+    const res = UrlFetchApp.fetch("https://rtc.live.cloudflare.com/v1/turn/keys/" + keyId + "/credentials/generate-ice-servers", {
+      method: "post",
+      contentType: "application/json",
+      headers: { Authorization: "Bearer " + token },
+      payload: JSON.stringify({ ttl: 86400 }),
+      muteHttpExceptions: true,
+    });
+    if (res.getResponseCode() >= 300) throw new Error("TURN " + res.getResponseCode());
+    list = JSON.parse(res.getContentText()).iceServers;
+  } else if (meteredApp && meteredKey) {
+    const res = UrlFetchApp.fetch("https://" + encodeURIComponent(meteredApp) + ".metered.live/api/v1/turn/credentials?apiKey=" +
+      encodeURIComponent(meteredKey), { muteHttpExceptions: true });
+    if (res.getResponseCode() >= 300) throw new Error("TURN " + res.getResponseCode());
+    list = JSON.parse(res.getContentText());
+  } else {
+    return null;
+  }
   // Browsers block port 53, so those URLs would only time out.
   return (Array.isArray(list) ? list : [list]).filter(Boolean).map(function (s) {
     const urls = (Array.isArray(s.urls) ? s.urls : [s.urls]).filter(function (u) {
