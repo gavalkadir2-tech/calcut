@@ -9636,6 +9636,7 @@
   const emojiPanel = document.getElementById("emoji-panel");
   let emojiGroup = 0;
   let emojiTab = "emoji";
+  let emojiSaveTimer = null;
 
   function splitEmoji(s) {
     if (typeof Intl !== "undefined" && Intl.Segmenter) return [...new Intl.Segmenter("tr", { granularity: "grapheme" }).segment(s)].map(x => x.segment);
@@ -9656,7 +9657,9 @@
     updateComposerMode();
     if (localSessionData) {
       localSessionData.recentEmojis = [e, ...recentEmojis().filter(x => x !== e)].slice(0, 24);
-      saveLocalPrefs();
+      // The whole vault is re-encrypted on save: once a burst of taps is over.
+      clearTimeout(emojiSaveTimer);
+      emojiSaveTimer = setTimeout(saveLocalPrefs, 1500);
     }
   }
 
@@ -10176,6 +10179,8 @@
   async function buildAwayReplies(text) {
     const replies = {};
     for (const c of broadcastContacts()) {
+      // makeMessageKey alerts when a key is missing; skip those quietly.
+      if (!(await getPublicKeyForUid(c.uid).catch(() => null))) continue;
       const key = await makeMessageKey([c.uid]);
       if (!key) continue;
       const iv = crypto.getRandomValues(new Uint8Array(12));

@@ -1537,3 +1537,6 @@ body.privacy-cover #calculator-view { position: fixed; inset: 0; z-index: 10000;
 .vanish-count { color: var(--accent); font-weight: 600; font-variant-numeric: tabular-nums; }
 .msg-translation { display: block; margin-top: 4px; padding-top: 4px; border-top: 1px solid rgba(255,255,255,0.15); font-size: 14px; opacity: 0.9; }
 :root[data-theme="light"] .msg-translation { border-top-color: rgba(0,0,0,0.12); }
+
+/* Picked from the call screen too (adding people to a call). */
+#contact-picker-modal { z-index: 120; }
