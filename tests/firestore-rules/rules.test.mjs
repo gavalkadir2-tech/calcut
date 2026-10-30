@@ -269,3 +269,64 @@ test("video status chunks: author writes, audience reads, others can't", async (
   await assertFails(deleteDoc(doc(as("bob"), "statuses/s1/chunks/0")));
   await assertSucceeds(deleteDoc(doc(as("alice"), "statuses/s1/chunks/0")));
 });
+
+test("channels and admin-only groups: only admins post", async () => {
+  await seed();
+  const msg = from => ({ from, type: "text", ciphertext: "x", iv: "y", wrappedKeys: {}, ts: serverTimestamp() });
+  await assertSucceeds(setDoc(doc(as("alice"), "conversations/ch1"), { isGroup: true, isChannel: true, groupName: "kanal", createdBy: "alice", admins: ["alice"], participants: ["alice"] }));
+  await assertFails(setDoc(doc(as("alice"), "conversations/g2"), { isGroup: true, groupName: "tek", createdBy: "alice", admins: ["alice"], participants: ["alice"] }));
+  await env.withSecurityRulesDisabled(ctx => updateDoc(doc(ctx.firestore(), "conversations/ch1"), { participants: ["alice", "bob"] }));
+  await assertSucceeds(addDoc(collection(as("alice"), "conversations/ch1/messages"), msg("alice")));
+  await assertFails(addDoc(collection(as("bob"), "conversations/ch1/messages"), msg("bob")));
+  // A normal group: everyone posts until an admin turns on onlyAdmins.
+  await assertSucceeds(addDoc(collection(as("bob"), "conversations/g1/messages"), msg("bob")));
+  await assertFails(updateDoc(doc(as("bob"), "conversations/g1"), { onlyAdmins: true }));
+  await assertFails(updateDoc(doc(as("alice"), "conversations/g1"), { onlyAdmins: "yes" }));
+  await assertSucceeds(updateDoc(doc(as("alice"), "conversations/g1"), { onlyAdmins: true }));
+  await assertFails(addDoc(collection(as("bob"), "conversations/g1/messages"), msg("bob")));
+  await assertSucceeds(addDoc(collection(as("alice"), "conversations/g1/messages"), msg("alice")));
+  // 1:1 chats are unaffected.
+  await assertSucceeds(addDoc(collection(as("bob"), "conversations/c1/messages"), msg("bob")));
+});
+
+test("channels hold up to 256 subscribers, groups 20", async () => {
+  await seed();
+  const many = n => Array.from({ length: n }, (_, i) => i ? "u" + i : "alice");
+  await assertSucceeds(setDoc(doc(as("alice"), "conversations/ch2"), { isGroup: true, isChannel: true, groupName: "k", createdBy: "alice", admins: ["alice"], participants: many(200) }));
+  await assertFails(setDoc(doc(as("alice"), "conversations/ch3"), { isGroup: true, isChannel: true, groupName: "k", createdBy: "alice", admins: ["alice"], participants: many(257) }));
+  await assertFails(setDoc(doc(as("alice"), "conversations/g3"), { isGroup: true, groupName: "g", createdBy: "alice", admins: ["alice"], participants: many(21) }));
+});
+
+test("group calls: members join, signal in their own pair docs", async () => {
+  await seed();
+  const call = { convId: "g1", members: ["alice", "bob", "carol"], from: "alice", media: "audio", status: "active", createdAt: serverTimestamp(), participants: {} };
+  await assertFails(setDoc(doc(as("dave"), "groupCalls/gc1"), { ...call, from: "dave", members: ["dave", "alice"] }));
+  await assertFails(setDoc(doc(as("bob"), "groupCalls/gc1"), call));
+  await assertSucceeds(setDoc(doc(as("alice"), "groupCalls/gc1"), call));
+  await assertSucceeds(getDoc(doc(as("bob"), "groupCalls/gc1")));
+  await assertFails(getDoc(doc(as("dave"), "groupCalls/gc1")));
+  await assertSucceeds(getDocs(query(collection(as("carol"), "groupCalls"), where("members", "array-contains", "carol"))));
+  await assertSucceeds(updateDoc(doc(as("bob"), "groupCalls/gc1"), { "participants.bob": serverTimestamp() }));
+  await assertFails(updateDoc(doc(as("bob"), "groupCalls/gc1"), { "participants.carol": serverTimestamp() }));
+  await assertFails(updateDoc(doc(as("dave"), "groupCalls/gc1"), { "participants.dave": serverTimestamp() }));
+  await assertFails(updateDoc(doc(as("bob"), "groupCalls/gc1"), { status: "hijacked" }));
+  await assertFails(updateDoc(doc(as("bob"), "groupCalls/gc1"), { members: ["bob"] }));
+  await assertSucceeds(setDoc(doc(as("alice"), "groupCalls/gc1/peers/alice_bob"), { offerer: "alice", sid: "1", offer: { type: "offer", sdp: "x" } }));
+  await assertSucceeds(addDoc(collection(as("bob"), "groupCalls/gc1/peers/alice_bob/candidates"), { from: "bob", sid: "1", c: {} }));
+  await assertFails(getDoc(doc(as("carol"), "groupCalls/gc1/peers/alice_bob")));
+  await assertFails(setDoc(doc(as("dave"), "groupCalls/gc1/peers/alice_dave"), { offerer: "dave" }));
+  await assertSucceeds(updateDoc(doc(as("bob"), "groupCalls/gc1"), { status: "ended" }));
+});
+
+test("device links: signed-in phone leaves a box, anyone reads it by id", async () => {
+  await seed();
+  const box = { box: "abc", iv: "iv", pub: "pub", expiresAt: Timestamp.fromMillis(Date.now() + 180e3) };
+  await assertFails(setDoc(doc(env.unauthenticatedContext().firestore(), "deviceLinks/l1"), box));
+  await assertFails(setDoc(doc(as("alice"), "deviceLinks/l1"), { ...box, extra: 1 }));
+  await assertFails(setDoc(doc(as("alice"), "deviceLinks/l1"), { ...box, box: "x".repeat(40000) }));
+  await assertSucceeds(setDoc(doc(as("alice"), "deviceLinks/l1"), box));
+  await assertFails(setDoc(doc(as("bob"), "deviceLinks/l1"), box));
+  await assertSucceeds(getDoc(doc(env.unauthenticatedContext().firestore(), "deviceLinks/l1")));
+  await assertFails(getDocs(collection(env.unauthenticatedContext().firestore(), "deviceLinks")));
+  await assertSucceeds(deleteDoc(doc(as("bob"), "deviceLinks/l1")));
+});
