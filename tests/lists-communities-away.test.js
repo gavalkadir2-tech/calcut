@@ -71,8 +71,9 @@ test("Code.gs: auto-reply copies the owner's encrypted reply, at most every 6 ho
     name: p => "N/" + p,
     commit: w => { commits.push(w); return true; },
   };
-  const autoReply = new Function("Utilities", "pushToUser_", "AWAY_EVERY_MS",
-    fn("autoReply_") + "; return autoReply_;")({ getUuid: () => "1234-5678-90ab-cdef-0000" }, (fs, sa, to, from) => pushes.push(to + "<-" + from), 6 * 3600e3);
+  const autoReply = new Function("Utilities", "pushToUser_", "AWAY_EVERY_MS", "messagePush_",
+    fn("autoReply_") + "; return autoReply_;")({ getUuid: () => "1234-5678-90ab-cdef-0000" }, (fs, sa, to, from, data) => pushes.push(to + "<-" + from + ":" + data.m), 6 * 3600e3,
+    (to, c, m) => ({ kind: "message", m }));
   autoReply(fsMock, {}, "owner", "friend", "c1");
   assert.strictEqual(commits.length, 1);
   const msg = commits[0][0].update.fields;
@@ -80,7 +81,7 @@ test("Code.gs: auto-reply copies the owner's encrypted reply, at most every 6 ho
   assert.strictEqual(msg.ciphertext.stringValue, "CT");
   assert.strictEqual(msg.autoReply.booleanValue, true);
   assert.deepStrictEqual(commits[0][1].transform.fieldTransforms[1], { fieldPath: "unreadCount.`friend`", increment: { integerValue: "1" } });
-  assert.deepStrictEqual(pushes, ["friend<-owner"]);
+  assert.deepStrictEqual(pushes, ["friend<-owner:" + commits[0][0].update.name.split("/").pop()]);
   lastSent = Date.now() - 3600e3;
   autoReply(fsMock, {}, "owner", "friend", "c1");
   assert.strictEqual(commits.length, 1, "not again within 6 hours");

@@ -12,6 +12,8 @@
 //   | { idToken, kind: "translate", text, to, toName?, natural? } (Google Translate, no key needed;
 //     natural: Gemini with script property GEMINI_KEY, keeping idioms and slang)
 //   | { idToken, kind: "link-preview", url } (title, description and image of a page)
+//   | { kind: "ack", u, c, m, t } (no idToken: a phone saying a message push reached it,
+//     signed by this server in the push itself; marks the message delivered)
 // The ID token is checked with Google (Identity Toolkit accounts:lookup), the
 // sender is verified in Firestore, then a data-only FCM push goes to the
 // recipients' devices (users/{uid}.fcmTokens).
@@ -24,7 +26,7 @@
 // run setup() once from the editor (▶ Run) and allow it: that lets the
 // script start its own every-minute timer.
 
-const WORKER_VERSION = 9;
+const WORKER_VERSION = 10;
 // The Firebase web API key (public, same as in firebase-config.js); only used
 // to ask Google whether an ID token is valid.
 const FIREBASE_API_KEY = "AIzaSyB0JTRgod2uk5KtYtnd4OLiG0LQ5qwxEwI";
@@ -39,6 +41,7 @@ function doPost(e) {
     if (!raw) return json_({ error: "SERVICE_ACCOUNT script property is missing", v: WORKER_VERSION });
     const sa = JSON.parse(raw);
     const body = JSON.parse((e && e.postData && e.postData.contents) || "{}");
+    if (body.kind === "ack") return json_({ ok: deliveryAck_(new Firestore_(sa), body), v: WORKER_VERSION });
     const uid = verifyIdToken_(body.idToken);
     if (!uid) return json_({ error: "unauthorized", v: WORKER_VERSION });
     if (body.kind === "ice-servers") return json_({ iceServers: turnIceServers_(), v: WORKER_VERSION });
@@ -131,7 +134,7 @@ function handle_(body, uid, sa) {
     let sent = 0;
     conv.participants
       .filter(u => u !== uid && (!muted[u] || mentions.indexOf(u) >= 0))
-      .forEach(r => { sent += pushToUser_(fs, sa, r, uid, { kind: "message" }); });
+      .forEach(r => { sent += pushToUser_(fs, sa, r, uid, messagePush_(r, body.convId, body.msgId)); });
     if (!conv.isGroup && conv.participants.length === 2 && !msg.autoReply) {
       const other = conv.participants.filter(u => u !== uid)[0];
       try { autoReply_(fs, sa, other, uid, body.convId); } catch (e) { Logger.log("auto-reply: " + e); }
@@ -152,6 +155,52 @@ function handle_(body, uid, sa) {
 
 function isId_(v) {
   return typeof v === "string" && /^[A-Za-z0-9_-]{1,200}$/.test(v);
+}
+
+/* ---------------- Delivery receipts from the push ----------------
+   A message push carries who it is for, which message, a signature and
+   this server's address; the phone that gets it (CalcutMessagingService,
+   sw.js) posts them back as { kind: "ack" }, and the message gets its
+   "delivered" (two ticks) as soon as the push arrives, before the app is
+   opened. The signature (HMAC with ACK_SECRET, made on first use) means
+   nobody else can mark messages delivered. */
+
+function ackSecret_() {
+  const props = PropertiesService.getScriptProperties();
+  let secret = props.getProperty("ACK_SECRET");
+  if (!secret) {
+    secret = Utilities.getUuid() + Utilities.getUuid();
+    props.setProperty("ACK_SECRET", secret);
+  }
+  return secret;
+}
+
+function ackToken_(uid, convId, msgId) {
+  const sig = Utilities.computeHmacSha256Signature(uid + "|" + convId + "|" + msgId, ackSecret_());
+  return Utilities.base64EncodeWebSafe(sig).replace(/=+$/, "").slice(0, 32);
+}
+
+function messagePush_(toUid, convId, msgId) {
+  const data = { kind: "message" };
+  if (!isId_(convId) || !isId_(msgId)) return data;
+  let url = "";
+  try { url = ScriptApp.getService().getUrl() || ""; } catch (e) {}
+  if (!/^https:\/\/script\.google\.com\//.test(url)) return data;
+  return Object.assign(data, { u: toUid, c: convId, m: msgId, t: ackToken_(toUid, convId, msgId), a: url });
+}
+
+function deliveryAck_(fs, body) {
+  if (!isId_(body.u) || !isId_(body.c) || !isId_(body.m) || typeof body.t !== "string") return false;
+  if (body.t !== ackToken_(body.u, body.c, body.m)) return false;
+  const conv = fs.get(`conversations/${body.c}`);
+  if (!conv || !Array.isArray(conv.participants) || conv.participants.indexOf(body.u) < 0) return false;
+  const path = `conversations/${body.c}/messages/${body.m}`;
+  if (conv.isGroup) {
+    fs.setMapField(path, "deliveredTo", body.u, { timestampValue: new Date().toISOString() });
+  } else {
+    fs.patchFields(path, { delivered: { booleanValue: true } });
+  }
+  return true;
 }
 
 function pushToUser_(fs, sa, toUid, fromUid, data) {
@@ -317,7 +366,7 @@ function autoReply_(fs, sa, owner, toUid, convId) {
     { update: { name: doc.name, fields: { lastSent: { mapValue: { fields: { [convId]: { integerValue: String(Date.now()) } } } } } },
       updateMask: { fieldPaths: ["lastSent." + quote(convId)] } },
   ]);
-  pushToUser_(fs, sa, toUid, owner, { kind: "message" });
+  pushToUser_(fs, sa, toUid, owner, messagePush_(toUid, convId, id));
 }
 
 /* ---------------- GIF search (Tenor) ----------------
@@ -426,7 +475,7 @@ function deliverOne_(fs, sa, doc) {
   const mentions = msg.mentions && msg.mentions.arrayValue ? (msg.mentions.arrayValue.values || []).map(v => v.stringValue) : [];
   recipients
     .filter(u => !muted[u] || mentions.indexOf(u) >= 0)
-    .forEach(r => pushToUser_(fs, sa, r, from, { kind: "message" }));
+    .forEach(r => pushToUser_(fs, sa, r, from, messagePush_(r, convId, id)));
 }
 
 /* ---------------- Firebase ID token check ---------------- */
@@ -585,6 +634,21 @@ class Firestore_ {
     if (code === 200) return true;
     if (code === 400 || code === 404 || code === 409) return false;
     throw new Error("firestore commit " + code + ": " + res.getContentText().slice(0, 300));
+  }
+
+  // PATCH only the given top-level fields of an existing document.
+  patchFields(path, fields) {
+    const mask = Object.keys(fields).map(k => "updateMask.fieldPaths=" + encodeURIComponent(k)).join("&");
+    const res = UrlFetchApp.fetch(this.base + path + "?" + mask + "&currentDocument.exists=true", {
+      method: "patch",
+      contentType: "application/json",
+      headers: { Authorization: "Bearer " + getAccessToken_(this.sa) },
+      payload: JSON.stringify({ fields: fields }),
+      muteHttpExceptions: true,
+    });
+    if (res.getResponseCode() !== 200) {
+      throw new Error("firestore patch " + res.getResponseCode() + ": " + res.getContentText().slice(0, 300));
+    }
   }
 
   deleteField(path, mapField, key) {
