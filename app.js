@@ -668,7 +668,7 @@
     authPanel.classList.add("hidden");
     appPanel.classList.add("hidden");
     pendingPanel.classList.remove("hidden");
-    pendingReferrerEl.textContent = myReferredByNickname ? myReferredByNickname : "referans kullanıcının";
+    pendingReferrerEl.textContent = myReferredByNickname ? nameCase(myReferredByNickname) : "referans kullanıcının";
     pendingMsg.textContent = "";
     resetInactivityTimer();
   }
@@ -1704,7 +1704,7 @@
     if (!archived) actions.push({ label: pinned ? "📌 Sabitlemeyi kaldır" : "📌 Sabitle", run: () => togglePin(conv.id) });
     actions.push({ label: archived ? "🗄️ Arşivden çıkar" : "🗄️ Arşivle", run: () => toggleArchive(conv.id) });
     actions.push({ label: "🗑 Sohbeti sil", danger: true, run: () => askDeleteChat(conv) });
-    showActionSheet(conv.isGroup ? conv.groupName : conv.otherNickname, actions);
+    showActionSheet(conv.isGroup ? conv.groupName : nameCase(conv.otherNickname), actions);
   }
 
   /* ---------------- Deleting a chat ----------------
@@ -1803,7 +1803,7 @@
         </div>`;
       watchProfile(c.otherUid);
       paintAvatar(li.querySelector(".avatar"), c.otherUid, c.otherNickname);
-      li.querySelector(".thread-name").textContent = c.otherNickname;
+      li.querySelector(".thread-name").textContent = nameCase(c.otherNickname);
       li.querySelector(".thread-preview").textContent = blocked ? "🚫 Engellendi"
         : [aboutOf(c.otherUid), presenceText(c.otherUid)].filter(Boolean).join(" · ");
       if (!blocked) {
@@ -1866,7 +1866,7 @@
     if (activeIsGroup) {
       const conv = activeGroup();
       const members = conv ? conv.participants.filter(u => u !== myUid) : [];
-      const name = u => ((conv && conv.participantNicknames[u]) || "?");
+      const name = u => nameCase((conv && conv.participantNicknames[u]) || "?");
       const readBy = m.readBy || {};
       const deliveredTo = m.deliveredTo || {};
       members.filter(u => readBy[u]).sort((a, b) => readBy[a] - readBy[b])
@@ -2033,7 +2033,7 @@
       const avatarEl = li.querySelector(".avatar");
       watchProfile(c.otherUid);
       paintAvatar(avatarEl, c.otherUid, c.otherNickname);
-      li.querySelector(".thread-name").textContent = c.otherNickname;
+      li.querySelector(".thread-name").textContent = nameCase(c.otherNickname);
       li.querySelector(".thread-time").textContent = formatThreadTime(c.ts);
       li.querySelector(".thread-preview").textContent = callLogText(c.fromMe, c.outcome, c.duration, c.media);
       const back = li.querySelector(".call-back-btn");
@@ -2118,7 +2118,7 @@
         watchProfile(conv.otherUid);
         paintAvatar(avatarEl, conv.otherUid, conv.otherNickname);
       }
-      const displayName = conv.isGroup ? `${groupIcon(conv)} ${conv.groupName} (${conv.participants.length})` : conv.otherNickname;
+      const displayName = conv.isGroup ? `${groupIcon(conv)} ${conv.groupName} (${conv.participants.length})` : nameCase(conv.otherNickname);
       li.querySelector(".thread-name").textContent = displayName + (conv.muted ? " 🔕" : "");
       if (pins.includes(conv.id)) {
         li.classList.add("pinned");
@@ -2404,7 +2404,7 @@
         const data = doc.data();
         const li = document.createElement("li");
         li.innerHTML = `<span></span><div class="referral-actions"><button class="approve-btn">Onayla</button><button class="reject-btn">Reddet</button></div>`;
-        li.querySelector("span").textContent = data.nickname;
+        li.querySelector("span").textContent = nameCase(data.nickname);
         li.querySelectorAll("button").forEach(btn => btn.disabled = false);
         li.querySelector(".approve-btn").addEventListener("click", async (ev) => {
           li.querySelectorAll("button").forEach(btn => btn.disabled = true);
@@ -2417,7 +2417,7 @@
           }
         });
         li.querySelector(".reject-btn").addEventListener("click", async () => {
-          if (!confirm(`${data.nickname} kullanıcısının referans başvurusu reddedilsin mi?`)) return;
+          if (!confirm(`${nameCase(data.nickname)} kullanıcısının referans başvurusu reddedilsin mi?`)) return;
           li.querySelectorAll("button").forEach(btn => btn.disabled = true);
           try {
             await fbDb.collection("users").doc(doc.id).delete();
@@ -2472,7 +2472,7 @@
       myNickname = newNickname;
       await persistSession();
       renderThreadList();
-      msgEl.textContent = "Görünen adın " + newNickname + " oldu. Girişte hâlâ eski kullanıcı adını kullanmalısın.";
+      msgEl.textContent = "Görünen adın " + nameCase(newNickname) + " oldu. Girişte hâlâ eski kullanıcı adını kullanmalısın.";
       document.getElementById("new-nickname-input").value = "";
     } catch (e) {
       msgEl.textContent = "Değiştirilemedi: " + e.message;
@@ -2813,11 +2813,11 @@
     const content = document.getElementById("backup-viewer-content");
     content.innerHTML = "";
     const header = document.createElement("p");
-    header.textContent = `${payload.nickname} — ${new Date(payload.exportedAt).toLocaleString()} tarihli yedek`;
+    header.textContent = `${nameCase(payload.nickname)} — ${new Date(payload.exportedAt).toLocaleString()} tarihli yedek`;
     content.appendChild(header);
     (payload.conversations || []).forEach(conv => {
       const h4 = document.createElement("h4");
-      h4.textContent = conv.otherNickname;
+      h4.textContent = nameCase(conv.otherNickname);
       content.appendChild(h4);
       if (!conv.messages.length) {
         const empty = document.createElement("p");
@@ -2831,7 +2831,7 @@
         line.className = "backup-msg-line";
         const from = document.createElement("span");
         from.className = "backup-from";
-        from.textContent = m.from + ":";
+        from.textContent = nameCase(m.from) + ":";
         line.appendChild(from);
         let text;
         if (m.type === "image") text = "📷 Fotoğraf";
@@ -2884,7 +2884,7 @@
     const openedConv = conversations.get(convId);
     document.getElementById("thread-title").textContent = activeIsGroup
       ? `${groupIcon(openedConv)} ${extra.groupName} (${(extra.participants || []).length})`
-      : otherNickname;
+      : nameCase(otherNickname);
     // Groups have group calls; channels have none.
     const noCalls = !!(openedConv && openedConv.isChannel);
     document.getElementById("thread-call-btn").classList.toggle("hidden", noCalls);
@@ -2955,6 +2955,13 @@
     if (privacy.mode === "except") list = list.filter(u => !privacy.uids.includes(u));
     if (privacy.mode === "only") list = list.filter(u => privacy.uids.includes(u));
     return list.slice(0, 500);
+  }
+
+  // How a nickname is shown: first letter capital, Turkish-aware ("ilker" →
+  // "İlker"). Only for display; the nickname itself stays as typed.
+  function nameCase(nick) {
+    const s = String(nick == null ? "" : nick);
+    return s ? s.charAt(0).toLocaleUpperCase("tr") + s.slice(1) : s;
   }
 
   function nicknameOf(uid) {
@@ -3163,7 +3170,7 @@
     // Start at the first one not seen yet.
     const firstUnseen = uid === myUid ? -1 : statusQueue.findIndex(s => !s.viewers[myUid]);
     statusIndex = firstUnseen >= 0 ? firstUnseen : 0;
-    document.getElementById("status-author-name").textContent = uid === myUid ? "Durumum" : nicknameOf(uid);
+    document.getElementById("status-author-name").textContent = uid === myUid ? "Durumum" : nameCase(nicknameOf(uid));
     paintAvatar(document.getElementById("status-author-avatar"), uid, nicknameOf(uid));
     statusViewer.classList.remove("hidden");
     showStatusAt(statusIndex);
@@ -3286,7 +3293,7 @@
     const s = statusQueue[statusIndex];
     if (!s) return;
     clearTimeout(statusTimer);
-    const names = Object.keys(s.viewers).map(u => nicknameOf(u));
+    const names = Object.keys(s.viewers).map(u => nameCase(nicknameOf(u)));
     alert(names.length ? "Görenler:\n" + names.join("\n") : "Henüz kimse görmedi.");
     statusTimer = setTimeout(() => showStatusAt(statusIndex + 1), STATUS_SHOW_MS);
   });
@@ -3381,7 +3388,7 @@
       paintAvatar(av, uid, name);
       const label = document.createElement("span");
       label.className = "member-name";
-      label.textContent = name + (uid === myUid ? " (sen)" : "");
+      label.textContent = nameCase(name) + (uid === myUid ? " (sen)" : "");
       li.append(av, label);
       if (conv.admins.includes(uid)) {
         const badge = document.createElement("span");
@@ -3396,12 +3403,12 @@
 
   function showMemberActions(conv, uid, name) {
     const isMemberAdmin = conv.admins.includes(uid);
-    showActionSheet(name, [
+    showActionSheet(nameCase(name), [
       isMemberAdmin
         ? { label: "Yöneticilikten çıkar", run: () => updateGroup({ admins: conv.admins.filter(a => a !== uid) }) }
         : { label: "Yönetici yap", run: () => updateGroup({ admins: [...conv.admins, uid] }) },
       { label: "Gruptan çıkar", danger: true, run: () => {
-        if (!confirm(name + " gruptan çıkarılsın mı?")) return;
+        if (!confirm(nameCase(name) + " gruptan çıkarılsın mı?")) return;
         updateGroup({
           participants: conv.participants.filter(u => u !== uid),
           admins: conv.admins.filter(a => a !== uid),
@@ -3849,7 +3856,7 @@
     applyCallVideoUi();
     callScreen.classList.remove("hidden");
     resetCallUi();
-    callNicknameEl.textContent = (data.fromNickname || "?");
+    callNicknameEl.textContent = nameCase(data.fromNickname || "?");
     callStatusEl.textContent = isVideoCall ? "Gelen görüntülü arama..." : "Gelen arama...";
     enterAlarmMode(data.fromNickname || "");
     callActionsIncoming.classList.remove("hidden");
@@ -3881,7 +3888,7 @@
     applyCallVideoUi();
     callScreen.classList.remove("hidden");
     resetCallUi();
-    callNicknameEl.textContent = nickname;
+    callNicknameEl.textContent = nameCase(nickname);
     callStatusEl.textContent = isVideoCall ? "Görüntülü arıyor..." : "Aranıyor...";
     callActionsOutgoing.classList.remove("hidden");
   }
@@ -3937,7 +3944,7 @@
     applyCallVideoUi();
     resetCallUi();
     callWasConnected = true;
-    callNicknameEl.textContent = nickname;
+    callNicknameEl.textContent = nameCase(nickname);
     callStatusEl.textContent = "Görüşmede";
     callActionsActive.classList.remove("hidden");
     document.getElementById("call-add-btn").classList.toggle("hidden", !callLogConvId);
@@ -4635,7 +4642,7 @@
     } else {
       el.style.backgroundImage = "";
       el.style.backgroundColor = avatarColor(uid);
-      el.textContent = String(name || "?").replace(/^@/, "").charAt(0).toUpperCase() || "?";
+      el.textContent = String(name || "?").replace(/^@/, "").charAt(0).toLocaleUpperCase("tr") || "?";
     }
   }
 
@@ -5046,7 +5053,7 @@
     if (m.deleted) return "Bu mesaj silindi";
     if (m.poll) return "📊 " + (m.poll.question || "Anket");
     if (m.location) return "📍 Konum";
-    if (m.contact) return "👤 " + (m.contact.nickname || "kişi");
+    if (m.contact) return "👤 " + (m.contact.nickname ? nameCase(m.contact.nickname) : "kişi");
     if (m.liveLocation) return "📍 Canlı konum";
     if (m.sticker) return "🌟 Çıkartma";
     if (m.event) return "📅 " + (m.event.title || "Etkinlik");
@@ -5064,9 +5071,9 @@
   function messageSenderName(m) {
     if (!m) return "";
     if (m.from === "me") return "Sen";
-    if (m.fromNickname) return m.fromNickname;
+    if (m.fromNickname) return nameCase(m.fromNickname);
     const conv = conversations.get(activeConvId);
-    return conv && conv.otherNickname ? conv.otherNickname : "";
+    return conv && conv.otherNickname ? nameCase(conv.otherNickname) : "";
   }
 
   function renderQuote(original, id) {
@@ -5306,7 +5313,7 @@
       if (activeIsGroup && m.from === "them" && m.fromNickname) {
         const senderLabel = document.createElement("span");
         senderLabel.className = "msg-sender";
-        senderLabel.textContent = m.fromNickname;
+        senderLabel.textContent = nameCase(m.fromNickname);
         div.appendChild(senderLabel);
       }
       if (m.replyTo) div.appendChild(renderQuote(msgs.find(q => q.id === m.replyTo), m.replyTo));
@@ -5817,7 +5824,7 @@
     } else {
       list.forEach(conv => {
         const li = document.createElement("li");
-        li.textContent = conv.isGroup ? `${groupIcon(conv)} ${conv.groupName}` : conv.otherNickname;
+        li.textContent = conv.isGroup ? `${groupIcon(conv)} ${conv.groupName}` : nameCase(conv.otherNickname);
         li.addEventListener("click", () => forwardMessageTo(conv.id));
         forwardThreadList.appendChild(li);
       });
@@ -6417,7 +6424,7 @@
     }
     const name = document.createElement("span");
     name.className = "contact-name";
-    name.textContent = (c.nickname || "?");
+    name.textContent = nameCase(c.nickname || "?");
     head.append(av, name);
     box.appendChild(head);
     if (validUid && c.uid !== myUid) {
@@ -6458,7 +6465,7 @@
       .filter(c => !c.isGroup && c.otherUid && !myBlocked[c.otherUid] && !activeOtherUids.includes(c.otherUid))
       .map(c => ({ uid: c.otherUid, nickname: c.otherNickname }))
       .sort((a, b) => a.nickname.localeCompare(b.nickname, "tr"));
-    const actions = contacts.map(ct => ({ label: ct.nickname, run: () => sendContact(ct) }));
+    const actions = contacts.map(ct => ({ label: nameCase(ct.nickname), run: () => sendContact(ct) }));
     actions.push({ label: "✏️ Kullanıcı adı yaz…", run: async () => {
       const raw = prompt("Paylaşılacak kişinin kullanıcı adı:");
       if (raw === null) return;
@@ -6690,7 +6697,7 @@
     const conv = activeConv();
     if (!conv) return;
     const about = activeIsGroup ? "" : aboutOf(conv.otherUid);
-    showActionSheet(activeIsGroup ? conv.groupName : conv.otherNickname + (about ? " · " + about : ""), chatMenuActions());
+    showActionSheet(activeIsGroup ? conv.groupName : nameCase(conv.otherNickname) + (about ? " · " + about : ""), chatMenuActions());
   }
 
   // ⋮ in the chat header: the chat's own buttons (kept hidden in
@@ -6710,7 +6717,7 @@
     if (!btn("thread-block-btn").classList.contains("hidden")) {
       actions.push({ label: "🚫 " + btn("thread-block-btn").title, danger: !myBlocked[activeOtherUid], run: () => btn("thread-block-btn").click() });
     }
-    showActionSheet(activeIsGroup ? conv.groupName : conv.otherNickname, actions.concat(chatMenuActions()));
+    showActionSheet(activeIsGroup ? conv.groupName : nameCase(conv.otherNickname), actions.concat(chatMenuActions()));
   }
 
   document.getElementById("thread-menu-btn").addEventListener("click", openThreadMenu);
@@ -6870,13 +6877,13 @@
     const conv = activeConv();
     if (!conv) return;
     if (!confirm("Sohbet şifresiz bir metin dosyası olarak dışa aktarılacak. Fotoğraf ve dosyalar eklenmez. Devam edilsin mi?")) return;
-    const title = activeIsGroup ? conv.groupName : conv.otherNickname;
+    const title = activeIsGroup ? conv.groupName : nameCase(conv.otherNickname);
     const fmt = t => new Date(t).toLocaleString("tr-TR", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" });
     const now = Date.now();
     const lines = currentMessages
       .filter(m => !msgFlag("hiddenMsgs", activeConvId, m.id) && !(m.expiresAtMillis && m.expiresAtMillis <= now))
       .map(m => {
-        const who = m.from === "me" ? myNickname : (m.fromNickname || conv.otherNickname || "?");
+        const who = m.from === "me" ? nameCase(myNickname) : nameCase(m.fromNickname || conv.otherNickname || "?");
         let body;
         if (m.deleted) body = "Bu mesaj silindi";
         else if (m.call) body = callLogText(m.from === "me", m.call.outcome, m.call.duration || 0, m.call.media);
@@ -7003,7 +7010,7 @@
       cb.type = "checkbox";
       cb.value = c.uid;
       const span = document.createElement("span");
-      span.textContent = c.nickname;
+      span.textContent = nameCase(c.nickname);
       label.append(cb, span);
       contactsEl.appendChild(label);
     });
@@ -7039,7 +7046,7 @@
       try {
         await sendEncryptedTo(c.convId, [c.uid], text, "text");
       } catch (e) {
-        failed.push(c.nickname);
+        failed.push(nameCase(c.nickname));
       }
     }
     btn.disabled = false;
@@ -7605,7 +7612,7 @@
   }
 
   function convTitle(c) {
-    return c.isGroup ? "👥 " + c.groupName : c.otherNickname;
+    return c.isGroup ? "👥 " + c.groupName : nameCase(c.otherNickname);
   }
 
   function openConvFromSearch(c, msgId) {
@@ -7676,7 +7683,7 @@
       if (hits.length) {
         head("Mesajlar");
         hits.slice(0, 50).forEach(({ c, m }) => {
-          const who = m.fromMe ? "Sen" : c.isGroup ? (c.participantNicknames[m.from] || "?") : c.otherNickname;
+          const who = m.fromMe ? "Sen" : c.isGroup ? nameCase(c.participantNicknames[m.from] || "?") : nameCase(c.otherNickname);
           row(convTitle(c) + " · " + formatThreadTime(m.ts), who + ": " + searchSnippet(m.text, q), () => openConvFromSearch(c, m.id));
         });
       }
@@ -7775,7 +7782,7 @@
     const qr = qrcode(0, "M");
     qr.addData(QR_PREFIX + myUid + ":" + myNickname, "Byte");
     qr.make();
-    document.getElementById("qr-title").textContent = "QR kodum · " + myNickname;
+    document.getElementById("qr-title").textContent = "QR kodum · " + nameCase(myNickname);
     document.getElementById("qr-code").innerHTML = qr.createSvgTag({ cellSize: 6, margin: 4, scalable: true });
     document.getElementById("qr-hint").textContent = "Karşındaki kişi calcut'ta + → \"QR kod okut\" ile bunu okutunca seninle sohbet açılır.";
     qrModal.classList.remove("hidden");
@@ -7839,7 +7846,7 @@
   /* ---------------- Picking contacts (status privacy) ---------------- */
 
   function pickContacts(title, preselected) {
-    return pickItems(title, broadcastContacts().map(c => ({ value: c.uid, label: c.nickname })), preselected);
+    return pickItems(title, broadcastContacts().map(c => ({ value: c.uid, label: nameCase(c.nickname) })), preselected);
   }
 
   // items: [{ value, label }]; resolves with the chosen values, or null.
@@ -8334,7 +8341,7 @@
     const total = rows.reduce((a, r) => a + r.total, 0);
     summary.textContent = "Toplam yaklaşık " + formatBytes(total) + " (ücretsiz kota: 1 GB). Bir sohbete dokunup medyasını silebilirsin.";
     rows.forEach(r => {
-      const row = galleryRow(r.c.isGroup ? "👥" : "💬", r.c.isGroup ? r.c.groupName : r.c.otherNickname,
+      const row = galleryRow(r.c.isGroup ? "👥" : "💬", r.c.isGroup ? r.c.groupName : nameCase(r.c.otherNickname),
         formatBytes(r.total) + " · " + r.count + " mesaj · medya " + formatBytes(r.mediaBytes) + " (" + r.media.length + ")");
       row.addEventListener("click", () => {
         if (!r.media.length) {
@@ -8461,7 +8468,7 @@
 
   function gcName(uid) {
     if (uid === myUid) return "Sen";
-    return ((gc && gc.names[uid]) || nicknameOf(uid));
+    return nameCase((gc && gc.names[uid]) || nicknameOf(uid));
   }
 
   async function startGroupCall(withVideo) {
@@ -8711,7 +8718,7 @@
       const conv = conversations.get(ringing.d.convId);
       document.getElementById("gc-incoming-text").textContent = (ringing.d.media === "video" ? "📹 " : "📞 ") +
         "Grup araması" + (conv && conv.isGroup ? ": " + conv.groupName : "") + " · " +
-        ((conv && conv.participantNicknames[ringing.d.from]) || (ringing.d.names && ringing.d.names[ringing.d.from]) || "?");
+        nameCase((conv && conv.participantNicknames[ringing.d.from]) || (ringing.d.names && ringing.d.names[ringing.d.from]) || "?");
       gcIncoming.classList.remove("hidden");
       if (!(conv && conv.muted)) triggerAlarmAlert(ringing.d.convId);
     }, err => console.error("group calls listen error", err));
@@ -8935,7 +8942,7 @@
       return;
     }
     if (payload.uid !== myUid) {
-      msgEl.textContent = "Bu ayarlar başka bir hesaba ait (" + (payload.nickname || "?") + ").";
+      msgEl.textContent = "Bu ayarlar başka bir hesaba ait (" + nameCase(payload.nickname || "?") + ").";
       return;
     }
     if (!confirm("Bu cihazdaki sabitlemeler, duvar kâğıtları, çıkartmalar ve diğer ayarlar dosyadakilerle değiştirilsin mi?")) return;
@@ -10006,7 +10013,7 @@
   function chatListOptions() {
     return [...conversations.values()]
       .filter(c => !chatHiddenForMe(c))
-      .map(c => ({ value: c.id, label: c.isGroup ? groupIcon(c) + " " + (c.groupName || "Grup") : c.otherNickname }))
+      .map(c => ({ value: c.id, label: c.isGroup ? groupIcon(c) + " " + (c.groupName || "Grup") : nameCase(c.otherNickname) }))
       .sort((a, b) => a.label.localeCompare(b.label, "tr"));
   }
 
@@ -10378,7 +10385,7 @@
     document.getElementById("settings-title").textContent = "Ayarlar";
     const avatar = document.getElementById("settings-card-avatar");
     if (myUid) paintAvatar(avatar, myUid, myNickname || "?");
-    document.getElementById("settings-card-name").textContent = myNickname ? myNickname : "";
+    document.getElementById("settings-card-name").textContent = myNickname ? nameCase(myNickname) : "";
     document.getElementById("settings-card-about").textContent = (myUid && aboutOf(myUid)) || "Profil, hakkımda, kullanıcı adı, QR kodum";
     settingsPanel.querySelector(".settings-body").scrollTop = 0;
   }
@@ -10616,7 +10623,7 @@
     const conv = activeConv();
     const name = m => m.from === "me" ? myNickname : (m.fromNickname || (conv && conv.otherNickname) || "?");
     copyText(msgs.length === 1 ? msgs[0].text : msgs.map(m =>
-      "[" + new Date(m.ts).toLocaleString("tr-TR", { dateStyle: "short", timeStyle: "short" }) + "] " + name(m) + ": " + m.text).join("\n"));
+      "[" + new Date(m.ts).toLocaleString("tr-TR", { dateStyle: "short", timeStyle: "short" }) + "] " + nameCase(name(m)) + ": " + m.text).join("\n"));
     stopSelecting();
   });
   document.getElementById("select-forward").addEventListener("click", () => {
@@ -10657,7 +10664,7 @@
     const uid = conv.otherUid;
     watchProfile(uid);
     paintAvatar(document.getElementById("contact-info-avatar"), uid, conv.otherNickname);
-    document.getElementById("contact-info-name").textContent = conv.otherNickname;
+    document.getElementById("contact-info-name").textContent = nameCase(conv.otherNickname);
     document.getElementById("contact-info-presence").textContent = presenceText(uid) || "";
     document.getElementById("contact-info-about").textContent = aboutOf(uid) || "";
     const list = document.getElementById("contact-info-groups");
