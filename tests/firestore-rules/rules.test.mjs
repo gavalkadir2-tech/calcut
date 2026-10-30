@@ -330,3 +330,27 @@ test("device links: signed-in phone leaves a box, anyone reads it by id", async 
   await assertFails(getDocs(collection(env.unauthenticatedContext().firestore(), "deviceLinks")));
   await assertSucceeds(deleteDoc(doc(as("bob"), "deviceLinks/l1")));
 });
+
+test("scheduled messages: only the sender sees, cancels and delivers them", async () => {
+  await seed();
+  const msg = { from: "alice", type: "text", ciphertext: "x", iv: "y", wrappedKeys: {}, read: false };
+  const later = Timestamp.fromMillis(Date.now() + 3600e3);
+  const sched = { from: "alice", convId: "c1", sendAt: later, ttlMs: 0, msg };
+  await assertFails(setDoc(doc(as("alice"), "scheduled/s1"), { ...sched, sendAt: Timestamp.fromMillis(Date.now() - 1000) }));
+  await assertFails(setDoc(doc(as("alice"), "scheduled/s1"), { ...sched, sendAt: Timestamp.fromMillis(Date.now() + 500 * 86400e3) }));
+  await assertFails(setDoc(doc(as("alice"), "scheduled/s1"), { ...sched, msg: { ...msg, from: "bob" } }));
+  await assertFails(setDoc(doc(as("dave"), "scheduled/s1"), { ...sched, from: "dave", msg: { ...msg, from: "dave" } }));
+  await assertFails(setDoc(doc(as("alice"), "scheduled/s1"), { ...sched, extra: 1 }));
+  await assertSucceeds(setDoc(doc(as("alice"), "scheduled/s1"), sched));
+  await assertSucceeds(getDocs(query(collection(as("alice"), "scheduled"), where("from", "==", "alice"))));
+  await assertFails(getDoc(doc(as("bob"), "scheduled/s1")));
+  await assertFails(deleteDoc(doc(as("bob"), "scheduled/s1")));
+  await assertFails(updateDoc(doc(as("alice"), "scheduled/s1"), { sendAt: Timestamp.fromMillis(Date.now() + 7200e3) }));
+  // Delivery: the message (same id) and the delete together.
+  await assertSucceeds(setDoc(doc(as("alice"), "conversations/c1/messages/s1"), { ...msg, ts: serverTimestamp() }));
+  await assertSucceeds(deleteDoc(doc(as("alice"), "scheduled/s1")));
+  // Not in an admin-only group as a non-admin.
+  await env.withSecurityRulesDisabled(ctx => updateDoc(doc(ctx.firestore(), "conversations/g1"), { onlyAdmins: true }));
+  await assertFails(setDoc(doc(as("bob"), "scheduled/s2"), { ...sched, from: "bob", convId: "g1", msg: { ...msg, from: "bob" } }));
+  await assertSucceeds(setDoc(doc(as("alice"), "scheduled/s3"), { ...sched, convId: "g1" }));
+});
