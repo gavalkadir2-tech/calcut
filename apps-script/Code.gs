@@ -7,6 +7,7 @@
 // sends no CORS preflight, which Apps Script can't answer):
 //   { idToken, kind: "message", convId, msgId } | { idToken, kind: "call" | "call-missed", callId }
 //   | { idToken, kind: "test" } | { idToken, kind: "register-token" | "unregister-token", token }
+//   | { idToken, kind: "schedule" } (starts the every-minute delivery of scheduled messages)
 // The ID token is checked with Google (Identity Toolkit accounts:lookup), the
 // sender is verified in Firestore, then a data-only FCM push goes to the
 // recipients' devices (users/{uid}.fcmTokens).
@@ -15,9 +16,11 @@
 //
 // Setup: Project Settings > Script properties > SERVICE_ACCOUNT = the whole
 // JSON of a Firebase service account key; then Deploy > New deployment >
-// Web app, Execute as: Me, Who has access: Anyone.
+// Web app, Execute as: Me, Who has access: Anyone. For scheduled messages,
+// run setup() once from the editor (▶ Run) and allow it: that lets the
+// script start its own every-minute timer.
 
-const WORKER_VERSION = 4;
+const WORKER_VERSION = 5;
 // The Firebase web API key (public, same as in firebase-config.js); only used
 // to ask Google whether an ID token is valid.
 const FIREBASE_API_KEY = "AIzaSyB0JTRgod2uk5KtYtnd4OLiG0LQ5qwxEwI";
@@ -36,6 +39,14 @@ function doPost(e) {
     if (!uid) return json_({ error: "unauthorized", v: WORKER_VERSION });
     if (body.kind === "ice-servers") return json_({ iceServers: turnIceServers_(), v: WORKER_VERSION });
     if (body.kind === "link-token") return json_({ token: customToken_(sa, uid), v: WORKER_VERSION });
+    if (body.kind === "schedule") {
+      try {
+        ensureScheduleTrigger_();
+      } catch (err) {
+        return json_({ scheduled: false, error: "run setup() once in the Apps Script editor: " + String((err && err.message) || err), v: WORKER_VERSION });
+      }
+      return json_({ scheduled: true, v: WORKER_VERSION });
+    }
     const sent = handle_(body, uid, sa);
     return json_({ sent: sent, v: WORKER_VERSION });
   } catch (err) {
@@ -168,6 +179,83 @@ function pushToUser_(fs, sa, toUid, fromUid, data) {
   return sent;
 }
 
+/* ---------------- Scheduled messages ----------------
+   The app leaves a scheduled message, already encrypted, in
+   scheduled/{id}: { from, convId, sendAt, ttlMs, msg }. Once it is due it
+   moves to conversations/{convId}/messages/{id} in one atomic write that
+   also deletes it (so it is sent once, even if the sender's app delivers
+   it at the same moment), and the recipients get a push. The timer runs
+   only while something is waiting. */
+
+// Run once from the editor (select "setup", ▶ Run) so Google asks for the
+// permission to manage this script's timers.
+function setup() {
+  ensureScheduleTrigger_();
+  deliverScheduled();
+  Logger.log("ok: scheduled messages are delivered every minute while any are waiting");
+}
+
+function ensureScheduleTrigger_() {
+  const has = ScriptApp.getProjectTriggers().some(t => t.getHandlerFunction() === "deliverScheduled");
+  if (!has) ScriptApp.newTrigger("deliverScheduled").timeBased().everyMinutes(1).create();
+}
+
+function deliverScheduled() {
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(1000)) return;
+  try {
+    const sa = JSON.parse(PropertiesService.getScriptProperties().getProperty("SERVICE_ACCOUNT"));
+    const fs = new Firestore_(sa);
+    const due = fs.query("scheduled", "sendAt", "LESS_THAN_OR_EQUAL", { timestampValue: new Date().toISOString() }, 50);
+    due.forEach(doc => {
+      try { deliverOne_(fs, sa, doc); } catch (e) { Logger.log("scheduled " + doc.name + ": " + e); }
+    });
+    if (!due.length && !fs.query("scheduled", "sendAt", "GREATER_THAN", { timestampValue: "1970-01-01T00:00:00Z" }, 1).length) {
+      ScriptApp.getProjectTriggers()
+        .filter(t => t.getHandlerFunction() === "deliverScheduled")
+        .forEach(t => ScriptApp.deleteTrigger(t));
+    }
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function deliverOne_(fs, sa, doc) {
+  const f = doc.fields || {};
+  const id = doc.name.split("/").pop();
+  const from = f.from && f.from.stringValue;
+  const convId = f.convId && f.convId.stringValue;
+  const msg = f.msg && f.msg.mapValue && f.msg.mapValue.fields;
+  const conv = isId_(convId) ? fs.get(`conversations/${convId}`) : null;
+  const participants = conv && Array.isArray(conv.participants) ? conv.participants : [];
+  const admins = Array.isArray(conv && conv.admins) ? conv.admins : [conv && conv.createdBy];
+  const allowed = msg && from && participants.indexOf(from) >= 0 && msg.from && msg.from.stringValue === from &&
+    !((conv.onlyAdmins || conv.isChannel) && admins.indexOf(from) < 0);
+  if (!allowed) { // left the group, lost the right to post, or malformed
+    fs.commit([{ delete: doc.name, currentDocument: { exists: true } }]);
+    return;
+  }
+  const fields = Object.assign({}, msg);
+  const ttlMs = f.ttlMs ? Number(f.ttlMs.integerValue || 0) : 0;
+  if (ttlMs > 0) fields.expiresAt = { timestampValue: new Date(Date.now() + ttlMs).toISOString() };
+  const recipients = participants.filter(u => u !== from);
+  const quote = k => "`" + k.replace(/\\/g, "\\\\").replace(/`/g, "\\`") + "`";
+  const ok = fs.commit([
+    { update: { name: fs.name(`conversations/${convId}/messages/${id}`), fields: fields },
+      currentDocument: { exists: false },
+      updateTransforms: [{ fieldPath: "ts", setToServerValue: "REQUEST_TIME" }] },
+    { delete: doc.name, currentDocument: { exists: true } },
+    { transform: { document: fs.name(`conversations/${convId}`), fieldTransforms: [{ fieldPath: "updatedAt", setToServerValue: "REQUEST_TIME" }]
+      .concat(recipients.map(u => ({ fieldPath: "unreadCount." + quote(u), increment: { integerValue: "1" } }))) } },
+  ]);
+  if (!ok) return; // the sender's app got there first
+  const muted = conv.muted || {};
+  const mentions = msg.mentions && msg.mentions.arrayValue ? (msg.mentions.arrayValue.values || []).map(v => v.stringValue) : [];
+  recipients
+    .filter(u => !muted[u] || mentions.indexOf(u) >= 0)
+    .forEach(r => pushToUser_(fs, sa, r, from, { kind: "message" }));
+}
+
 /* ---------------- Firebase ID token check ---------------- */
 
 // Google validates the token (signature, expiry, project) and returns the user.
@@ -277,6 +365,42 @@ class Firestore_ {
     if (res.getResponseCode() !== 200) {
       throw new Error("firestore patch " + res.getResponseCode() + ": " + res.getContentText().slice(0, 300));
     }
+  }
+
+  name(path) {
+    return `projects/${this.sa.project_id}/databases/(default)/documents/${path}`;
+  }
+
+  // Raw documents (REST encoded) of a collection where field op value.
+  query(collection, field, op, value, limit) {
+    const res = UrlFetchApp.fetch(this.base.replace(/\/$/, "") + ":runQuery", {
+      method: "post",
+      contentType: "application/json",
+      headers: { Authorization: "Bearer " + getAccessToken_(this.sa) },
+      payload: JSON.stringify({ structuredQuery: {
+        from: [{ collectionId: collection }],
+        where: { fieldFilter: { field: { fieldPath: field }, op: op, value: value } },
+        limit: limit,
+      } }),
+      muteHttpExceptions: true,
+    });
+    if (res.getResponseCode() !== 200) throw new Error("firestore query " + res.getResponseCode() + ": " + res.getContentText().slice(0, 300));
+    return JSON.parse(res.getContentText()).filter(r => r.document).map(r => r.document);
+  }
+
+  // Atomic writes; false if a precondition failed.
+  commit(writes) {
+    const res = UrlFetchApp.fetch(this.base.replace(/\/documents\/$/, "/documents:commit"), {
+      method: "post",
+      contentType: "application/json",
+      headers: { Authorization: "Bearer " + getAccessToken_(this.sa) },
+      payload: JSON.stringify({ writes: writes }),
+      muteHttpExceptions: true,
+    });
+    const code = res.getResponseCode();
+    if (code === 200) return true;
+    if (code === 400 || code === 404 || code === 409) return false;
+    throw new Error("firestore commit " + code + ": " + res.getContentText().slice(0, 300));
   }
 
   deleteField(path, mapField, key) {

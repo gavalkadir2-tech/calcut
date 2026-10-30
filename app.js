@@ -487,6 +487,7 @@
       privateKeyJwk,
       publicKeyJwk,
       ...localPrefsOf(localSessionData),
+      ...devicePrefsOf(localSessionData),
     };
     await saveLocalBlob(currentLocalKey, await sealSession(localSessionData)).catch(() => {});
   }
@@ -1295,6 +1296,7 @@
     startStatusListeners();
     listenForIncomingCalls();
     listenForGroupCalls();
+    listenForScheduled();
     startPresence();
     registerPushToken().catch(err => console.error("push token register error", err));
     refreshTurnServers(); // ready before the first call
@@ -1323,6 +1325,7 @@
     stopStatusListeners();
     stopGroupCallListener();
     leaveGroupCall();
+    stopScheduledListener();
     // The incoming-call listener deliberately keeps running while locked (it
     // follows the Firebase sign-in, see listenForIncomingCalls); it stops on sign-out.
     endCall(null);
@@ -1552,6 +1555,17 @@
       starred: d.starred && typeof d.starred === "object" ? d.starred : {},
       hiddenMsgs: d.hiddenMsgs && typeof d.hiddenMsgs === "object" ? d.hiddenMsgs : {},
     };
+  }
+
+  // Everything kept per device in the vault, carried over by persistSession
+  // and by "Ayarları dışa / içe aktar".
+  const DEVICE_PREF_KEYS = ["pinned", "archived", "starred", "hiddenMsgs", "wallpapers", "lockedChats", "broadcastLists",
+    "stickers", "deletedChats", "chatSounds", "statusPrivacy", "defaultDisappearing"];
+
+  function devicePrefsOf(d) {
+    const out = {};
+    DEVICE_PREF_KEYS.forEach(k => { if (d && d[k] !== undefined) out[k] = d[k]; });
+    return out;
   }
 
   async function saveLocalPrefs() {
@@ -2861,6 +2875,7 @@
     applyWallpaper();
     updateComposerMode();
     updateComposerAccess();
+    updateScheduledBar();
     updateDisappearingUi();
     updateMuteUi();
   }
@@ -3269,6 +3284,7 @@
     activeOtherUids.forEach(u => getPublicKeyForUid(u));
     document.getElementById("thread-title").textContent = `${groupIcon(conv)} ${conv.groupName} (${conv.participants.length})`;
     updateComposerAccess();
+    updateScheduledBar();
     renderThreadHeaderProfile();
     if (!groupInfoModal.classList.contains("hidden")) renderGroupInfo();
   }
@@ -7031,7 +7047,7 @@
     callLocalVideo.classList.toggle("rear", next === "environment");
   });
 
-  /* ---------------- Photo editor (draw, text, crop, rotate) ----------------
+  /* ---------------- Photo editor (draw, blur, text, crop, rotate) ----------------
      A single photo picked for sending opens here first. */
 
   const PE_COLORS = ["#ffffff", "#111111", "#ff3b30", "#ffcc00", "#34c759", "#0a84ff", "#af52de"];
@@ -7088,6 +7104,50 @@
     peCropBox.classList.remove("hidden");
   }
 
+  // Blur brush: paints from a heavily blurred copy of the photo, so faces,
+  // plates or text under it can't be read back. Scaling down and up again
+  // blurs in every browser (canvas filters aren't everywhere).
+  let peBlurred = null;
+  function peBlurredCopy() {
+    const w = peCanvas.width, h = peCanvas.height;
+    const small = document.createElement("canvas");
+    small.width = Math.max(1, Math.round(w / 24));
+    small.height = Math.max(1, Math.round(h / 24));
+    const sctx = small.getContext("2d");
+    sctx.imageSmoothingEnabled = true;
+    sctx.drawImage(peCanvas, 0, 0, small.width, small.height);
+    const out = document.createElement("canvas");
+    out.width = w;
+    out.height = h;
+    const octx = out.getContext("2d");
+    octx.imageSmoothingEnabled = true;
+    octx.imageSmoothingQuality = "high";
+    octx.drawImage(small, 0, 0, w, h);
+    return out;
+  }
+
+  function peBlurRadius() {
+    return Math.max(14, Math.round(Math.max(peCanvas.width, peCanvas.height) / 22));
+  }
+
+  // Blurs along the stroke from a to b.
+  function peBlurAt(a, b) {
+    if (!peBlurred) return;
+    const r = peBlurRadius();
+    const ctx = peCanvas.getContext("2d");
+    const steps = Math.max(1, Math.ceil(Math.hypot(b.x - a.x, b.y - a.y) / (r / 3)));
+    ctx.save();
+    ctx.beginPath();
+    for (let i = 0; i <= steps; i++) {
+      const x = a.x + (b.x - a.x) * i / steps, y = a.y + (b.y - a.y) * i / steps;
+      ctx.moveTo(x + r, y);
+      ctx.arc(x, y, r, 0, Math.PI * 2);
+    }
+    ctx.clip();
+    ctx.drawImage(peBlurred, 0, 0);
+    ctx.restore();
+  }
+
   let peDrawing = null;
   peCanvas.addEventListener("pointerdown", e => {
     e.preventDefault();
@@ -7120,6 +7180,11 @@
     } else if (peTool === "crop") {
       peDrawing = p;
       peCrop = { x: p.x, y: p.y, w: 0, h: 0 };
+    } else if (peTool === "blur") {
+      peSnapshot();
+      peBlurred = peBlurredCopy();
+      peBlurAt(p, p);
+      peDrawing = p;
     }
   });
   peCanvas.addEventListener("pointermove", e => {
@@ -7129,6 +7194,9 @@
       const ctx = peCanvas.getContext("2d");
       ctx.lineTo(p.x, p.y);
       ctx.stroke();
+    } else if (peTool === "blur") {
+      peBlurAt(peDrawing, p);
+      peDrawing = p;
     } else if (peTool === "crop") {
       const x = Math.max(0, Math.min(peDrawing.x, p.x));
       const y = Math.max(0, Math.min(peDrawing.y, p.y));
@@ -7141,6 +7209,7 @@
       document.getElementById("pe-crop-apply").classList.remove("hidden");
     }
     peDrawing = null;
+    peBlurred = null;
   };
   peCanvas.addEventListener("pointerup", peEnd);
   peCanvas.addEventListener("pointercancel", peEnd);
@@ -8636,6 +8705,300 @@
   document.getElementById("link-scan-btn").addEventListener("click", () => {
     startQrScan("Cihazı bağla", "Kamerayı bilgisayardaki QR koduna tut.", sendDeviceLink);
   });
+
+  /* ---------------- Moving settings to a new phone ----------------
+     Pins, archive, stars, wallpapers, locked chats, broadcast lists,
+     stickers, chat sounds and the rest live only in this device's vault.
+     They go to a new phone in a file encrypted with a password of the
+     user's choosing, for the same account. */
+
+  const SETTINGS_SOUND_KINDS = ["message", "call"];
+
+  async function exportDeviceSettings() {
+    const msgEl = document.getElementById("backup-msg");
+    if (!localSessionData || !myUid) return;
+    const password = prompt("Ayar dosyasını şifrelemek için bir parola belirle (yeni telefonda bu parola sorulacak):");
+    if (!password) return;
+    const sounds = {};
+    SETTINGS_SOUND_KINDS.forEach(k => { sounds[k] = getSoundPref(k); });
+    const payload = { uid: myUid, nickname: myNickname, exportedAt: Date.now(), prefs: devicePrefsOf(localSessionData), theme: storedTheme(), sounds };
+    const salt = crypto.getRandomValues(new Uint8Array(16));
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const key = await deriveKeyFromSecret(password, salt);
+    const data = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, new TextEncoder().encode(JSON.stringify(payload)));
+    const blob = new Blob([JSON.stringify({ calcutSettings: true, version: 1, salt: b64encode(salt.buffer), iv: b64encode(iv.buffer), data: b64encode(data) })], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `calcut-ayarlar-${new Date().toISOString().slice(0, 10)}.json`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    msgEl.textContent = "Ayar dosyası indirildi. Yeni telefonda Ayarlar → \"Ayarları içe aktar\" ile aç.";
+  }
+
+  async function importDeviceSettings(file) {
+    const msgEl = document.getElementById("backup-msg");
+    let payload;
+    try {
+      const fileObj = JSON.parse(await file.text());
+      if (!fileObj.calcutSettings) throw new Error("not a settings file");
+      const password = prompt("Ayar dosyasının parolasını gir:");
+      if (!password) return;
+      const key = await deriveKeyFromSecret(password, new Uint8Array(b64decode(fileObj.salt)));
+      const plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv: new Uint8Array(b64decode(fileObj.iv)) }, key, b64decode(fileObj.data));
+      payload = JSON.parse(new TextDecoder().decode(plain));
+    } catch (e) {
+      msgEl.textContent = "Ayar dosyası açılamadı: yanlış parola ya da calcut ayar dosyası değil.";
+      return;
+    }
+    if (payload.uid !== myUid) {
+      msgEl.textContent = "Bu ayarlar başka bir hesaba ait (@" + (payload.nickname || "?") + ").";
+      return;
+    }
+    if (!confirm("Bu cihazdaki sabitlemeler, duvar kâğıtları, çıkartmalar ve diğer ayarlar dosyadakilerle değiştirilsin mi?")) return;
+    const before = { ...localSessionData };
+    Object.assign(localSessionData, devicePrefsOf(payload.prefs));
+    try {
+      await saveLocalBlob(currentLocalKey, await sealSession(localSessionData));
+    } catch (e) {
+      localSessionData = before;
+      msgEl.textContent = "Bu cihazda kaydedilemedi (depolama dolu olabilir).";
+      return;
+    }
+    try {
+      if (["dark", "light", "system"].includes(payload.theme)) localStorage.setItem(THEME_KEY, payload.theme);
+    } catch (e) {}
+    applyTheme();
+    SETTINGS_SOUND_KINDS.forEach(k => {
+      const v = payload.sounds && payload.sounds[k];
+      if (v && SOUND_PRESETS[v]) {
+        setSoundPref(k, v);
+        document.getElementById(k + "-sound-select").value = v;
+      }
+    });
+    renderThreadList();
+    msgEl.textContent = "Ayarlar aktarıldı ✓";
+  }
+
+  document.getElementById("export-settings-btn").addEventListener("click", () => {
+    exportDeviceSettings().catch(e => { document.getElementById("backup-msg").textContent = "Dışa aktarılamadı: " + e.message; });
+  });
+  const importSettingsInput = document.getElementById("import-settings-input");
+  document.getElementById("import-settings-btn").addEventListener("click", () => importSettingsInput.click());
+  importSettingsInput.addEventListener("change", () => {
+    const file = importSettingsInput.files[0];
+    importSettingsInput.value = "";
+    if (file) importDeviceSettings(file);
+  });
+
+  /* ---------------- Scheduled messages ----------------
+     The text is encrypted when it is scheduled and waits in
+     scheduled/{id} (readable only by its sender). When it is due, it
+     becomes conversations/{conv}/messages/{same id}: the push server does
+     that every minute (a time trigger in Code.gs), and the sender's own
+     app does it too while open. Using the same id, and deleting the
+     scheduled doc in the same write, means it is sent only once. */
+
+  const scheduleModal = document.getElementById("schedule-modal");
+  const scheduleText = document.getElementById("schedule-text");
+  const scheduleWhen = document.getElementById("schedule-when");
+  let scheduledDocs = [];
+  let scheduledUnsub = null;
+  let scheduledTimer = null;
+  const scheduledPlain = new Map();
+
+  function localDateTimeValue(ms) {
+    const d = new Date(ms);
+    const pad = n => String(n).padStart(2, "0");
+    return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate()) + "T" + pad(d.getHours()) + ":" + pad(d.getMinutes());
+  }
+
+  // Quick picks: in an hour, this evening at 20:00 (if still ahead), tomorrow at 09:00.
+  function scheduleQuickTimes(now) {
+    const out = [{ label: "1 saat sonra", at: now + 3600e3 }];
+    const evening = new Date(now);
+    evening.setHours(20, 0, 0, 0);
+    if (evening.getTime() > now + 15 * 60e3) out.push({ label: "Bu akşam 20:00", at: evening.getTime() });
+    const tomorrow = new Date(now);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    tomorrow.setHours(9, 0, 0, 0);
+    out.push({ label: "Yarın 09:00", at: tomorrow.getTime() });
+    return out;
+  }
+
+  function openScheduleModal() {
+    if (!activeConvId || !canPostIn(activeConv())) return;
+    attachMenu.classList.add("hidden");
+    scheduleText.value = messageInput.value.trim();
+    const quick = document.getElementById("schedule-quick");
+    quick.innerHTML = "";
+    scheduleQuickTimes(Date.now()).forEach(q => {
+      const b = document.createElement("button");
+      b.className = "schedule-chip";
+      b.textContent = q.label;
+      b.addEventListener("click", () => { scheduleWhen.value = localDateTimeValue(q.at); });
+      quick.appendChild(b);
+    });
+    scheduleWhen.min = localDateTimeValue(Date.now());
+    scheduleWhen.value = localDateTimeValue(scheduleQuickTimes(Date.now()).slice(-1)[0].at);
+    document.getElementById("schedule-msg").textContent = "";
+    renderScheduledList();
+    scheduleModal.classList.remove("hidden");
+    scheduleText.focus();
+  }
+
+  document.getElementById("attach-schedule-btn").addEventListener("click", openScheduleModal);
+  attachLongPress(document.getElementById("message-send-btn"), openScheduleModal);
+  document.getElementById("scheduled-bar").addEventListener("click", openScheduleModal);
+  document.getElementById("schedule-cancel").addEventListener("click", () => scheduleModal.classList.add("hidden"));
+
+  document.getElementById("schedule-send").addEventListener("click", async () => {
+    const msgEl = document.getElementById("schedule-msg");
+    const text = scheduleText.value.trim();
+    const at = scheduleWhen.value ? new Date(scheduleWhen.value).getTime() : NaN;
+    if (!text) { msgEl.textContent = "Bir mesaj yaz."; return; }
+    if (!(at > Date.now() + 30e3)) { msgEl.textContent = "İleri bir zaman seç."; return; }
+    if (at > Date.now() + 366 * 86400e3) { msgEl.textContent = "En fazla bir yıl sonrasına zamanlanabilir."; return; }
+    const btn = document.getElementById("schedule-send");
+    btn.disabled = true;
+    try {
+      const convId = activeConvId;
+      const fields = activeIsGroup ? { mentions: mentionedUids(text) } : {};
+      if (fields.mentions && !fields.mentions.length) delete fields.mentions;
+      await scheduleMessage(convId, activeOtherUids, text, at, fields);
+      if (messageInput.value.trim() === text) {
+        messageInput.value = "";
+        updateComposerMode();
+      }
+      scheduleModal.classList.add("hidden");
+      showToast("⏰ " + new Date(at).toLocaleString([], { dateStyle: "medium", timeStyle: "short" }) + " için zamanlandı", 3000);
+    } catch (e) {
+      msgEl.textContent = e && e.code === "permission-denied"
+        ? "Zamanlanamadı: Firestore kurallarının güncellenmesi gerekiyor."
+        : "Zamanlanamadı: " + e.message;
+    }
+    btn.disabled = false;
+  });
+
+  async function scheduleMessage(convId, otherUids, text, at, extraFields) {
+    if (!convId || !otherUids || !otherUids.length) throw new Error("sohbet seçili değil");
+    const key = await makeMessageKey(otherUids);
+    if (!key) throw new Error("anahtar yok");
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const ciphertext = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key.aesKey, new TextEncoder().encode(text));
+    const conv = conversations.get(convId);
+    const msg = Object.assign({
+      from: myUid, type: "text", iv: b64encode(iv.buffer), ciphertext: b64encode(ciphertext), wrappedKeys: key.wrappedKeys, read: false,
+    }, extraFields || {});
+    const ref = fbDb.collection("scheduled").doc();
+    await ref.set({
+      from: myUid, convId, sendAt: firebase.firestore.Timestamp.fromMillis(at),
+      ttlMs: conv && conv.disappearingSeconds > 0 ? conv.disappearingSeconds * 1000 : 0, msg,
+    });
+    scheduledPlain.set(ref.id, text);
+    // Wakes the push server's every-minute delivery (it stops itself when nothing waits).
+    requestPush({ kind: "schedule" }).then(r => {
+      if (!(r && r.status === 200 && r.data && r.data.scheduled)) {
+        showToast("Uygulaman açıkken gönderilecek: bildirim sunucusunun zamanlayıcısı kapalı (Code.gs v5 gerekli).", 5000);
+      }
+    });
+    return ref;
+  }
+
+  // Sends a due one now (also used for "Şimdi gönder").
+  async function deliverScheduled(sched) {
+    const schedRef = fbDb.collection("scheduled").doc(sched.id);
+    const msgRef = fbDb.collection("conversations").doc(sched.convId).collection("messages").doc(sched.id);
+    const delivered = await fbDb.runTransaction(async tx => {
+      const snap = await tx.get(schedRef);
+      if (!snap.exists) return false;
+      const d = snap.data();
+      const msg = Object.assign({}, d.msg, { ts: firebase.firestore.FieldValue.serverTimestamp() });
+      if (d.ttlMs > 0) msg.expiresAt = firebase.firestore.Timestamp.fromMillis(Date.now() + d.ttlMs);
+      tx.set(msgRef, msg);
+      tx.delete(schedRef);
+      return true;
+    });
+    if (!delivered) return;
+    const others = Object.keys(sched.msg.wrappedKeys || {}).filter(u => u !== myUid);
+    await afterMessageSent(sched.convId, others, msgRef, "text").catch(() => {});
+  }
+
+  function deliverDueScheduled() {
+    const now = Date.now();
+    scheduledDocs.filter(s => s.sendAt <= now && !s.delivering).forEach(s => {
+      s.delivering = true;
+      deliverScheduled(s).catch(err => console.error("scheduled delivery failed", err));
+    });
+  }
+
+  function listenForScheduled() {
+    stopScheduledListener();
+    scheduledUnsub = fbDb.collection("scheduled").where("from", "==", myUid).onSnapshot(async snap => {
+      scheduledDocs = snap.docs.map(doc => {
+        const d = doc.data();
+        return { id: doc.id, convId: d.convId, sendAt: d.sendAt ? d.sendAt.toMillis() : 0, msg: d.msg || {} };
+      }).sort((a, b) => a.sendAt - b.sendAt);
+      await Promise.all(scheduledDocs.filter(s => !scheduledPlain.has(s.id)).map(async s => {
+        try { scheduledPlain.set(s.id, await decryptMessage(s.msg)); } catch (e) { scheduledPlain.set(s.id, "🔒"); }
+      }));
+      updateScheduledBar();
+      if (!scheduleModal.classList.contains("hidden")) renderScheduledList();
+      deliverDueScheduled();
+    }, err => console.error("scheduled listen error", err));
+    scheduledTimer = setInterval(deliverDueScheduled, 20000);
+  }
+
+  function stopScheduledListener() {
+    if (scheduledUnsub) scheduledUnsub();
+    scheduledUnsub = null;
+    clearInterval(scheduledTimer);
+    scheduledTimer = null;
+    scheduledDocs = [];
+    scheduledPlain.clear();
+  }
+
+  function updateScheduledBar() {
+    const bar = document.getElementById("scheduled-bar");
+    const n = scheduledDocs.filter(s => s.convId === activeConvId).length;
+    bar.classList.toggle("hidden", !n);
+    bar.textContent = "⏰ " + n + " zamanlanmış mesaj";
+  }
+
+  function renderScheduledList() {
+    const list = document.getElementById("scheduled-list");
+    list.innerHTML = "";
+    const mine = scheduledDocs.filter(s => s.convId === activeConvId);
+    document.getElementById("scheduled-list-title").classList.toggle("hidden", !mine.length);
+    mine.forEach(s => {
+      const row = document.createElement("div");
+      row.className = "scheduled-row";
+      const info = document.createElement("div");
+      info.className = "scheduled-info";
+      const when = document.createElement("span");
+      when.className = "scheduled-when";
+      when.textContent = new Date(s.sendAt).toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
+      const text = document.createElement("span");
+      text.className = "scheduled-text";
+      text.textContent = scheduledPlain.get(s.id) || "…";
+      info.append(when, text);
+      const now = document.createElement("button");
+      now.className = "ghost";
+      now.textContent = "Şimdi gönder";
+      now.addEventListener("click", () => deliverScheduled(s).catch(e => alert("Gönderilemedi: " + e.message)));
+      const del = document.createElement("button");
+      del.className = "ghost scheduled-del";
+      del.textContent = "İptal";
+      del.addEventListener("click", () => {
+        if (!confirm("Bu zamanlanmış mesaj silinsin mi?")) return;
+        fbDb.collection("scheduled").doc(s.id).delete().catch(e => alert("Silinemedi: " + e.message));
+      });
+      row.append(info, now, del);
+      list.appendChild(row);
+    });
+  }
 
   const viewOnceInput = document.getElementById("viewonce-input");
   document.getElementById("attach-viewonce-btn").addEventListener("click", () => {

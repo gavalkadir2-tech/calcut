@@ -253,6 +253,25 @@ service cloud.firestore {
       }
     }
 
+    // ---------------- scheduled messages ----------------
+    // { from, convId, sendAt, ttlMs, msg } with msg an encrypted message as
+    // in conversations/{id}/messages. Only its sender sees or cancels it;
+    // it is delivered by the sender's app or the push server (Code.gs).
+    match /scheduled/{scheduledId} {
+      allow read, delete: if isSignedIn() && resource.data.from == request.auth.uid;
+      allow create: if isSignedIn() &&
+        request.resource.data.keys().hasOnly(['from', 'convId', 'sendAt', 'ttlMs', 'msg']) &&
+        request.resource.data.from == request.auth.uid &&
+        request.resource.data.convId is string &&
+        request.resource.data.sendAt is timestamp &&
+        request.resource.data.sendAt > request.time &&
+        request.resource.data.sendAt < request.time + duration.value(400, 'd') &&
+        request.resource.data.ttlMs is int &&
+        request.resource.data.msg is map && request.resource.data.msg.from == request.auth.uid &&
+        request.auth.uid in get(/databases/$(database)/documents/conversations/$(request.resource.data.convId)).data.participants &&
+        mayPost(request.resource.data.convId);
+    }
+
     // ---------------- linking another device ----------------
     // The new device shows a one-time key in a QR code; the phone leaves
     // the session here encrypted to it. Anyone may read one by its random
