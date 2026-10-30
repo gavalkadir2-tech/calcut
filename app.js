@@ -2344,6 +2344,7 @@
   });
 
   document.getElementById("settings-btn").addEventListener("click", () => {
+    showSettingsMenu();
     updateIntruderButton();
     updateAwayUi();
     threadListPanel.classList.add("hidden");
@@ -2375,7 +2376,10 @@
     document.getElementById("backup-msg").textContent = "";
     loadPendingReferrals();
   });
-  document.getElementById("settings-back-btn").addEventListener("click", showThreadList);
+  document.getElementById("settings-back-btn").addEventListener("click", () => {
+    if (settingsSection) showSettingsMenu();
+    else showThreadList();
+  });
 
   async function loadPendingReferrals() {
     const listEl = document.getElementById("pending-referrals-list");
@@ -4840,6 +4844,7 @@
         }
         currentMessages = rendered;
         renderMessages(rendered);
+        maybeAutoDownload();
       }, err => console.error("messages listen error", err));
 
     pruneExpiredMessages(convId);
@@ -5607,6 +5612,7 @@
       btn.textContent = "İndirilemedi, tekrar dene";
     } finally {
       largeFileLoading.delete(msgId);
+      setTimeout(maybeAutoDownload, 0); // the next one, if downloading by itself
     }
   }
 
@@ -6618,6 +6624,7 @@
     const btn = id => document.getElementById(id);
     const actions = [
       { label: "🔍 Sohbette ara", run: () => btn("thread-search-btn").click() },
+      { label: "📅 Tarihe git", run: openJumpToDate },
       { label: "🖼 Medya, dosyalar ve bağlantılar", run: () => btn("thread-media-btn").click() },
       { label: "⏳ Kaybolan mesajlar" + (conv.disappearingSeconds ? " (açık)" : ""), run: () => btn("thread-disappearing-btn").click() },
       { label: (conv.muted ? "🔔 " : "🔕 ") + btn("thread-mute-btn").title, run: () => btn("thread-mute-btn").click() },
@@ -8812,7 +8819,8 @@
     if (!password) return;
     const sounds = {};
     SETTINGS_SOUND_KINDS.forEach(k => { sounds[k] = getSoundPref(k); });
-    const payload = { uid: myUid, nickname: myNickname, exportedAt: Date.now(), prefs: devicePrefsOf(localSessionData), theme: storedTheme(), sounds };
+    const payload = { uid: myUid, nickname: myNickname, exportedAt: Date.now(), prefs: devicePrefsOf(localSessionData), theme: storedTheme(), sounds,
+      accent: storedAccent(), chatFont: storedChatFont(), autoDl: autoDlMode() };
     const salt = crypto.getRandomValues(new Uint8Array(16));
     const iv = crypto.getRandomValues(new Uint8Array(12));
     const key = await deriveKeyFromSecret(password, salt);
@@ -8860,7 +8868,12 @@
     }
     try {
       if (["dark", "light", "system"].includes(payload.theme)) localStorage.setItem(THEME_KEY, payload.theme);
+      if (ACCENTS[payload.accent]) localStorage.setItem(ACCENT_KEY, payload.accent);
+      if (CHAT_FONTS[payload.chatFont]) localStorage.setItem(CHAT_FONT_KEY, payload.chatFont);
+      if (["off", "wifi", "always"].includes(payload.autoDl)) localStorage.setItem(AUTO_DL_KEY, payload.autoDl);
     } catch (e) {}
+    autoDlSelect.value = autoDlMode();
+    applyAccent();
     applyTheme();
     SETTINGS_SOUND_KINDS.forEach(k => {
       const v = payload.sounds && payload.sounds[k];
@@ -10269,6 +10282,191 @@
     translations.set(m.id, text);
     renderMessages(currentMessages);
   }
+
+  /* ---------------- Settings pages ----------------
+     A menu (profile card + categories, like WhatsApp); each category opens
+     its own page and ← goes back to the menu. */
+
+  let settingsSection = null;
+
+  function showSettingsMenu() {
+    settingsSection = null;
+    document.getElementById("settings-menu").classList.remove("hidden");
+    settingsPanel.querySelectorAll(".settings-section").forEach(s => s.classList.add("hidden"));
+    document.getElementById("settings-title").textContent = "Ayarlar";
+    const avatar = document.getElementById("settings-card-avatar");
+    if (myUid) paintAvatar(avatar, myUid, myNickname || "?");
+    document.getElementById("settings-card-name").textContent = myNickname ? "@" + myNickname : "";
+    document.getElementById("settings-card-about").textContent = (myUid && aboutOf(myUid)) || "Profil, hakkımda, kullanıcı adı, QR kodum";
+    settingsPanel.querySelector(".settings-body").scrollTop = 0;
+  }
+
+  function openSettingsSection(name) {
+    const section = settingsPanel.querySelector('.settings-section[data-section="' + name + '"]');
+    if (!section) return;
+    settingsSection = name;
+    document.getElementById("settings-menu").classList.add("hidden");
+    settingsPanel.querySelectorAll(".settings-section").forEach(s => s.classList.toggle("hidden", s !== section));
+    document.getElementById("settings-title").textContent = section.dataset.title;
+    settingsPanel.querySelector(".settings-body").scrollTop = 0;
+  }
+
+  settingsPanel.querySelectorAll("#settings-menu [data-section]").forEach(b =>
+    b.addEventListener("click", () => openSettingsSection(b.dataset.section)));
+
+  /* ---------------- Accent colour and message text size ----------------
+     Per device (localStorage, like the theme). The calculator's own
+     orange keys stay as they are, so the disguise doesn't change. */
+
+  const ACCENT_KEY = "calcut_accent";
+  const CHAT_FONT_KEY = "calcut_chat_font";
+  // [name, accent, read ticks, my bubble (dark theme), my bubble (light theme)]
+  const ACCENTS = {
+    orange: ["Turuncu", "#ff9f0a", "#ffb340", "#5a3a12", "#ffdcae"],
+    blue: ["Mavi", "#0a84ff", "#64b5ff", "#12345a", "#cfe5ff"],
+    green: ["Yeşil", "#30d158", "#6ee68f", "#17432a", "#d3f5dc"],
+    purple: ["Mor", "#bf5af2", "#d79bf7", "#3d1f52", "#ecd6fb"],
+    pink: ["Pembe", "#ff375f", "#ff7a95", "#551a28", "#ffd6df"],
+    teal: ["Turkuaz", "#40c8e0", "#8ce0ef", "#123f48", "#cdf1f7"],
+    gray: ["Gri", "#98989d", "#c7c7cc", "#3a3a3e", "#e2e2e6"],
+  };
+  const CHAT_FONTS = { small: "13.5px", normal: "15px", large: "17px", xlarge: "19.5px" };
+
+  function storedAccent() {
+    try {
+      const v = localStorage.getItem(ACCENT_KEY);
+      return ACCENTS[v] ? v : "orange";
+    } catch (e) {
+      return "orange";
+    }
+  }
+
+  function storedChatFont() {
+    try {
+      const v = localStorage.getItem(CHAT_FONT_KEY);
+      return CHAT_FONTS[v] ? v : "normal";
+    } catch (e) {
+      return "normal";
+    }
+  }
+
+  function applyAccent() {
+    const [, accent, tick, bubbleDark, bubbleLight] = ACCENTS[storedAccent()];
+    const light = document.documentElement.dataset.theme === "light";
+    const st = document.documentElement.style;
+    st.setProperty("--accent", accent);
+    st.setProperty("--tick-read", light ? accent : tick);
+    st.setProperty("--bubble-me", light ? bubbleLight : bubbleDark);
+    st.setProperty("--chat-font", CHAT_FONTS[storedChatFont()]);
+    document.querySelectorAll("#accent-choices button").forEach(b => b.classList.toggle("active", b.dataset.accent === storedAccent()));
+    document.getElementById("chat-font-select").value = storedChatFont();
+  }
+
+  Object.entries(ACCENTS).forEach(([id, [name, color]]) => {
+    const b = document.createElement("button");
+    b.className = "accent-choice";
+    b.dataset.accent = id;
+    b.title = name;
+    b.style.background = color;
+    b.setAttribute("aria-label", name);
+    b.addEventListener("click", () => {
+      try { localStorage.setItem(ACCENT_KEY, id); } catch (e) {}
+      applyAccent();
+    });
+    document.getElementById("accent-choices").appendChild(b);
+  });
+  // My bubble's colour depends on light / dark: follow theme changes.
+  themeSelect.addEventListener("change", applyAccent);
+  if (darkQuery && darkQuery.addEventListener) darkQuery.addEventListener("change", applyAccent);
+  document.getElementById("chat-font-select").addEventListener("change", e => {
+    try { localStorage.setItem(CHAT_FONT_KEY, e.target.value); } catch (err) {}
+    applyAccent();
+  });
+  applyAccent();
+
+  /* ---------------- Auto-download ----------------
+     Videos and big files (chunked bytes) in the open chat download by
+     themselves up to AUTO_DL_MAX, always or only on Wi-Fi. */
+
+  const AUTO_DL_KEY = "calcut_auto_dl";
+  const AUTO_DL_MAX = 25 * 1024 * 1024;
+  const autoDlTried = new Set();
+  const autoDlSelect = document.getElementById("auto-dl-select");
+
+  function autoDlMode() {
+    try {
+      const v = localStorage.getItem(AUTO_DL_KEY);
+      return ["wifi", "always"].includes(v) ? v : "off";
+    } catch (e) {
+      return "off";
+    }
+  }
+
+  function autoDlAllowedNow(mode, connection) {
+    if (mode === "always") return true;
+    if (mode !== "wifi" || !connection) return false;
+    return connection.type === "wifi" || connection.type === "ethernet";
+  }
+
+  function maybeAutoDownload() {
+    if (!autoDlAllowedNow(autoDlMode(), navigator.connection)) return;
+    for (const m of currentMessages) {
+      if (largeFileLoading.size >= 2) return;
+      if (!m.file || !m.file.binary || !m.chunked || largeFileUrls.has(m.id) || autoDlTried.has(m.id)) continue;
+      if (!(m.file.size > 0 && m.file.size <= AUTO_DL_MAX)) continue;
+      const btn = messageListEl.querySelector('.large-dl[data-msg-id="' + CSS.escape(m.id) + '"]');
+      if (!btn) continue;
+      autoDlTried.add(m.id);
+      openLargeFile(m.id, btn);
+    }
+  }
+
+  autoDlSelect.value = autoDlMode();
+  autoDlSelect.addEventListener("change", () => {
+    try { localStorage.setItem(AUTO_DL_KEY, autoDlSelect.value); } catch (e) {}
+    maybeAutoDownload();
+  });
+
+  /* ---------------- Jump to a date ---------------- */
+
+  const jumpDateInput = document.getElementById("jump-date-input");
+
+  // The first message on or after that day, else the last one before it.
+  function messageForDate(msgs, dayStartMs) {
+    const shown = msgs.filter(m => !m.deleted);
+    return shown.find(m => m.ts >= dayStartMs) || shown[shown.length - 1] || null;
+  }
+
+  function jumpToDate(value) {
+    const parts = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value || "");
+    if (!parts) return;
+    const start = new Date(Number(parts[1]), Number(parts[2]) - 1, Number(parts[3])).getTime();
+    const m = messageForDate(currentMessages, start);
+    if (!m) { showToast("Bu sohbette mesaj yok", 2000); return; }
+    const el = messageListEl.querySelector('.msg-bubble[data-msg-id="' + CSS.escape(m.id) + '"]');
+    if (!el) return;
+    el.scrollIntoView({ behavior: "smooth", block: "center" });
+    el.classList.remove("flash");
+    void el.offsetWidth;
+    el.classList.add("flash");
+    const sameDay = new Date(m.ts).toDateString() === new Date(start).toDateString();
+    if (!sameDay) showToast("O gün mesaj yok; en yakın gün: " + new Date(m.ts).toLocaleDateString("tr-TR"), 2500);
+  }
+
+  function openJumpToDate() {
+    const first = currentMessages.find(m => !m.deleted);
+    if (!first) { showToast("Bu sohbette mesaj yok", 2000); return; }
+    jumpDateInput.min = localDateTimeValue(first.ts).slice(0, 10);
+    jumpDateInput.max = localDateTimeValue(Date.now()).slice(0, 10);
+    jumpDateInput.value = "";
+    if (jumpDateInput.showPicker) {
+      try { jumpDateInput.showPicker(); return; } catch (e) {}
+    }
+    const typed = prompt("Hangi tarihe gidilsin? (GG.AA.YYYY)");
+    const m = /^(\d{1,2})[./-](\d{1,2})[./-](\d{4})$/.exec((typed || "").trim());
+    if (m) jumpToDate(m[3] + "-" + m[2].padStart(2, "0") + "-" + m[1].padStart(2, "0"));
+  }
+  jumpDateInput.addEventListener("change", () => jumpToDate(jumpDateInput.value));
 
   const viewOnceInput = document.getElementById("viewonce-input");
   document.getElementById("attach-viewonce-btn").addEventListener("click", () => {

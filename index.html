@@ -222,141 +222,211 @@
     <div id="settings-panel" class="hidden">
       <div class="vault-header">
         <button id="settings-back-btn" class="ghost">←</button>
-        <h2>Ayarlar</h2>
+        <h2 id="settings-title">Ayarlar</h2>
       </div>
       <div class="settings-body">
-        <label>Profil fotoğrafı</label>
-        <div class="profile-photo-row">
-          <span id="my-avatar" class="avatar large"></span>
-          <div class="profile-photo-actions">
-            <button id="avatar-pick-btn">Fotoğraf Seç</button>
-            <button id="avatar-remove-btn" class="ghost">Kaldır</button>
+        <div id="settings-menu">
+          <button class="settings-card" data-section="profile">
+            <span id="settings-card-avatar" class="avatar large"></span>
+            <span class="settings-card-text">
+              <span id="settings-card-name"></span>
+              <span id="settings-card-about"></span>
+            </span>
+            <span class="settings-chevron">›</span>
+          </button>
+          <div class="settings-group">
+            <button class="settings-row" data-section="privacy"><span class="settings-icon">🔒</span><span class="settings-row-text"><b>Gizlilik</b><small>Son görülme, okundu bilgisi, gizlilik koruması</small></span></button>
+            <button class="settings-row" data-section="security"><span class="settings-icon">🛡️</span><span class="settings-row-text"><b>Güvenlik</b><small>PIN, yanılgı PIN'i, biyometrik onay</small></span></button>
+            <button class="settings-row" data-section="chats"><span class="settings-icon">💬</span><span class="settings-row-text"><b>Sohbetler</b><small>Tema, renkler, yazı boyutu, otomatik yanıt</small></span></button>
+            <button class="settings-row" data-section="notifications"><span class="settings-icon">🔔</span><span class="settings-row-text"><b>Bildirimler</b><small>Bildirimler ve alarm sesleri</small></span></button>
+          </div>
+          <div class="settings-group">
+            <button class="settings-row" data-section="storage"><span class="settings-icon">💾</span><span class="settings-row-text"><b>Depolama ve veri</b><small>Depolama yönetimi, otomatik indirme</small></span></button>
+            <button class="settings-row" data-section="backup"><span class="settings-icon">📦</span><span class="settings-row-text"><b>Yedekleme ve taşıma</b><small>Sohbet yedeği, ayarları yeni telefona taşı</small></span></button>
+            <button class="settings-row" data-section="devices"><span class="settings-icon">💻</span><span class="settings-row-text"><b>Bağlı cihazlar</b><small>Hesabını bilgisayarda aç</small></span></button>
+            <button class="settings-row" data-section="referrals"><span class="settings-icon">👥</span><span class="settings-row-text"><b>Bekleyen referanslar</b><small>Seni referans gösterenler</small></span></button>
+          </div>
+          <div class="settings-group">
+            <button class="settings-row" data-section="about"><span class="settings-icon">ℹ️</span><span class="settings-row-text"><b>Hakkında ve hesap</b><small>Sürüm, güncelleme, çıkış</small></span></button>
           </div>
         </div>
-        <input id="avatar-input" type="file" accept="image/*" class="hidden">
-        <p id="avatar-msg"></p>
-        <label class="toggle-row">
-          <input id="presence-toggle" type="checkbox" checked>
-          <span>Çevrimiçi ve son görülme bilgimi göster</span>
-        </label>
-        <p class="hint">Kapatırsan başkalarının çevrimiçi ve son görülme bilgisini de göremezsin.</p>
-        <label class="toggle-row">
-          <input id="read-receipts-toggle" type="checkbox" checked>
-          <span>Okundu bilgisi gönder (renkli çift tik)</span>
-        </label>
-        <p class="hint">Kapatırsan başkalarının okundu bilgisini de göremezsin. Sesli mesajların dinlendi bilgisi her zaman gönderilir.</p>
-        <label>Görünüm</label>
-        <select id="theme-select">
-          <option value="dark">Koyu</option>
-          <option value="light">Açık</option>
-          <option value="system">Telefona göre</option>
-        </select>
-        <label>Hakkımda</label>
-        <div class="about-row">
-          <input id="about-input" type="text" maxlength="140" placeholder="Örn. Meşgulüm, sadece acil aramalar">
-          <button id="about-save">Kaydet</button>
-        </div>
-        <label>Yeni sohbetlerde kaybolan mesajlar</label>
-        <select id="default-disappearing">
-          <option value="0">Kapalı</option>
-          <option value="86400">1 gün</option>
-          <option value="604800">1 hafta</option>
-          <option value="7776000">90 gün</option>
-        </select>
-        <p class="hint">Bundan sonra başlattığın sohbet ve gruplarda kaybolan mesajlar bu sürede açık gelir.</p>
-        <button id="my-qr-btn" class="ghost wide">🔳 QR kodum</button>
-        <button id="storage-btn" class="ghost wide">💾 Depolama yönetimi</button>
-        <button id="link-scan-btn" class="ghost wide">💻 Bilgisayarı / başka cihazı bağla</button>
-        <hr>
-        <label>Görünen Kullanıcı Adını Değiştir</label>
-        <input id="new-nickname-input" type="text" placeholder="Yeni kullanıcı adı">
-        <button id="change-nickname-btn">Kullanıcı Adını Değiştir</button>
-        <p id="nickname-change-msg"></p>
-        <p class="hint">Not: Bu, başkalarının seni bulacağı ve göreceği adı değiştirir. Girişte hâlâ eski kullanıcı adını kullanman gerekir.</p>
-        <hr>
-        <label>Yeni PIN (bu cihaz için)</label>
-        <input id="new-pin-input" type="password" inputmode="numeric" maxlength="12" placeholder="Yeni PIN">
-        <button id="change-pin-btn">PIN'i Değiştir</button>
-        <p id="settings-msg"></p>
-        <hr>
-        <label>Yanılgı PIN'i (opsiyonel)</label>
-        <p class="hint">Bu PIN girildiğinde gerçek mesajların yerine boş, sahte bir ekran açılır. Zorla telefonun açtırılırsa bu PIN'i verebilirsin.</p>
-        <input id="duress-pin-input" type="password" inputmode="numeric" maxlength="12" placeholder="Yanılgı PIN'i belirle">
-        <button id="set-duress-pin-btn">Yanılgı PIN'i Belirle</button>
-        <button id="clear-duress-pin-btn" class="ghost">Yanılgı PIN'ini Kaldır</button>
-        <p id="duress-pin-msg"></p>
-        <hr>
-        <label>Otomatik yanıt</label>
-        <p class="hint">Açıkken birebir sohbetlerde sana yazanlara, telefonun kapalı olsa bile en fazla 6 saatte bir bu yanıt gider. Yanıt uçtan uca şifreli kalır.</p>
-        <textarea id="away-text" rows="2" maxlength="500" placeholder="Şu an müsait değilim, sonra yazacağım."></textarea>
-        <button id="away-toggle-btn" class="ghost">🤖 Otomatik yanıt</button>
-        <p id="away-msg"></p>
-        <hr>
-        <label>Gizlilik koruması</label>
-        <p class="hint">Uygulamadan çıkınca ekran hemen hesap makinesine döner. Android uygulamasında ekran görüntüsü ve ekran kaydı zaten engellidir.</p>
-        <label for="bg-lock-select" class="sub-label">Arka plana geçince kilitle</label>
-        <select id="bg-lock-select">
-          <option value="0">Hemen</option>
-          <option value="30000">30 saniye sonra</option>
-          <option value="300000">5 dakika sonra</option>
-        </select>
-        <label for="panic-select" class="sub-label">Panik hareketi (kilitle ve hesap makinesine dön)</label>
-        <select id="panic-select">
-          <option value="off">Kapalı</option>
-          <option value="shake">Telefonu salla</option>
-          <option value="facedown">Ekranı aşağı çevir</option>
-          <option value="both">İkisi de</option>
-        </select>
-        <button id="intruder-toggle-btn" class="ghost">📸 İzinsiz giriş fotoğrafı</button>
-        <p class="hint">Açıksa, kilit ekranında yanlış PIN girildiğinde ön kamerayla sessizce fotoğraf çekilir. Şifreli saklanır; yalnızca sen, kilidi açınca görürsün.</p>
-        <p id="privacy-msg"></p>
-        <hr>
-        <label>Ek güvenlik</label>
-        <button id="enable-biometric-btn">Biyometrik onay ekle</button>
-        <button id="disable-biometric-btn" class="ghost hidden">Biyometrik onayı kaldır</button>
-        <p id="biometric-msg"></p>
-        <hr>
-        <label>Bildirimler</label>
-        <button id="enable-alarm-btn">Bildirimleri Etkinleştir</button>
-        <button id="test-push-btn" class="ghost">Test bildirimi gönder</button>
-        <p id="alarm-msg"></p>
-        <p class="app-version">Sürüm: 46</p>
-        <div id="app-update-section" class="hidden">
+
+        <section class="settings-section hidden" data-section="profile" data-title="Profil">
+          <div class="profile-photo-row">
+            <span id="my-avatar" class="avatar large"></span>
+            <div class="profile-photo-actions">
+              <button id="avatar-pick-btn">Fotoğraf Seç</button>
+              <button id="avatar-remove-btn" class="ghost">Kaldır</button>
+            </div>
+          </div>
+          <input id="avatar-input" type="file" accept="image/*" class="hidden">
+          <p id="avatar-msg"></p>
+          <label>Hakkımda</label>
+          <div class="about-row">
+            <input id="about-input" type="text" maxlength="140" placeholder="Örn. Meşgulüm, sadece acil aramalar">
+            <button id="about-save">Kaydet</button>
+          </div>
+          <label>Görünen kullanıcı adı</label>
+          <input id="new-nickname-input" type="text" placeholder="Yeni kullanıcı adı">
+          <button id="change-nickname-btn">Kullanıcı Adını Değiştir</button>
+          <p id="nickname-change-msg"></p>
+          <p class="hint">Bu, başkalarının seni bulacağı ve göreceği adı değiştirir. Girişte hâlâ eski kullanıcı adını kullanman gerekir.</p>
+          <button id="my-qr-btn" class="ghost wide">🔳 QR kodum</button>
+        </section>
+
+        <section class="settings-section hidden" data-section="privacy" data-title="Gizlilik">
+          <label class="toggle-row">
+            <input id="presence-toggle" type="checkbox" checked>
+            <span>Çevrimiçi ve son görülme bilgimi göster</span>
+          </label>
+          <p class="hint">Kapatırsan başkalarının çevrimiçi ve son görülme bilgisini de göremezsin.</p>
+          <label class="toggle-row">
+            <input id="read-receipts-toggle" type="checkbox" checked>
+            <span>Okundu bilgisi gönder (renkli çift tik)</span>
+          </label>
+          <p class="hint">Kapatırsan başkalarının okundu bilgisini de göremezsin. Sesli mesajların dinlendi bilgisi her zaman gönderilir.</p>
+          <label>Yeni sohbetlerde kaybolan mesajlar</label>
+          <select id="default-disappearing">
+            <option value="0">Kapalı</option>
+            <option value="86400">1 gün</option>
+            <option value="604800">1 hafta</option>
+            <option value="7776000">90 gün</option>
+          </select>
+          <p class="hint">Bundan sonra başlattığın sohbet ve gruplarda kaybolan mesajlar bu sürede açık gelir.</p>
           <hr>
-          <label>Uygulama güncellemesi</label>
-          <p id="app-update-msg" class="hint"></p>
-          <button id="app-update-btn" class="hidden">Yeni sürümü indir</button>
-        </div>
-        <hr>
-        <label>Bildirim sesleri</label>
-        <p class="hint">Uygulama açıkken çalan sesler. Uygulama kapalıyken telefonun kendi bildirim sesi çalar; Android uygulamasında "📱 Telefonun alarm sesi" seçilirse kapalıyken de telefonunun alarm sesi, alarm ses seviyesinde çalar.</p>
-        <label for="message-sound-select">Mesaj alarmı</label>
-        <div class="sound-row">
-          <select id="message-sound-select"></select>
-          <button id="message-sound-preview" class="ghost" title="Dinle">▶</button>
-        </div>
-        <label for="call-sound-select">Arama alarmı</label>
-        <div class="sound-row">
-          <select id="call-sound-select"></select>
-          <button id="call-sound-preview" class="ghost" title="Dinle">▶</button>
-        </div>
-        <hr>
-        <label>Bekleyen Referanslar</label>
-        <ul id="pending-referrals-list"></ul>
-        <hr>
-        <label>Yedekleme</label>
-        <p class="hint">Tüm sohbetlerini bir parolayla şifreli tek bir dosyaya kaydet, istediğin zaman aynı parolayla açıp görüntüleyebilirsin.</p>
-        <button id="export-backup-btn">Sohbetleri Yedekle (Şifreli)</button>
-        <input id="import-backup-input" type="file" accept="application/json" class="hidden">
-        <button id="import-backup-btn" class="ghost">Yedeği Görüntüle</button>
-        <p class="hint">Yeni telefona geçerken: sabitlenen ve arşivlenen sohbetler, yıldızlar, duvar kâğıtları, kilitli sohbetler, çıkartmalar, sesler ve tema bir dosyayla taşınır.</p>
-        <button id="export-settings-btn" class="ghost">📦 Ayarları dışa aktar</button>
-        <input id="import-settings-input" type="file" accept="application/json" class="hidden">
-        <button id="import-settings-btn" class="ghost">📥 Ayarları içe aktar</button>
-        <p id="backup-msg"></p>
-        <hr>
-        <button id="logout-btn" class="ghost">Hesaptan Çıkış Yap</button>
-        <button id="wipe-vault-btn" class="danger">Tüm Yerel Verileri Sil</button>
+          <label>Gizlilik koruması</label>
+          <p class="hint">Uygulamadan çıkınca ekran hemen hesap makinesine döner. Android uygulamasında ekran görüntüsü ve ekran kaydı zaten engellidir. Bildirimlerde mesaj içeriği hiç görünmez, yalnızca "Alarm" ve saat yazar.</p>
+          <label for="bg-lock-select" class="sub-label">Arka plana geçince kilitle</label>
+          <select id="bg-lock-select">
+            <option value="0">Hemen</option>
+            <option value="30000">30 saniye sonra</option>
+            <option value="300000">5 dakika sonra</option>
+          </select>
+          <label for="panic-select" class="sub-label">Panik hareketi (kilitle ve hesap makinesine dön)</label>
+          <select id="panic-select">
+            <option value="off">Kapalı</option>
+            <option value="shake">Telefonu salla</option>
+            <option value="facedown">Ekranı aşağı çevir</option>
+            <option value="both">İkisi de</option>
+          </select>
+          <button id="intruder-toggle-btn" class="ghost">📸 İzinsiz giriş fotoğrafı</button>
+          <p class="hint">Açıksa, kilit ekranında yanlış PIN girildiğinde ön kamerayla sessizce fotoğraf çekilir. Şifreli saklanır; yalnızca sen, kilidi açınca görürsün.</p>
+          <p id="privacy-msg"></p>
+        </section>
+
+        <section class="settings-section hidden" data-section="security" data-title="Güvenlik">
+          <label>Yeni PIN (bu cihaz için)</label>
+          <input id="new-pin-input" type="password" inputmode="numeric" maxlength="12" placeholder="Yeni PIN">
+          <button id="change-pin-btn">PIN'i Değiştir</button>
+          <p id="settings-msg"></p>
+          <hr>
+          <label>Yanılgı PIN'i (isteğe bağlı)</label>
+          <p class="hint">Bu PIN girildiğinde gerçek mesajların yerine boş, sahte bir ekran açılır. Zorla telefonun açtırılırsa bu PIN'i verebilirsin.</p>
+          <input id="duress-pin-input" type="password" inputmode="numeric" maxlength="12" placeholder="Yanılgı PIN'i belirle">
+          <button id="set-duress-pin-btn">Yanılgı PIN'i Belirle</button>
+          <button id="clear-duress-pin-btn" class="ghost">Yanılgı PIN'ini Kaldır</button>
+          <p id="duress-pin-msg"></p>
+          <hr>
+          <label>Biyometrik onay</label>
+          <button id="enable-biometric-btn">Biyometrik onay ekle</button>
+          <button id="disable-biometric-btn" class="ghost hidden">Biyometrik onayı kaldır</button>
+          <p id="biometric-msg"></p>
+        </section>
+
+        <section class="settings-section hidden" data-section="chats" data-title="Sohbetler">
+          <label>Tema</label>
+          <select id="theme-select">
+            <option value="dark">Koyu</option>
+            <option value="light">Açık</option>
+            <option value="system">Telefona göre</option>
+          </select>
+          <label>Vurgu ve balon rengi</label>
+          <div id="accent-choices"></div>
+          <label>Mesaj yazı boyutu</label>
+          <select id="chat-font-select">
+            <option value="small">Küçük</option>
+            <option value="normal">Normal</option>
+            <option value="large">Büyük</option>
+            <option value="xlarge">Çok büyük</option>
+          </select>
+          <div id="settings-preview">
+            <div class="msg-bubble them">Merhaba! Nasılsın? 👋</div>
+            <div class="msg-bubble me">İyiyim, sen? Akşam görüşelim 🙂</div>
+          </div>
+          <hr>
+          <label>Otomatik yanıt</label>
+          <p class="hint">Açıkken birebir sohbetlerde sana yazanlara, telefonun kapalı olsa bile en fazla 6 saatte bir bu yanıt gider. Yanıt uçtan uca şifreli kalır.</p>
+          <textarea id="away-text" rows="2" maxlength="500" placeholder="Şu an müsait değilim, sonra yazacağım."></textarea>
+          <button id="away-toggle-btn" class="ghost">🤖 Otomatik yanıt</button>
+          <p id="away-msg"></p>
+        </section>
+
+        <section class="settings-section hidden" data-section="notifications" data-title="Bildirimler">
+          <button id="enable-alarm-btn">Bildirimleri Etkinleştir</button>
+          <button id="test-push-btn" class="ghost">Test bildirimi gönder</button>
+          <p id="alarm-msg"></p>
+          <hr>
+          <label>Bildirim sesleri</label>
+          <p class="hint">Uygulama açıkken çalan sesler. Uygulama kapalıyken telefonun kendi bildirim sesi çalar; Android uygulamasında "📱 Telefonun alarm sesi" seçilirse kapalıyken de telefonunun alarm sesi, alarm ses seviyesinde çalar.</p>
+          <label for="message-sound-select">Mesaj alarmı</label>
+          <div class="sound-row">
+            <select id="message-sound-select"></select>
+            <button id="message-sound-preview" class="ghost" title="Dinle">▶</button>
+          </div>
+          <label for="call-sound-select">Arama alarmı</label>
+          <div class="sound-row">
+            <select id="call-sound-select"></select>
+            <button id="call-sound-preview" class="ghost" title="Dinle">▶</button>
+          </div>
+        </section>
+
+        <section class="settings-section hidden" data-section="storage" data-title="Depolama ve veri">
+          <button id="storage-btn" class="ghost wide">💾 Depolama yönetimi</button>
+          <hr>
+          <label>Videoları ve büyük dosyaları otomatik indir</label>
+          <select id="auto-dl-select">
+            <option value="off">Hiçbir zaman (dokununca indir)</option>
+            <option value="wifi">Yalnızca Wi-Fi'de</option>
+            <option value="always">Her zaman</option>
+          </select>
+          <p class="hint">Açık bir sohbette, 25 MB'a kadar olan videolar ve dosyalar kendiliğinden indirilir. Fotoğraflar her zaman hemen görünür. Wi-Fi bilgisini her tarayıcı vermez; vermeyenlerde "Yalnızca Wi-Fi" indirmez.</p>
+        </section>
+
+        <section class="settings-section hidden" data-section="backup" data-title="Yedekleme ve taşıma">
+          <label>Sohbet yedeği</label>
+          <p class="hint">Tüm sohbetlerini bir parolayla şifreli tek bir dosyaya kaydet, istediğin zaman aynı parolayla açıp görüntüleyebilirsin.</p>
+          <button id="export-backup-btn">Sohbetleri Yedekle (Şifreli)</button>
+          <input id="import-backup-input" type="file" accept="application/json" class="hidden">
+          <button id="import-backup-btn" class="ghost">Yedeği Görüntüle</button>
+          <hr>
+          <label>Yeni telefona geçiş</label>
+          <p class="hint">Sabitlenen ve arşivlenen sohbetler, yıldızlar, duvar kâğıtları, kilitli sohbetler, çıkartmalar, listeler, sesler, tema ve renkler bir dosyayla taşınır.</p>
+          <button id="export-settings-btn" class="ghost">📦 Ayarları dışa aktar</button>
+          <input id="import-settings-input" type="file" accept="application/json" class="hidden">
+          <button id="import-settings-btn" class="ghost">📥 Ayarları içe aktar</button>
+          <p id="backup-msg"></p>
+        </section>
+
+        <section class="settings-section hidden" data-section="devices" data-title="Bağlı cihazlar">
+          <p class="hint">Bilgisayarda calcut'u açıp giriş ekranında "💻 Telefonla bağlan (QR)"a bas, çıkan kodu buradan okut.</p>
+          <button id="link-scan-btn" class="ghost wide">💻 Bilgisayarı / başka cihazı bağla</button>
+        </section>
+
+        <section class="settings-section hidden" data-section="referrals" data-title="Bekleyen referanslar">
+          <ul id="pending-referrals-list"></ul>
+        </section>
+
+        <section class="settings-section hidden" data-section="about" data-title="Hakkında ve hesap">
+          <p class="app-version">Sürüm: 47</p>
+          <div id="app-update-section" class="hidden">
+            <label>Uygulama güncellemesi</label>
+            <p id="app-update-msg" class="hint"></p>
+            <button id="app-update-btn" class="hidden">Yeni sürümü indir</button>
+          </div>
+          <hr>
+          <button id="logout-btn" class="ghost">Hesaptan Çıkış Yap</button>
+          <button id="wipe-vault-btn" class="danger">Tüm Yerel Verileri Sil</button>
+        </section>
       </div>
     </div>
   </div>
@@ -714,6 +784,8 @@
   </div>
   <p class="hint">En fazla 60 saniye</p>
 </div>
+
+<input id="jump-date-input" type="date" class="jump-date">
 
 <div id="intruder-modal" class="modal hidden">
   <div class="modal-box">
