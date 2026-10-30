@@ -57,6 +57,24 @@ için "Alarm" görünümlü, sesli ve titreşimli bildirim gelir. Firebase'in
 Her cihazda bir kez "Bildirimleri Etkinleştir" demek yeterli; hesaptan çıkınca
 o cihaz bildirim listesinden silinir.
 
+## Arama aktarma sunucusu (TURN) — isteğe bağlı, ücretsiz kotalı
+
+İki telefon birbirine doğrudan bağlanamazsa (farklı mobil şebekeler, katı NAT)
+arama sesi/görüntüsü Cloudflare'in TURN sunucuları üzerinden aktarılır. Görüşme
+yine uçtan uca şifrelidir; sunucu yalnızca paketleri iletir. Kurulmazsa
+aramalar eskisi gibi yalnızca STUN ile çalışır.
+
+1. Cloudflare panosu → **Realtime** (eski adı *Calls*) → **TURN Server** →
+   **Create** → bir ad ver → oluşturunca çıkan **Turn Token ID** ve **API Token**'ı kopyala.
+2. **Google Apps Script** (asıl bildirim sunucusu): proje → ⚙️ *Proje Ayarları* →
+   *Komut dosyası özellikleri* → iki özellik ekle: `TURN_KEY_ID` = Turn Token ID,
+   `TURN_KEY_TOKEN` = API Token → kaydet. `apps-script/Code.gs`'in güncel hâlini
+   yapıştırıp *Dağıt → Dağıtımları yönet → ✏️ → Yeni sürüm → Dağıt*.
+3. (İsteğe bağlı) Cloudflare yedeği `calcut-bildirim`: Pages projesi → *Settings*
+   → *Variables and Secrets* → aynı iki değeri **Secret** olarak ekle.
+4. Uygulamada Ayarlar → *Test bildirimi gönder*: sonunda "Arama aktarma sunucusu
+   (TURN): açık ✅" yazmalı.
+
 ## Firestore güvenlik kuralları
 
 Kurallar `firestore.rules` dosyasında tutulur; Firebase konsolundaki kurallar

@@ -41,6 +41,7 @@ export default {
       const idToken = body.idToken || auth.replace(/^Bearer\s+/i, "");
       const uid = await verifyIdToken(idToken, sa.project_id).catch(() => null);
       if (!uid) return reply(401, "unauthorized");
+      if (body.kind === "ice-servers") return reply(200, { iceServers: await turnIceServers(env), v: WORKER_VERSION });
       const sent = await handle(body, uid, sa);
       return reply(200, { sent, v: WORKER_VERSION });
     } catch (e) {
@@ -48,6 +49,29 @@ export default {
     }
   },
 };
+
+// Short-lived TURN credentials from Cloudflare Realtime, for calls between
+// phones that can't reach each other directly (different mobile networks,
+// strict NAT). Needs the secrets TURN_KEY_ID and TURN_KEY_TOKEN; without
+// them the app keeps using STUN only.
+async function turnIceServers(env) {
+  if (!env.TURN_KEY_ID || !env.TURN_KEY_TOKEN) return null;
+  const res = await fetch(`https://rtc.live.cloudflare.com/v1/turn/keys/${env.TURN_KEY_ID}/credentials/generate-ice-servers`, {
+    method: "POST",
+    headers: { Authorization: "Bearer " + env.TURN_KEY_TOKEN, "Content-Type": "application/json" },
+    body: JSON.stringify({ ttl: 86400 }),
+  });
+  if (!res.ok) throw new Error("TURN " + res.status);
+  return cleanIceServers((await res.json()).iceServers);
+}
+
+// Browsers block port 53, so those URLs would only time out.
+function cleanIceServers(list) {
+  return (Array.isArray(list) ? list : [list]).filter(Boolean).map(s => ({
+    ...s,
+    urls: (Array.isArray(s.urls) ? s.urls : [s.urls]).filter(u => typeof u === "string" && !/:53(\?|$)/.test(u)),
+  })).filter(s => s.urls.length);
+}
 
 function reply(status, data) {
   return new Response(JSON.stringify(data), {
