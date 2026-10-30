@@ -4828,6 +4828,7 @@
             sticker: d.type === "sticker" && isSticker(plain) ? plain : null,
             contact: d.type === "contact" ? parseJson(plain) : null,
             mentions: Array.isArray(d.mentions) ? d.mentions : [],
+            linkPreview: d.type === "text" && d.lpCt && !d.edited ? parseLinkPreview(await decryptSealedExtra(d).catch(() => null)) : null,
             readBy: receiptTimes(d.readBy),
             deliveredTo: receiptTimes(d.deliveredTo),
             played: !!d.played,
@@ -4995,6 +4996,16 @@
     if (!chunked) return;
     await Promise.all(Array.from({ length: chunked.n }, (_, i) => chunkRef(chunked, i).delete().catch(() => {})));
     chunkedPlainCache.delete(chunked.id);
+  }
+
+  // The sealedExtra of sendEncryptedTo (a link preview), or null.
+  async function decryptSealedExtra(d) {
+    const wrapped = d.wrappedKeys && d.wrappedKeys[myUid];
+    if (!wrapped || !d.lpIv || !d.lpCt) return null;
+    const rawAes = await crypto.subtle.decrypt({ name: "RSA-OAEP" }, myPrivateKey, b64decode(wrapped));
+    const aesKey = await crypto.subtle.importKey("raw", rawAes, { name: "AES-GCM" }, false, ["decrypt"]);
+    const plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv: new Uint8Array(b64decode(d.lpIv)) }, aesKey, b64decode(d.lpCt));
+    return new TextDecoder().decode(plain);
   }
 
   async function decryptMessage(d) {
@@ -5384,6 +5395,7 @@
         appendHighlightedText(span, m.text, query);
         if (activeIsGroup) highlightMentions(span);
         div.appendChild(span);
+        if (m.linkPreview) div.appendChild(renderLinkPreview(m.linkPreview));
         if (translations.has(m.id)) {
           const tr = document.createElement("span");
           tr.className = "msg-translation";
@@ -5854,15 +5866,17 @@
     return b64encode(wrapped);
   }
 
-  async function sendEncrypted(payloadText, type, extraFields) {
+  async function sendEncrypted(payloadText, type, extraFields, sealedExtra) {
     // Capture these locally: the user may navigate away from the conversation
     // (clearing activeConvId/activeOtherUids) while this async send is still
     // in flight, and the write below must still target the right thread.
-    return sendEncryptedTo(activeConvId, activeOtherUids, payloadText, type, extraFields);
+    return sendEncryptedTo(activeConvId, activeOtherUids, payloadText, type, extraFields, sealedExtra);
   }
 
   // extraFields: unencrypted metadata stored on the message, e.g. { replyTo }.
-  async function sendEncryptedTo(convId, otherUids, payloadText, type, extraFields) {
+  // sealedExtra: more text encrypted with the same key (lpIv / lpCt), e.g.
+  // a link preview, so the payload itself stays as it is.
+  async function sendEncryptedTo(convId, otherUids, payloadText, type, extraFields, sealedExtra) {
     if (!convId || !otherUids || !otherUids.length) return;
     // Blocking only applies to 1:1 threads; groups don't expose a block UI.
     if (otherUids.length === 1 && myBlocked[otherUids[0]]) return;
@@ -5887,6 +5901,11 @@
     };
     if (expiresAt) msgData.expiresAt = expiresAt;
     if (extraFields) Object.assign(msgData, extraFields);
+    if (sealedExtra) {
+      const lpIv = crypto.getRandomValues(new Uint8Array(12));
+      msgData.lpIv = b64encode(lpIv.buffer);
+      msgData.lpCt = b64encode(await crypto.subtle.encrypt({ name: "AES-GCM", iv: lpIv }, aesKey, new TextEncoder().encode(sealedExtra)));
+    }
     if (ciphertextB64.length > CHUNK_CHARS) {
       // Chunks go first, so a reader never sees the message without them.
       const chunked = { conv: convId, id: messagesCol.doc().id, n: Math.ceil(ciphertextB64.length / CHUNK_CHARS) };
@@ -6053,7 +6072,7 @@
       const fields = takeReplyFields() || {};
       const mentions = activeIsGroup ? mentionedUids(text) : [];
       if (mentions.length) fields.mentions = mentions;
-      await sendEncrypted(text, "text", Object.keys(fields).length ? fields : null);
+      await sendEncrypted(text, "text", Object.keys(fields).length ? fields : null, takeLinkPreview(text));
     } catch (e) {
       alert("Mesaj gönderilemedi: " + e.message);
     }
@@ -10666,6 +10685,148 @@
     renderThreadList();
   }
 
+  /* ---------------- Link previews ----------------
+     While typing a link, the push server fetches its title, description
+     and image (kind "link-preview"); it is shown above the input and sent
+     with the message, encrypted with the same message key in separate
+     fields (lpIv / lpCt), so the message text itself stays as it was.
+     The recipient's phone never contacts the site. Can be turned off. */
+
+  const LINK_PREVIEW_KEY = "calcut_link_previews";
+  const linkPreviewBar = document.getElementById("link-preview-bar");
+  let linkDraft = null; // { url, preview | null, dismissed }
+  let linkDraftTimer = null;
+
+  function linkPreviewsOn() {
+    try { return localStorage.getItem(LINK_PREVIEW_KEY) !== "off"; } catch (e) { return true; }
+  }
+
+  function firstLink(text) {
+    const m = (text || "").match(LINK_RE);
+    return m ? m[0] : null;
+  }
+
+  // Only what we show: short texts, an http(s) link and a small JPEG.
+  function parseLinkPreview(raw) {
+    const v = typeof raw === "string" ? parseJson(raw) : raw;
+    if (!v || typeof v.url !== "string" || !/^https?:\/\//.test(v.url)) return null;
+    const title = typeof v.title === "string" ? v.title.trim().slice(0, 200) : "";
+    const desc = typeof v.desc === "string" ? v.desc.trim().slice(0, 300) : "";
+    const image = typeof v.image === "string" && /^data:image\/jpeg;base64,[A-Za-z0-9+/=]+$/.test(v.image) && v.image.length < 200000 ? v.image : null;
+    if (!title && !desc) return null;
+    return { url: v.url, title, desc, image };
+  }
+
+  function linkHost(url) {
+    try { return new URL(url).hostname.replace(/^www\./, ""); } catch (e) { return ""; }
+  }
+
+  async function shrinkPreviewImage(dataUrl) {
+    try {
+      const img = await new Promise((resolve, reject) => {
+        const i = new Image();
+        i.onload = () => resolve(i);
+        i.onerror = reject;
+        i.src = dataUrl;
+      });
+      const scale = Math.min(1, 320 / Math.max(img.naturalWidth, img.naturalHeight));
+      const c = document.createElement("canvas");
+      c.width = Math.max(1, Math.round(img.naturalWidth * scale));
+      c.height = Math.max(1, Math.round(img.naturalHeight * scale));
+      c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
+      return c.toDataURL("image/jpeg", 0.75);
+    } catch (e) {
+      return null;
+    }
+  }
+
+  async function fetchLinkPreview(url) {
+    const r = await requestPush({ kind: "link-preview", url });
+    const d = r && r.status === 200 && r.data;
+    if (!d || d.error) return null;
+    const image = typeof d.image === "string" && /^data:image\/(jpeg|png|gif|webp);base64,/.test(d.image) ? await shrinkPreviewImage(d.image) : null;
+    return parseLinkPreview({ url, title: d.title, desc: d.desc, image });
+  }
+
+  function renderLinkCard(p, el) {
+    el.innerHTML = "";
+    if (p.image) {
+      const img = document.createElement("img");
+      img.src = p.image;
+      img.alt = "";
+      el.appendChild(img);
+    }
+    const text = document.createElement("span");
+    text.className = "link-card-text";
+    const t = document.createElement("b");
+    t.textContent = p.title || linkHost(p.url);
+    const d = document.createElement("small");
+    d.textContent = p.desc;
+    const h = document.createElement("small");
+    h.className = "link-card-host";
+    h.textContent = linkHost(p.url);
+    text.append(t, d, h);
+    el.appendChild(text);
+    return el;
+  }
+
+  function renderLinkPreview(p) {
+    const a = document.createElement("a");
+    a.className = "link-card msg-link";
+    a.href = p.url;
+    a.target = "_blank";
+    a.rel = "noopener noreferrer";
+    return renderLinkCard(p, a);
+  }
+
+  function updateLinkPreviewBar() {
+    const show = linkDraft && linkDraft.preview && !linkDraft.dismissed && messageInput.value.includes(linkDraft.url);
+    linkPreviewBar.classList.toggle("hidden", !show);
+    if (!show) return;
+    renderLinkCard(linkDraft.preview, document.getElementById("link-preview-card"));
+  }
+
+  function clearLinkDraft() {
+    clearTimeout(linkDraftTimer);
+    linkDraft = null;
+    updateLinkPreviewBar();
+  }
+
+  messageInput.addEventListener("input", () => {
+    clearTimeout(linkDraftTimer);
+    const url = linkPreviewsOn() ? firstLink(messageInput.value) : null;
+    if (!url) { clearLinkDraft(); return; }
+    if (linkDraft && linkDraft.url === url) { updateLinkPreviewBar(); return; }
+    linkDraftTimer = setTimeout(async () => {
+      const draft = { url, preview: null, dismissed: false };
+      linkDraft = draft;
+      updateLinkPreviewBar();
+      const preview = await fetchLinkPreview(url).catch(() => null);
+      if (linkDraft !== draft) return;
+      draft.preview = preview;
+      updateLinkPreviewBar();
+    }, 700);
+  });
+  document.getElementById("link-preview-close").addEventListener("click", () => {
+    if (linkDraft) linkDraft.dismissed = true;
+    updateLinkPreviewBar();
+  });
+
+  // The preview to send with this text, if one is ready for its link.
+  function takeLinkPreview(text) {
+    const d = linkDraft;
+    clearLinkDraft();
+    if (!d || d.dismissed || !d.preview || firstLink(text) !== d.url) return null;
+    return JSON.stringify(d.preview);
+  }
+
+  const linkPreviewToggle = document.getElementById("link-preview-toggle");
+  linkPreviewToggle.checked = linkPreviewsOn();
+  linkPreviewToggle.addEventListener("change", () => {
+    try { localStorage.setItem(LINK_PREVIEW_KEY, linkPreviewToggle.checked ? "on" : "off"); } catch (e) {}
+    if (!linkPreviewToggle.checked) clearLinkDraft();
+  });
+
   const viewOnceInput = document.getElementById("viewonce-input");
   document.getElementById("attach-viewonce-btn").addEventListener("click", () => {
     attachMenu.classList.add("hidden");
@@ -10931,6 +11092,7 @@
   // Leaving a chat (or locking) drops a pending reply and discards a recording.
   function leaveComposer() {
     stopSelecting();
+    clearLinkDraft();
     stashDraft();
     forgetVanish();
     translations.clear();
