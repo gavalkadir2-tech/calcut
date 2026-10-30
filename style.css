@@ -1540,3 +1540,41 @@ body.privacy-cover #calculator-view { position: fixed; inset: 0; z-index: 10000;
 
 /* Picked from the call screen too (adding people to a call). */
 #contact-picker-modal { z-index: 120; }
+
+/* Settings: a WhatsApp-like menu with a page per category */
+#settings-menu { display: flex; flex-direction: column; gap: 14px; }
+#settings-menu.hidden, .settings-section.hidden { display: none; }
+.settings-body #settings-menu button { margin: 0; text-align: left; }
+.settings-body .settings-card {
+  display: flex; align-items: center; gap: 14px; width: 100%;
+  background: var(--surface); border: 1px solid var(--divider); border-radius: 16px; padding: 14px; color: var(--panel-fg); cursor: pointer;
+}
+.settings-card .avatar { flex-shrink: 0; }
+.settings-card-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+#settings-card-name { font-size: 18px; font-weight: 600; }
+#settings-card-about { font-size: 13px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.settings-chevron { color: var(--muted); font-size: 22px; }
+.settings-group { background: var(--surface); border: 1px solid var(--divider); border-radius: 16px; overflow: hidden; }
+.settings-body .settings-row {
+  display: flex; align-items: center; gap: 14px; width: 100%; background: none; border: none; border-radius: 0;
+  border-bottom: 1px solid var(--divider); padding: 12px 14px; color: var(--panel-fg); cursor: pointer;
+}
+.settings-group .settings-row:last-child { border-bottom: none; }
+.settings-body .settings-row:active, .settings-body .settings-card:active { background: var(--press); }
+.settings-icon { width: 34px; height: 34px; border-radius: 10px; background: var(--surface-2); display: flex; align-items: center; justify-content: center; font-size: 18px; flex-shrink: 0; }
+.settings-row-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.settings-row-text b { font-size: 15px; font-weight: 600; }
+.settings-row-text small { font-size: 12.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.settings-row-text::after { content: none; }
+.settings-section { display: flex; flex-direction: column; animation: settings-in 0.18s ease-out; }
+@keyframes settings-in { from { opacity: 0; transform: translateX(14px); } to { opacity: 1; transform: none; } }
+.settings-section > select, #chat-font-select, #auto-dl-select, #default-disappearing { width: 100%; background: var(--surface); color: var(--panel-fg); border: 1px solid var(--border); border-radius: 8px; padding: 10px 8px; font-size: 14px; margin-bottom: 10px; }
+
+/* Accent colour and message text size */
+#accent-choices { display: flex; flex-wrap: wrap; gap: 12px; margin: 4px 0 14px; }
+.settings-body .accent-choice { width: 38px; height: 38px; border-radius: 50%; border: 3px solid transparent; padding: 0; margin: 0; cursor: pointer; box-shadow: 0 0 0 1px var(--border); }
+.settings-body .accent-choice.active { border-color: var(--panel-fg); }
+#settings-preview { display: flex; flex-direction: column; gap: 6px; background: var(--chat-bg); border-radius: 12px; padding: 12px; margin-bottom: 6px; }
+#settings-preview .msg-bubble { max-width: 85%; }
+.msg-bubble { font-size: var(--chat-font, 15px); }
+.jump-date { position: fixed; left: -9999px; top: 0; width: 1px; height: 1px; opacity: 0; }
