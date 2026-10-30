@@ -25,3 +25,15 @@ test("ASCII nicknames keep their old auth email; Turkish ones get a distinct ASC
   assert.match(e, /^[\x21-\x7e]+$/);
   assert.notStrictEqual(ns.nicknameToSyntheticEmail("ılık"), ns.nicknameToSyntheticEmail("ilik"));
 });
+
+test("names are shown with a capital first letter, the Turkish way", () => {
+  const { extract } = require("./helpers");
+  const nameCase = new Function(extract("  function nameCase(", "  function nicknameOf(") + "; return nameCase;")();
+  assert.strictEqual(nameCase("ilker"), "İlker");
+  assert.strictEqual(nameCase("çağrı"), "Çağrı");
+  assert.strictEqual(nameCase("ışık"), "Işık");
+  assert.strictEqual(nameCase("ayse_k"), "Ayse_k");
+  assert.strictEqual(nameCase("Ali"), "Ali");
+  assert.strictEqual(nameCase(""), "");
+  assert.strictEqual(nameCase(null), "");
+});
