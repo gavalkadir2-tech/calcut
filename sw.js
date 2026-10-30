@@ -1,4 +1,4 @@
-const CACHE_NAME = "calcut-shell-v4";
+const CACHE_NAME = "calcut-shell-v5";
 const SHELL_FILES = [
   "./",
   "./index.html",
@@ -102,7 +102,18 @@ self.addEventListener("push", (event) => {
     });
   }
   // Always show something: iOS revokes push permission for pushes that display nothing.
-  event.waitUntil(self.registration.showNotification(title, options));
+  const shown = self.registration.showNotification(title, options);
+  // A message push: tell the push server it arrived, so the sender sees
+  // two ticks before the app is opened (Code.gs deliveryAck_).
+  const ack = data.kind === "message" && typeof data.a === "string" && data.a.indexOf("https://script.google.com/") === 0
+    ? fetch(data.a, {
+      method: "POST",
+      mode: "no-cors",
+      headers: { "Content-Type": "text/plain;charset=utf-8" },
+      body: JSON.stringify({ kind: "ack", u: data.u, c: data.c, m: data.m, t: data.t }),
+    }).catch(() => {})
+    : Promise.resolve();
+  event.waitUntil(Promise.all([shown, ack]));
 });
 
 self.addEventListener("notificationclick", (event) => {
