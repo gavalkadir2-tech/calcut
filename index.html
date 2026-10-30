@@ -159,6 +159,7 @@
         <button id="attach-location-btn">📍 Konum</button>
         <button id="attach-contact-btn">👤 Kişi</button>
         <button id="attach-sticker-btn">🌟 Çıkartma</button>
+        <button id="attach-event-btn">📅 Etkinlik</button>
       </div>
       <p id="upload-status" class="hidden"></p>
       <div id="mention-picker" class="hidden"></div>
@@ -242,6 +243,7 @@
         </select>
         <p class="hint">Bundan sonra başlattığın sohbet ve gruplarda kaybolan mesajlar bu sürede açık gelir.</p>
         <button id="my-qr-btn" class="ghost wide">🔳 QR kodum</button>
+        <button id="storage-btn" class="ghost wide">💾 Depolama yönetimi</button>
         <hr>
         <label>Görünen Kullanıcı Adını Değiştir</label>
         <input id="new-nickname-input" type="text" placeholder="Yeni kullanıcı adı">
@@ -270,7 +272,7 @@
         <button id="enable-alarm-btn">Bildirimleri Etkinleştir</button>
         <button id="test-push-btn" class="ghost">Test bildirimi gönder</button>
         <p id="alarm-msg"></p>
-        <p class="app-version">Sürüm: 38</p>
+        <p class="app-version">Sürüm: 39</p>
         <div id="app-update-section" class="hidden">
           <hr>
           <label>Uygulama güncellemesi</label>
@@ -578,6 +580,32 @@
   </div>
 </div>
 <input id="status-photo-input" type="file" accept="image/*" class="hidden">
+<input id="status-video-input" type="file" accept="video/*" class="hidden">
+<div id="toast" class="hidden"></div>
+
+<div id="event-modal" class="modal hidden">
+  <div class="modal-box">
+    <h3>📅 Etkinlik</h3>
+    <input id="event-title" type="text" maxlength="100" placeholder="Etkinlik adı">
+    <input id="event-when" type="datetime-local">
+    <input id="event-place" type="text" maxlength="120" placeholder="Yer (isteğe bağlı)">
+    <div class="modal-actions">
+      <button id="event-cancel" class="ghost">İptal</button>
+      <button id="event-send">Gönder</button>
+    </div>
+  </div>
+</div>
+
+<div id="storage-modal" class="modal hidden">
+  <div class="modal-box storage-box">
+    <h3>💾 Depolama</h3>
+    <p id="storage-summary" class="hint"></p>
+    <div id="storage-list"></div>
+    <div class="modal-actions">
+      <button id="storage-close" class="ghost">Kapat</button>
+    </div>
+  </div>
+</div>
 
 <div id="action-sheet" class="hidden">
   <div class="action-sheet-box">

@@ -165,6 +165,9 @@ service cloud.firestore {
            changedKeys().hasOnly(['deleted', 'deletedAt', 'edited', 'editedAt', 'ciphertext', 'iv', 'wrappedKeys'])) ||
           // Each person may only change their own reaction or poll vote.
           (changedKeys().hasOnly(['reactions']) && onlyOwnEntryChanged('reactions')) ||
+          // Event replies: yes / maybe / no, each person only their own.
+          (changedKeys().hasOnly(['rsvp']) && resource.data.get('type', '') == 'event' && onlyOwnEntryChanged('rsvp') &&
+           (!(request.auth.uid in request.resource.data.rsvp) || request.resource.data.rsvp[request.auth.uid] in ['yes', 'maybe', 'no'])) ||
           // Group read / delivered receipts: each member adds only their own time.
           (changedKeys().hasOnly(['readBy', 'deliveredTo']) && resource.data.from != request.auth.uid &&
            onlyOwnEntryChanged('readBy') && onlyOwnEntryChanged('deliveredTo') &&
@@ -198,6 +201,17 @@ service cloud.firestore {
         changedKeys().hasOnly(['viewers']) && onlyOwnEntryChanged('viewers');
 
       allow delete: if isSignedIn() && resource.data.from == request.auth.uid;
+
+      // Encrypted pieces of a video status ({ from, idx, data }). Written
+      // before the status itself, so they carry their own author.
+      match /chunks/{chunkId} {
+        allow read: if isSignedIn() &&
+          (get(/databases/$(database)/documents/statuses/$(statusId)).data.from == request.auth.uid ||
+           request.auth.uid in get(/databases/$(database)/documents/statuses/$(statusId)).data.audience);
+        allow create: if isSignedIn() && request.resource.data.from == request.auth.uid &&
+          request.resource.data.data is string && request.resource.data.data.size() < 1000000;
+        allow delete: if isSignedIn() && resource.data.from == request.auth.uid;
+      }
     }
 
     // ---------------- calls ----------------

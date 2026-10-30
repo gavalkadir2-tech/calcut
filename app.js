@@ -1043,8 +1043,11 @@
     } catch (e) {}
   }
 
-  function triggerAlarmAlert() {
-    playAlarmSound();
+  // convId (optional): the chat it's for, which may have its own sound.
+  function triggerAlarmAlert(convId) {
+    const own = convId ? chatSoundFor(convId) : null;
+    if (own) playSoundOnce(own);
+    else playAlarmSound();
     showAlarmNotification();
     if (navigator.vibrate) {
       try { navigator.vibrate([300, 150, 300, 150, 300]); } catch (e) {}
@@ -1363,6 +1366,8 @@
           preview = "📍 Canlı konum";
         } else if (d.type === "sticker") {
           preview = "🌟 Çıkartma";
+        } else if (d.type === "event") {
+          preview = "📅 Etkinlik";
         } else if (d.type === "call") {
           if (mainTab === "calls") loadCallHistory();
           const raw = await decryptMessage(d).catch(() => null);
@@ -1475,7 +1480,7 @@
           // messages) and only if it's not the conversation currently open.
           const prev = previousUnread.get(change.doc.id);
           if (prev !== undefined && unread > prev && change.doc.id !== activeConvId && !(otherUid && myBlocked[otherUid]) && !muted) {
-            triggerAlarmAlert();
+            triggerAlarmAlert(change.doc.id);
           }
           previousUnread.set(change.doc.id, unread);
         });
@@ -2207,6 +2212,9 @@
     forgetSearchAndLiveData();
     closePhotoEditor(null);
     closeQrModal();
+    forgetStatusVideos();
+    hideToast();
+    ["event-modal", "storage-modal"].forEach(id => document.getElementById(id).classList.add("hidden"));
     ["sticker-picker", "broadcast-modal", "chat-unlock-modal", "contact-picker-modal"].forEach(id => document.getElementById(id).classList.add("hidden"));
     stopAllMessengerListeners();
     myPrivateKey = null;
@@ -2763,6 +2771,7 @@
         else if (m.type === "contact") text = "👤 Kişi";
         else if (m.type === "livelocation") text = "📍 Canlı konum";
         else if (m.type === "sticker") text = "🌟 Çıkartma";
+        else if (m.type === "event") text = "📅 Etkinlik";
         else if (m.type === "call") text = "📞 Arama kaydı";
         else text = m.content + (m.edited ? " (düzenlendi)" : "");
         line.appendChild(document.createTextNode(text));
@@ -2895,7 +2904,7 @@
         const expiresAt = d.expiresAt && d.expiresAt.toMillis ? d.expiresAt.toMillis() : 0;
         if (expiresAt <= Date.now()) {
           // Nobody needs an expired status: its author tidies it away.
-          if (d.from === myUid) change.doc.ref.delete().catch(() => {});
+          if (d.from === myUid) deleteStatusWithChunks(change.doc.ref).catch(() => {});
           statusDocs.delete(id);
           return;
         }
@@ -2972,6 +2981,7 @@
     showActionSheet("Yeni durum (24 saat)", [
       { label: "✏️ Yazı", run: addTextStatus },
       { label: "🖼️ Fotoğraf", run: () => document.getElementById("status-photo-input").click() },
+      { label: "🎬 Video (en fazla 30 sn)", run: () => document.getElementById("status-video-input").click() },
       { label: "🔒 Durum gizliliği", run: showStatusPrivacyMenu },
     ]);
   }
@@ -3117,6 +3127,40 @@
       t.className = "status-text";
       t.textContent = "🔒 Bu durum açılamadı";
       content.appendChild(t);
+    } else if (plain.kind === "video" && Number.isInteger(plain.n) && typeof plain.vIv === "string") {
+      const wait = document.createElement("div");
+      wait.className = "status-text";
+      wait.textContent = "🎬 Video yükleniyor…";
+      content.appendChild(wait);
+      let url = null;
+      try {
+        url = await statusVideoUrl(s, plain);
+      } catch (e) {
+        wait.textContent = "🎬 Video açılamadı";
+      }
+      if (statusQueue[statusIndex] !== s) return;
+      if (url) {
+        content.innerHTML = "";
+        const video = document.createElement("video");
+        video.src = url;
+        video.playsInline = true;
+        video.autoplay = true;
+        content.appendChild(video);
+        if (plain.text) {
+          const cap = document.createElement("div");
+          cap.className = "status-caption";
+          cap.textContent = plain.text;
+          content.appendChild(cap);
+        }
+        const fill = document.querySelector("#status-progress span:nth-child(" + (statusIndex + 1) + ") i");
+        if (fill) fill.style.transition = "none";
+        video.addEventListener("timeupdate", () => {
+          if (fill && video.duration) fill.style.width = (video.currentTime / video.duration * 100) + "%";
+        });
+        video.addEventListener("ended", () => { if (statusQueue[statusIndex] === s) showStatusAt(statusIndex + 1); });
+        // Autoplay with sound can be refused: play muted then.
+        video.play().catch(() => { video.muted = true; video.play().catch(() => {}); });
+      }
     } else if (plain.kind === "image" && typeof plain.image === "string" && plain.image.startsWith("data:image/")) {
       const img = document.createElement("img");
       img.src = plain.image;
@@ -3147,7 +3191,8 @@
         .update({ [`viewers.${myUid}`]: firebase.firestore.FieldValue.serverTimestamp() })
         .catch(() => {});
     }
-    statusTimer = setTimeout(() => showStatusAt(statusIndex + 1), STATUS_SHOW_MS);
+    // A video moves on when it ends (see above).
+    if (!(plain && plain.kind === "video")) statusTimer = setTimeout(() => showStatusAt(statusIndex + 1), STATUS_SHOW_MS);
   }
 
   document.getElementById("status-close").addEventListener("click", closeStatusViewer);
@@ -3172,7 +3217,7 @@
       return;
     }
     try {
-      await fbDb.collection("statuses").doc(s.id).delete();
+      await deleteStatusWithChunks(fbDb.collection("statuses").doc(s.id));
     } catch (e) {
       alert("Silinemedi: " + e.message);
     }
@@ -4629,8 +4674,10 @@
             type: d.type,
             from: d.from === myUid ? "me" : "them",
             fromNickname,
-            text: ["image", "file", "call", "audio", "poll", "location", "contact", "livelocation", "sticker"].includes(d.type) ? null : plain,
+            text: ["image", "file", "call", "audio", "poll", "location", "contact", "livelocation", "sticker", "event"].includes(d.type) ? null : plain,
             liveLocation: d.type === "livelocation" ? parseJson(plain) : null,
+            event: d.type === "event" ? parseJson(plain) : null,
+            rsvp: d.rsvp || {},
             sticker: d.type === "sticker" && isSticker(plain) ? plain : null,
             contact: d.type === "contact" ? parseJson(plain) : null,
             mentions: Array.isArray(d.mentions) ? d.mentions : [],
@@ -4838,6 +4885,7 @@
     if (m.contact) return "👤 @" + (m.contact.nickname || "kişi");
     if (m.liveLocation) return "📍 Canlı konum";
     if (m.sticker) return "🌟 Çıkartma";
+    if (m.event) return "📅 " + (m.event.title || "Etkinlik");
     if (m.image) return "📷 Fotoğraf";
     if (m.audio) return "🎤 Sesli mesaj";
     if (m.file) return "📄 " + (m.file.name || "Dosya");
@@ -5097,6 +5145,8 @@
         div.appendChild(renderContactCard(m.contact));
       } else if (m.liveLocation) {
         div.appendChild(renderLiveLocation(m));
+      } else if (m.event) {
+        div.appendChild(renderEvent(m));
       } else if (m.sticker) {
         div.classList.add("sticker");
         const img = document.createElement("img");
@@ -5441,6 +5491,16 @@
     const speedBtn = e.target.closest(".voice-speed");
     if (speedBtn) {
       cycleVoiceSpeed(speedBtn);
+      return;
+    }
+    const rsvpBtn = e.target.closest(".event-rsvp-btn");
+    if (rsvpBtn) {
+      setRsvp(rsvpBtn.dataset.msgId, rsvpBtn.dataset.rsvp);
+      return;
+    }
+    const icsBtn = e.target.closest(".event-ics-btn");
+    if (icsBtn) {
+      saveEventToCalendar(icsBtn.dataset.msgId);
       return;
     }
     const liveStop = e.target.closest(".live-stop-btn");
@@ -6404,6 +6464,7 @@
       actions.push({ label: "👥 Grup bilgisi", run: () => { renderGroupInfo(); groupInfoModal.classList.remove("hidden"); } });
     }
     actions.push({ label: "🎨 Duvar kağıdı", run: chooseWallpaper });
+    actions.push({ label: "🔔 Bildirim sesi" + (chatSoundFor(convId) ? " (özel)" : ""), run: chooseChatSound });
     actions.push(isChatLocked(convId)
       ? { label: "🔓 Sohbet kilidini kaldır", run: () => toggleChatLock(convId) }
       : { label: "🔒 Sohbeti kilitle", run: () => toggleChatLock(convId) });
@@ -7589,6 +7650,409 @@
     audio.addEventListener("ended", finish);
     audio.addEventListener("error", () => { el.textContent = "🎤 Çalınamadı"; });
     audio.play().catch(() => { el.textContent = "🎤 Çalınamadı, tekrar dokun"; });
+  }
+
+  /* ---------------- Toast ---------------- */
+
+  const toastEl = document.getElementById("toast");
+  let toastTimer = null;
+
+  function showToast(text, ms) {
+    clearTimeout(toastTimer);
+    toastEl.textContent = text;
+    toastEl.classList.remove("hidden");
+    if (ms) toastTimer = setTimeout(hideToast, ms);
+  }
+
+  function hideToast() {
+    clearTimeout(toastTimer);
+    toastEl.classList.add("hidden");
+  }
+
+  /* ---------------- Video statuses ----------------
+     Up to STATUS_VIDEO_MAX_S seconds. Big videos are re-recorded at 480p
+     first. The bytes are encrypted with the status key and stored in
+     statuses/{id}/chunks (written before the status itself). */
+
+  const STATUS_VIDEO_MAX_S = 30;
+  const STATUS_VIDEO_KEEP_BYTES = 6 * 1024 * 1024; // smaller files go as they are
+  const STATUS_VIDEO_MAX_BYTES = 14 * 1024 * 1024;
+  const STATUS_CHUNK_CHARS = 700 * 1024;
+  const statusVideoUrls = new Map(); // status id -> blob: URL
+
+  function loadVideoMeta(url) {
+    return new Promise((resolve, reject) => {
+      const v = document.createElement("video");
+      v.preload = "auto";
+      v.playsInline = true;
+      v.muted = true;
+      v.onloadedmetadata = () => resolve(v);
+      v.onerror = () => reject(new Error("video açılamadı"));
+      v.src = url;
+    });
+  }
+
+  // Re-records the video at 480p (and at most STATUS_VIDEO_MAX_S seconds)
+  // by playing it into a canvas; takes as long as the video plays.
+  async function shrinkStatusVideo(file, onProgress) {
+    const url = URL.createObjectURL(file);
+    try {
+      const v = await loadVideoMeta(url);
+      const length = Math.min(v.duration || 0, STATUS_VIDEO_MAX_S);
+      if (file.size <= STATUS_VIDEO_KEEP_BYTES && v.duration <= STATUS_VIDEO_MAX_S + 0.5) return file;
+      if (!window.MediaRecorder || !HTMLCanvasElement.prototype.captureStream) {
+        throw new Error("bu cihaz videoyu küçültemiyor; daha kısa bir video seç");
+      }
+      const scale = Math.min(1, 480 / Math.min(v.videoWidth, v.videoHeight));
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.round(v.videoWidth * scale / 2) * 2;
+      canvas.height = Math.round(v.videoHeight * scale / 2) * 2;
+      const ctx = canvas.getContext("2d");
+      const stream = canvas.captureStream(30);
+      let audioCtx = null;
+      try {
+        const Ctx = window.AudioContext || window.webkitAudioContext;
+        audioCtx = new Ctx();
+        const dest = audioCtx.createMediaStreamDestination();
+        audioCtx.createMediaElementSource(v).connect(dest); // not to the speakers
+        dest.stream.getAudioTracks().forEach(t => stream.addTrack(t));
+        v.muted = false;
+      } catch (e) { /* no sound then */ }
+      const mime = ["video/webm;codecs=vp8,opus", "video/webm", "video/mp4"].find(t => MediaRecorder.isTypeSupported(t)) || "";
+      const recorder = new MediaRecorder(stream, { mimeType: mime || undefined, videoBitsPerSecond: 1000000, audioBitsPerSecond: 64000 });
+      const parts = [];
+      recorder.ondataavailable = e => { if (e.data && e.data.size) parts.push(e.data); };
+      const done = new Promise(resolve => { recorder.onstop = resolve; });
+      let frame = null;
+      const draw = () => {
+        ctx.drawImage(v, 0, 0, canvas.width, canvas.height);
+        if (onProgress && length) onProgress(Math.min(1, v.currentTime / length));
+        if (v.currentTime >= length || v.ended) {
+          if (recorder.state !== "inactive") recorder.stop();
+          v.pause();
+          return;
+        }
+        frame = requestAnimationFrame(draw);
+      };
+      recorder.start(1000);
+      await v.play();
+      draw();
+      await done;
+      cancelAnimationFrame(frame);
+      stream.getTracks().forEach(t => t.stop());
+      if (audioCtx) audioCtx.close().catch(() => {});
+      return new Blob(parts, { type: recorder.mimeType || "video/webm" });
+    } finally {
+      URL.revokeObjectURL(url);
+    }
+  }
+
+  async function postVideoStatus(file) {
+    const audience = statusAudience();
+    if (!audience.length) {
+      alert("Durum paylaşmak için önce en az bir kişiyle sohbetin olmalı.");
+      return;
+    }
+    showToast("Video hazırlanıyor…");
+    const blob = await shrinkStatusVideo(file, p => showToast("Video hazırlanıyor… %" + Math.round(p * 100)));
+    if (blob.size > STATUS_VIDEO_MAX_BYTES) throw new Error("video çok büyük; daha kısa bir video seç");
+    const caption = (prompt("Açıklama (isteğe bağlı):") || "").trim().slice(0, 300);
+    const key = await makeMessageKey(audience);
+    if (!key) return;
+    const vIv = crypto.getRandomValues(new Uint8Array(12));
+    const data = b64encode(await crypto.subtle.encrypt({ name: "AES-GCM", iv: vIv }, key.aesKey, await blob.arrayBuffer()));
+    const ref = fbDb.collection("statuses").doc();
+    const n = Math.ceil(data.length / STATUS_CHUNK_CHARS);
+    for (let i = 0; i < n; i += 4) {
+      showToast("Video yükleniyor… %" + Math.round(i / n * 100));
+      const batch = fbDb.batch();
+      for (let j = i; j < Math.min(i + 4, n); j++) {
+        batch.set(ref.collection("chunks").doc(String(j)), { from: myUid, idx: j, data: data.slice(j * STATUS_CHUNK_CHARS, (j + 1) * STATUS_CHUNK_CHARS) });
+      }
+      await batch.commit();
+    }
+    const payload = { kind: "video", mime: blob.type || "video/webm", n, vIv: b64encode(vIv.buffer), text: caption };
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const ciphertext = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key.aesKey, new TextEncoder().encode(JSON.stringify(payload)));
+    await ref.set({
+      from: myUid,
+      audience,
+      kind: "video",
+      iv: b64encode(iv.buffer),
+      ciphertext: b64encode(ciphertext),
+      wrappedKeys: key.wrappedKeys,
+      ts: firebase.firestore.FieldValue.serverTimestamp(),
+      expiresAt: firebase.firestore.Timestamp.fromMillis(Date.now() + STATUS_TTL_MS),
+    });
+    showToast("Video durumu paylaşıldı ✓", 2500);
+  }
+
+  const statusVideoInput = document.getElementById("status-video-input");
+  statusVideoInput.addEventListener("change", async () => {
+    const file = statusVideoInput.files[0];
+    statusVideoInput.value = "";
+    if (!file) return;
+    try {
+      await postVideoStatus(file);
+    } catch (e) {
+      hideToast();
+      alert("Video durumu paylaşılamadı: " + (e && e.code === "permission-denied" ? "Firestore kurallarının güncellenmesi gerekiyor." : e.message));
+    }
+  });
+
+  async function statusVideoUrl(s, plain) {
+    if (statusVideoUrls.has(s.id)) return statusVideoUrls.get(s.id);
+    const wrapped = s.raw.wrappedKeys && s.raw.wrappedKeys[myUid];
+    if (!wrapped) throw new Error("no key");
+    const rawAes = await crypto.subtle.decrypt({ name: "RSA-OAEP" }, myPrivateKey, b64decode(wrapped));
+    const aesKey = await crypto.subtle.importKey("raw", rawAes, { name: "AES-GCM" }, false, ["decrypt"]);
+    const snap = await fbDb.collection("statuses").doc(s.id).collection("chunks").get();
+    const parts = snap.docs.map(d => d.data()).sort((a, b) => a.idx - b.idx);
+    if (parts.length !== plain.n) throw new Error("incomplete");
+    const bytes = await crypto.subtle.decrypt(
+      { name: "AES-GCM", iv: new Uint8Array(b64decode(plain.vIv)) }, aesKey, b64decode(parts.map(p => p.data).join(""))
+    );
+    const url = URL.createObjectURL(new Blob([bytes], { type: typeof plain.mime === "string" && plain.mime.startsWith("video/") ? plain.mime : "video/webm" }));
+    statusVideoUrls.set(s.id, url);
+    return url;
+  }
+
+  async function deleteStatusWithChunks(ref) {
+    const chunks = await ref.collection("chunks").get().catch(() => null);
+    await ref.delete();
+    if (chunks) await Promise.all(chunks.docs.map(d => d.ref.delete().catch(() => {})));
+  }
+
+  function forgetStatusVideos() {
+    statusVideoUrls.forEach(url => URL.revokeObjectURL(url));
+    statusVideoUrls.clear();
+  }
+
+  /* ---------------- Events ----------------
+     An "event" message: { title, when, place } (encrypted). Replies are
+     rsvp.{uid} = "yes" | "maybe" | "no" on the message, each person only
+     their own (firestore.rules). */
+
+  const eventModal = document.getElementById("event-modal");
+  const RSVP_LABELS = { yes: "✓ Katılıyorum", maybe: "? Belki", no: "✕ Katılmıyorum" };
+
+  document.getElementById("attach-event-btn").addEventListener("click", () => {
+    attachMenu.classList.add("hidden");
+    document.getElementById("event-title").value = "";
+    document.getElementById("event-place").value = "";
+    const soon = new Date(Date.now() + 86400000);
+    soon.setMinutes(0, 0, 0);
+    const pad = x => String(x).padStart(2, "0");
+    document.getElementById("event-when").value =
+      `${soon.getFullYear()}-${pad(soon.getMonth() + 1)}-${pad(soon.getDate())}T${pad(soon.getHours())}:00`;
+    eventModal.classList.remove("hidden");
+  });
+  document.getElementById("event-cancel").addEventListener("click", () => eventModal.classList.add("hidden"));
+  document.getElementById("event-send").addEventListener("click", async () => {
+    const title = document.getElementById("event-title").value.trim();
+    const when = new Date(document.getElementById("event-when").value).getTime();
+    const place = document.getElementById("event-place").value.trim();
+    if (!title || !Number.isFinite(when)) {
+      alert("Etkinlik adı ve tarihi gerekli.");
+      return;
+    }
+    eventModal.classList.add("hidden");
+    try {
+      await sendEncrypted(JSON.stringify({ title, when, place }), "event", takeReplyFields());
+    } catch (e) {
+      alert("Etkinlik gönderilemedi: " + e.message);
+    }
+  });
+
+  function formatEventTime(ms) {
+    return new Date(ms).toLocaleString("tr-TR", { weekday: "long", day: "numeric", month: "long", hour: "2-digit", minute: "2-digit" });
+  }
+
+  function renderEvent(m) {
+    const ev = m.event;
+    const box = document.createElement("div");
+    box.className = "event-card";
+    const title = document.createElement("span");
+    title.className = "event-title";
+    title.textContent = "📅 " + String(ev.title || "Etkinlik");
+    box.appendChild(title);
+    if (Number.isFinite(Number(ev.when))) {
+      const when = document.createElement("span");
+      when.className = "event-when";
+      when.textContent = "🕒 " + formatEventTime(Number(ev.when)) + (Number(ev.when) < Date.now() ? " (geçti)" : "");
+      box.appendChild(when);
+    }
+    if (ev.place) {
+      const place = document.createElement("span");
+      place.className = "event-place";
+      place.textContent = "📍 " + String(ev.place);
+      box.appendChild(place);
+    }
+    const rsvp = m.rsvp || {};
+    const mine = rsvp[myUid];
+    const row = document.createElement("div");
+    row.className = "event-rsvp";
+    Object.keys(RSVP_LABELS).forEach(k => {
+      const count = Object.values(rsvp).filter(v => v === k).length;
+      const b = document.createElement("button");
+      b.className = "event-rsvp-btn" + (mine === k ? " mine" : "");
+      b.dataset.msgId = m.id;
+      b.dataset.rsvp = k;
+      b.textContent = RSVP_LABELS[k] + (count ? " · " + count : "");
+      row.appendChild(b);
+    });
+    box.appendChild(row);
+    const ics = document.createElement("button");
+    ics.className = "event-ics-btn";
+    ics.dataset.msgId = m.id;
+    ics.textContent = "🗓 Takvime ekle";
+    box.appendChild(ics);
+    return box;
+  }
+
+  async function setRsvp(msgId, value) {
+    const m = currentMessages.find(x => x.id === msgId);
+    if (!m) return;
+    const same = (m.rsvp || {})[myUid] === value;
+    try {
+      await fbDb.collection("conversations").doc(activeConvId).collection("messages").doc(msgId).update({
+        [`rsvp.${myUid}`]: same ? firebase.firestore.FieldValue.delete() : value,
+      });
+    } catch (e) {
+      alert(e && e.code === "permission-denied"
+        ? "Yanıt verilemedi: Firestore kurallarının güncellenmesi gerekiyor."
+        : "Yanıt verilemedi: " + e.message);
+    }
+  }
+
+  // A small .ics file the phone's calendar app can open.
+  function eventIcs(ev) {
+    const stamp = ms => new Date(ms).toISOString().replace(/[-:]/g, "").replace(/\.\d{3}/, "");
+    const esc = t => String(t || "").replace(/[\\,;]/g, c => "\\" + c).replace(/\n/g, "\\n");
+    const start = Number(ev.when);
+    return [
+      "BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//calcut//TR", "BEGIN:VEVENT",
+      "UID:" + start + "-" + Math.random().toString(36).slice(2) + "@calcut",
+      "DTSTAMP:" + stamp(Date.now()), "DTSTART:" + stamp(start), "DTEND:" + stamp(start + 3600000),
+      "SUMMARY:" + esc(ev.title), ev.place ? "LOCATION:" + esc(ev.place) : null,
+      "END:VEVENT", "END:VCALENDAR",
+    ].filter(Boolean).join("\r\n");
+  }
+
+  async function saveEventToCalendar(msgId) {
+    const m = currentMessages.find(x => x.id === msgId);
+    if (!m || !m.event || !Number.isFinite(Number(m.event.when))) return;
+    const file = new File([eventIcs(m.event)], "etkinlik.ics", { type: "text/calendar" });
+    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+      try { await navigator.share({ files: [file] }); return; } catch (e) { if (e && e.name === "AbortError") return; }
+    }
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(file);
+    a.download = "etkinlik.ics";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+  }
+
+  /* ---------------- Storage ----------------
+     How much each chat's photos, videos, voice messages and files take in
+     the database (estimated from the message sizes, without downloading
+     them), and deleting them for everyone to free space. */
+
+  const STORAGE_MEDIA_TYPES = ["image", "file", "audio", "sticker"];
+  const storageModal = document.getElementById("storage-modal");
+
+  function estimatedBytes(d) {
+    if (d.chunked) return d.chunked.n * (d.chunked.bin ? BIN_CHUNK_BYTES * 1.37 : CHUNK_CHARS);
+    return (d.ciphertext || "").length;
+  }
+
+  function formatBytes(n) {
+    if (n >= 1024 * 1024) return (n / 1024 / 1024).toFixed(1).replace(".", ",") + " MB";
+    return Math.max(1, Math.round(n / 1024)) + " KB";
+  }
+
+  async function chatStorage(c) {
+    const snap = await fbDb.collection("conversations").doc(c.id).collection("messages").orderBy("ts").get();
+    let total = 0;
+    const media = [];
+    snap.docs.forEach(doc => {
+      const d = doc.data();
+      const bytes = estimatedBytes(d);
+      total += bytes;
+      if (STORAGE_MEDIA_TYPES.includes(d.type) && !d.deleted) media.push({ ref: doc.ref, chunked: d.chunked || null, bytes });
+    });
+    return { c, total, count: snap.size, media, mediaBytes: media.reduce((a, m) => a + m.bytes, 0) };
+  }
+
+  async function openStorage() {
+    const list = document.getElementById("storage-list");
+    const summary = document.getElementById("storage-summary");
+    list.innerHTML = "";
+    summary.textContent = "Hesaplanıyor…";
+    storageModal.classList.remove("hidden");
+    const rows = (await Promise.all([...conversations.values()].map(c => chatStorage(c).catch(() => null)))).filter(Boolean);
+    rows.sort((a, b) => b.total - a.total);
+    const total = rows.reduce((a, r) => a + r.total, 0);
+    summary.textContent = "Toplam yaklaşık " + formatBytes(total) + " (ücretsiz kota: 1 GB). Bir sohbete dokunup medyasını silebilirsin.";
+    rows.forEach(r => {
+      const row = galleryRow(r.c.isGroup ? "👥" : "💬", r.c.isGroup ? r.c.groupName : "@" + r.c.otherNickname,
+        formatBytes(r.total) + " · " + r.count + " mesaj · medya " + formatBytes(r.mediaBytes) + " (" + r.media.length + ")");
+      row.addEventListener("click", () => {
+        if (!r.media.length) {
+          alert("Bu sohbette silinecek medya yok.");
+          return;
+        }
+        if (!confirm("Bu sohbetteki " + r.media.length + " fotoğraf, video, sesli mesaj ve dosya (" + formatBytes(r.mediaBytes) + ") herkesten silinsin mi? Geri alınamaz.")) return;
+        deleteChatMedia(r).then(openStorage);
+      });
+      list.appendChild(row);
+    });
+  }
+
+  async function deleteChatMedia(r) {
+    showToast("Siliniyor…");
+    for (let i = 0; i < r.media.length; i++) {
+      showToast("Siliniyor… " + (i + 1) + "/" + r.media.length);
+      const m = r.media[i];
+      await m.ref.delete().catch(() => {});
+      await deleteChunks(m.chunked).catch(() => {});
+    }
+    showToast("Silindi ✓", 2000);
+  }
+
+  document.getElementById("storage-btn").addEventListener("click", openStorage);
+  document.getElementById("storage-close").addEventListener("click", () => storageModal.classList.add("hidden"));
+
+  /* ---------------- Per-chat notification sound ----------------
+     A chat can ring with its own sound while the app is open. Background
+     notifications don't say which chat they're from (by design), so those
+     use the sound set in Settings. Kept on this device. */
+
+  function chatSoundFor(convId) {
+    const m = localSessionData && localSessionData.chatSounds;
+    const id = m && typeof m === "object" ? m[convId] : null;
+    return id && SOUND_PRESETS[id] ? id : null;
+  }
+
+  function chooseChatSound() {
+    const convId = activeConvId;
+    if (!convId || !localSessionData) return;
+    const current = chatSoundFor(convId);
+    const set = async id => {
+      const sounds = { ...(localSessionData.chatSounds || {}) };
+      if (id) sounds[convId] = id;
+      else delete sounds[convId];
+      localSessionData.chatSounds = sounds;
+      await saveLocalPrefs();
+      if (id) playSoundOnce(id);
+    };
+    const actions = [{ label: (current ? "" : "✓ ") + "Varsayılan (Ayarlar'daki)", run: () => set(null) }];
+    Object.keys(SOUND_PRESETS).forEach(id => {
+      actions.push({ label: (current === id ? "✓ " : "") + SOUND_PRESETS[id].name, run: () => set(id) });
+    });
+    showActionSheet("Bu sohbetin bildirim sesi (uygulama açıkken)", actions);
   }
 
   const viewOnceInput = document.getElementById("viewonce-input");
