@@ -8,6 +8,7 @@
 //   { idToken, kind: "message", convId, msgId } | { idToken, kind: "call" | "call-missed", callId }
 //   | { idToken, kind: "test" } | { idToken, kind: "register-token" | "unregister-token", token }
 //   | { idToken, kind: "schedule" } (starts the every-minute delivery of scheduled messages)
+//   | { idToken, kind: "gif-search", q } | { idToken, kind: "gif-fetch", url } (Tenor, script property TENOR_KEY)
 // The ID token is checked with Google (Identity Toolkit accounts:lookup), the
 // sender is verified in Firestore, then a data-only FCM push goes to the
 // recipients' devices (users/{uid}.fcmTokens).
@@ -20,7 +21,7 @@
 // run setup() once from the editor (▶ Run) and allow it: that lets the
 // script start its own every-minute timer.
 
-const WORKER_VERSION = 5;
+const WORKER_VERSION = 6;
 // The Firebase web API key (public, same as in firebase-config.js); only used
 // to ask Google whether an ID token is valid.
 const FIREBASE_API_KEY = "AIzaSyB0JTRgod2uk5KtYtnd4OLiG0LQ5qwxEwI";
@@ -39,6 +40,8 @@ function doPost(e) {
     if (!uid) return json_({ error: "unauthorized", v: WORKER_VERSION });
     if (body.kind === "ice-servers") return json_({ iceServers: turnIceServers_(), v: WORKER_VERSION });
     if (body.kind === "link-token") return json_({ token: customToken_(sa, uid), v: WORKER_VERSION });
+    if (body.kind === "gif-search") return json_(Object.assign(gifSearch_(body.q), { v: WORKER_VERSION }));
+    if (body.kind === "gif-fetch") return json_(Object.assign(gifFetch_(body.url), { v: WORKER_VERSION }));
     if (body.kind === "schedule") {
       try {
         ensureScheduleTrigger_();
@@ -177,6 +180,38 @@ function pushToUser_(fs, sa, toUid, fromUid, data) {
     }
   });
   return sent;
+}
+
+/* ---------------- GIF search (Tenor) ----------------
+   Script property TENOR_KEY: a Google Cloud API key with the Tenor API
+   enabled (free). The search goes through here, and so does the chosen
+   GIF, which the app then sends encrypted like a photo. */
+
+function gifSearch_(q) {
+  const key = PropertiesService.getScriptProperties().getProperty("TENOR_KEY");
+  if (!key) return { error: "TENOR_KEY script property is missing" };
+  const query = typeof q === "string" ? q.trim().slice(0, 80) : "";
+  const params = "key=" + encodeURIComponent(key) + "&client_key=calcut&limit=24&media_filter=gif,tinygif&locale=tr_TR&contentfilter=medium";
+  const url = query
+    ? "https://tenor.googleapis.com/v2/search?q=" + encodeURIComponent(query) + "&" + params
+    : "https://tenor.googleapis.com/v2/featured?" + params;
+  const res = UrlFetchApp.fetch(url, { muteHttpExceptions: true });
+  if (res.getResponseCode() !== 200) return { error: "tenor " + res.getResponseCode() };
+  const results = (JSON.parse(res.getContentText()).results || []).map(r => {
+    const f = r.media_formats || {};
+    const big = f.gif && f.gif.size && f.gif.size <= 2500000 ? f.gif : f.tinygif;
+    return f.tinygif && big ? { preview: f.tinygif.url, url: big.url } : null;
+  }).filter(Boolean);
+  return { results: results };
+}
+
+function gifFetch_(url) {
+  if (typeof url !== "string" || !/^https:\/\/media\.tenor\.com\/[A-Za-z0-9_\-\/.]+\.gif$/.test(url)) return { error: "bad url" };
+  const res = UrlFetchApp.fetch(url, { muteHttpExceptions: true });
+  if (res.getResponseCode() !== 200) return { error: "tenor " + res.getResponseCode() };
+  const bytes = res.getContent();
+  if (bytes.length > 4000000) return { error: "too big" };
+  return { dataUrl: "data:image/gif;base64," + Utilities.base64Encode(bytes) };
 }
 
 /* ---------------- Scheduled messages ----------------

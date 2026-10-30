@@ -41,6 +41,15 @@ için "Alarm" görünümlü, sesli ve titreşimli bildirim gelir. Firebase'in
       ekle. Adresi tarayıcıda açınca `"method not allowed"` yazmalı.
    7. Kodu sonradan güncellersen: *Dağıt* → *Dağıtımları yönet* → ✏️ → Sürüm:
       *Yeni sürüm* → *Dağıt* (adres değişmez).
+   8. Zamanlanmış mesajlar için bir kez: düzenleyicinin üstündeki işlev
+      listesinden `setup`'ı seç → ▶ *Çalıştır* → izin ver.
+   9. (İsteğe bağlı) GIF araması: https://console.cloud.google.com → Firebase
+      projeni seç → *API'ler ve Hizmetler* → *Kitaplık* → "Tenor API" →
+      *Etkinleştir*; sonra *Kimlik bilgileri* → *Kimlik bilgisi oluştur* →
+      *API anahtarı* → anahtarı kopyala. Apps Script → ⚙️ *Proje Ayarları* →
+      *Komut dosyası özelliği ekle* → Özellik: `TENOR_KEY`, Değer: anahtar.
+      Aramalar ve seçilen GIF bu sunucudan geçer; önizleme küçük resimleri
+      Tenor'dan (media.tenor.com) yüklenir.
 4. **Firestore kuralı gerekmez:** Cihaz anahtarları (`users/{uid}.fcmTokens`)
    sunucu tarafından servis hesabıyla kaydedilir.
 5. Siteyi her zamanki gibi HTTPS üzerinden yayınla.
