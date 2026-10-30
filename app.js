@@ -2620,7 +2620,8 @@
     } else if (r.status === 200 && r.data && r.data.sent > 0) {
       msgEl.textContent = "✅ Test bildirimi gönderildi. Birkaç saniye içinde \"Alarm\" bildirimi gelmeli. Geldiyse kurulum tamam.";
       const turn = await refreshTurnServers(true);
-      msgEl.textContent += turn ? " · Arama aktarma sunucusu (TURN): açık ✅" : " · Arama aktarma sunucusu (TURN): kurulu değil";
+      msgEl.textContent += turn ? " · Arama aktarma sunucusu (TURN): açık ✅"
+        : " · Arama aktarma sunucusu (TURN): kurulu değil — " + (turnProblem || "neden bilinmiyor");
     } else if (r.status === 200) {
       msgEl.textContent = "⚠️ Sunucu bu cihaza ulaşamadı (gönderilen: 0). Bildirimleri Etkinleştir'e tekrar bas.";
     } else {
@@ -3567,6 +3568,7 @@
   let turnIceServers = null;
   let turnFetchedAt = 0;
   let turnFetch = null;
+  let turnProblem = ""; // why there is no TURN, for Settings' push test
 
   function refreshTurnServers(force) {
     if (!force && turnFetchedAt && Date.now() - turnFetchedAt < TURN_CACHE_MS) return Promise.resolve(turnIceServers);
@@ -3575,10 +3577,27 @@
         const list = r && r.status === 200 && r.data && Array.isArray(r.data.iceServers) ? r.data.iceServers : null;
         turnIceServers = list && list.length ? list : null;
         turnFetchedAt = Date.now();
+        turnProblem = turnProblemText(r);
         return turnIceServers;
       }).catch(() => turnIceServers).finally(() => { turnFetch = null; });
     }
     return turnFetch;
+  }
+
+  function turnProblemText(r) {
+    if (!r || r.error) return "bildirim sunucusuna ulaşılamadı";
+    const err = r.data && r.data.error ? String(r.data.error) : "";
+    if (/TURN 40[13]/.test(err)) return "TURN sağlayıcısı anahtarı kabul etmedi (API key / Token hatalı)";
+    if (/TURN 404/.test(err)) return "TURN sağlayıcısı bulunamadı (METERED_APP adı hatalı olabilir)";
+    if (err) return "sunucu hata verdi: " + err.slice(0, 160);
+    if (r.data && r.data.iceServers === undefined) {
+      return "sunucudaki Code.gs eski: güncel Code.gs'i yapıştırıp Dağıt → Dağıtımları yönet → Yeni sürüm ile dağıt";
+    }
+    if (r.data && r.data.iceServers === null) {
+      return "sunucuda METERED_APP ve METERED_API_KEY (ya da TURN_KEY_ID ve TURN_KEY_TOKEN) özellikleri bulunamadı";
+    }
+    if (r.data && Array.isArray(r.data.iceServers) && !r.data.iceServers.length) return "TURN sağlayıcısı boş liste döndürdü";
+    return "";
   }
 
   // The ICE servers for a new call: STUN, plus TURN if available. Waits at
