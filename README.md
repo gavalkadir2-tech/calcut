@@ -64,14 +64,22 @@ arama sesi/görüntüsü Cloudflare'in TURN sunucuları üzerinden aktarılır. 
 yine uçtan uca şifrelidir; sunucu yalnızca paketleri iletir. Kurulmazsa
 aramalar eskisi gibi yalnızca STUN ile çalışır.
 
-1. Cloudflare panosu → **Realtime** (eski adı *Calls*) → **TURN Server** →
-   **Create** → bir ad ver → oluşturunca çıkan **Turn Token ID** ve **API Token**'ı kopyala.
+İki sağlayıcıdan biri yeter:
+
+- **Metered / Open Relay** (kredi kartı istemez, ayda ~20 GB ücretsiz):
+  https://www.metered.ca/tools/openrelay/ → ücretsiz hesap aç → panoda uygulamanın
+  adresi `xyz.metered.live` olur; *TURN Server → Credentials* bölümünden bir **API key**
+  al. Özellikler: `METERED_APP` = `xyz`, `METERED_API_KEY` = API key.
+- **Cloudflare Realtime** (ayda 1000 GB ücretsiz, ama kart ister): pano → **Realtime**
+  (eski adı *Calls*) → **TURN Server** → **Create** → **Turn Token ID** ve **API Token**.
+  Özellikler: `TURN_KEY_ID`, `TURN_KEY_TOKEN`. İkisi de kuruluysa bu kullanılır.
+
+1. Yukarıdan birini seç ve değerleri al.
 2. **Google Apps Script** (asıl bildirim sunucusu): proje → ⚙️ *Proje Ayarları* →
-   *Komut dosyası özellikleri* → iki özellik ekle: `TURN_KEY_ID` = Turn Token ID,
-   `TURN_KEY_TOKEN` = API Token → kaydet. `apps-script/Code.gs`'in güncel hâlini
+   *Komut dosyası özellikleri* → seçtiğin sağlayıcının iki özelliğini ekle → kaydet. `apps-script/Code.gs`'in güncel hâlini
    yapıştırıp *Dağıt → Dağıtımları yönet → ✏️ → Yeni sürüm → Dağıt*.
 3. (İsteğe bağlı) Cloudflare yedeği `calcut-bildirim`: Pages projesi → *Settings*
-   → *Variables and Secrets* → aynı iki değeri **Secret** olarak ekle.
+   → *Variables and Secrets* → aynı iki değeri aynı adlarla **Secret** olarak ekle.
 4. Uygulamada Ayarlar → *Test bildirimi gönder*: sonunda "Arama aktarma sunucusu
    (TURN): açık ✅" yazmalı.
 
