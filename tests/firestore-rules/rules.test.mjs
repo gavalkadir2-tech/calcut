@@ -250,3 +250,22 @@ test("multiple-choice poll votes: a list of indexes, only your own", async () =>
   await assertFails(updateDoc(doc(as("bob"), "conversations/c1/messages/p1"), { "votes.bob": "çok" }));
   await assertFails(updateDoc(doc(as("bob"), "conversations/c1/messages/p1"), { "votes.alice": [1] }));
 });
+
+test("event replies: yes / maybe / no, only your own, only on events", async () => {
+  await seed();
+  await env.withSecurityRulesDisabled(ctx => setDoc(doc(ctx.firestore(), "conversations/c1/messages/e1"), { from: "alice", type: "event", ts: Timestamp.now() }));
+  await assertSucceeds(updateDoc(doc(as("bob"), "conversations/c1/messages/e1"), { "rsvp.bob": "yes" }));
+  await assertSucceeds(updateDoc(doc(as("alice"), "conversations/c1/messages/e1"), { "rsvp.alice": "maybe" }));
+  await assertFails(updateDoc(doc(as("bob"), "conversations/c1/messages/e1"), { "rsvp.bob": "evet" }));
+  await assertFails(updateDoc(doc(as("bob"), "conversations/c1/messages/e1"), { "rsvp.alice": "no" }));
+  await assertFails(updateDoc(doc(as("bob"), "conversations/c1/messages/m1"), { "rsvp.bob": "yes" }));
+});
+test("video status chunks: author writes, audience reads, others can't", async () => {
+  await seed();
+  await assertSucceeds(setDoc(doc(as("alice"), "statuses/s1/chunks/0"), { from: "alice", idx: 0, data: "abc" }));
+  await assertFails(setDoc(doc(as("bob"), "statuses/s1/chunks/1"), { from: "alice", idx: 1, data: "x" }));
+  await assertSucceeds(getDocs(collection(as("bob"), "statuses/s1/chunks")));
+  await assertFails(getDocs(collection(as("carol"), "statuses/s1/chunks")));
+  await assertFails(deleteDoc(doc(as("bob"), "statuses/s1/chunks/0")));
+  await assertSucceeds(deleteDoc(doc(as("alice"), "statuses/s1/chunks/0")));
+});
