@@ -175,6 +175,15 @@
         <button id="reply-bar-cancel" title="Yanıtı iptal et">✕</button>
       </div>
       <button id="scheduled-bar" class="hidden"></button>
+      <div id="select-bar" class="hidden">
+        <button id="select-cancel" title="Seçimi bitir">✕</button>
+        <span id="select-count"></span>
+        <button id="select-star" title="Yıldızla">⭐</button>
+        <button id="select-copy" title="Kopyala">📋</button>
+        <button id="select-forward" title="İlet">➡️</button>
+        <button id="select-hide" title="Benden sil">🙈</button>
+        <button id="select-delete-all" title="Herkesten sil">🗑</button>
+      </div>
       <div id="emoji-panel" class="hidden">
         <div class="emoji-tabs">
           <button data-tab="emoji" class="active">😊 Emoji</button>
@@ -417,7 +426,7 @@
         </section>
 
         <section class="settings-section hidden" data-section="about" data-title="Hakkında ve hesap">
-          <p class="app-version">Sürüm: 47</p>
+          <p class="app-version">Sürüm: 48</p>
           <div id="app-update-section" class="hidden">
             <label>Uygulama güncellemesi</label>
             <p id="app-update-msg" class="hint"></p>
@@ -481,7 +490,7 @@
 
 <div id="forward-modal" class="modal hidden">
   <div class="modal-box">
-    <h3>Mesajı İlet</h3>
+    <h3 id="forward-title">Mesajı İlet</h3>
     <ul id="forward-thread-list"></ul>
     <div class="modal-actions">
       <button id="forward-cancel" class="ghost">İptal</button>
@@ -758,6 +767,23 @@
       <button id="event-cancel" class="ghost">İptal</button>
       <button id="event-send">Gönder</button>
     </div>
+  </div>
+</div>
+
+<div id="contact-info-modal" class="modal hidden">
+  <div class="modal-box contact-info-box">
+    <span id="contact-info-avatar" class="avatar large"></span>
+    <h3 id="contact-info-name"></h3>
+    <p id="contact-info-presence" class="hint"></p>
+    <p id="contact-info-about"></p>
+    <div class="contact-info-actions">
+      <button id="contact-info-media" class="ghost">🖼<span>Medya</span></button>
+      <button id="contact-info-search" class="ghost">🔍<span>Ara</span></button>
+      <button id="contact-info-more" class="ghost">⋯<span>Diğer</span></button>
+    </div>
+    <p id="contact-info-groups-title" class="sub-label"></p>
+    <ul id="contact-info-groups"></ul>
+    <button id="contact-info-close" class="ghost">Kapat</button>
   </div>
 </div>
 
