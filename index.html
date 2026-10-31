@@ -167,6 +167,7 @@
       </div>
       <p id="upload-status" class="hidden"></p>
       <div id="mention-picker" class="hidden"></div>
+      <div id="quick-picker" class="hidden"></div>
       <div id="reply-bar" class="hidden">
         <div class="reply-bar-text">
           <span id="reply-bar-sender"></span>
@@ -379,6 +380,11 @@
             <div class="msg-bubble me">İyiyim, sen? Akşam görüşelim 🙂</div>
           </div>
           <hr>
+          <label>Hızlı yanıtlar</label>
+          <p class="hint">Mesaj kutusuna / ve kısayolu yaz (ör. /adres), kayıtlı metin gelsin. Bu cihazda saklanır.</p>
+          <ul id="quick-replies-list"></ul>
+          <button id="quick-reply-add" class="ghost">➕ Hızlı yanıt ekle</button>
+          <hr>
           <label>Otomatik yanıt</label>
           <p class="hint">Açıkken birebir sohbetlerde sana yazanlara, telefonun kapalı olsa bile en fazla 6 saatte bir bu yanıt gider. Yanıt uçtan uca şifreli kalır.</p>
           <textarea id="away-text" rows="2" maxlength="500" placeholder="Şu an müsait değilim, sonra yazacağım."></textarea>
@@ -442,7 +448,7 @@
         </section>
 
         <section class="settings-section hidden" data-section="about" data-title="Hakkında ve hesap">
-          <p class="app-version">Sürüm: 53</p>
+          <p class="app-version">Sürüm: 54</p>
           <div id="app-update-section" class="hidden">
             <label>Uygulama güncellemesi</label>
             <p id="app-update-msg" class="hint"></p>
@@ -548,6 +554,7 @@
       <button id="new-thread-cancel" class="ghost">İptal</button>
       <button id="new-thread-create">Ekle</button>
     </div>
+    <button id="self-chat-btn" class="ghost wide">📝 Kendime mesaj (notlarım)</button>
     <button id="qr-scan-btn" class="ghost wide">📷 QR kod okut</button>
     <button id="broadcast-open-btn" class="ghost wide">📢 Toplu mesaj gönder</button>
   </div>
@@ -828,6 +835,19 @@
 </div>
 
 <input id="jump-date-input" type="date" class="jump-date">
+
+<div id="voice-status-modal" class="modal hidden" data-state="ready">
+  <div class="modal-box voice-status-box">
+    <h3>🎤 Sesli durum</h3>
+    <p id="vs-timer"></p>
+    <audio id="vs-preview" class="hidden" controls></audio>
+    <button id="vs-record">⏺ Kaydet</button>
+    <div class="modal-actions">
+      <button id="vs-cancel" class="ghost">İptal</button>
+      <button id="vs-send" class="hidden">Paylaş</button>
+    </div>
+  </div>
+</div>
 
 <div id="intruder-modal" class="modal hidden">
   <div class="modal-box">

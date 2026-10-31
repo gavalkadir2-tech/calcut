@@ -1465,6 +1465,7 @@
           const existing = conversations.get(change.doc.id) || {};
           conversations.set(change.doc.id, {
             id: change.doc.id,
+            isSelf: !!d.isSelf,
             otherUid,
             otherNickname,
             otherUids,
@@ -1574,7 +1575,7 @@
   // and by "Ayarları dışa / içe aktar".
   const DEVICE_PREF_KEYS = ["pinned", "archived", "starred", "hiddenMsgs", "wallpapers", "lockedChats", "broadcastLists",
     "stickers", "deletedChats", "chatSounds", "statusPrivacy", "defaultDisappearing", "drafts", "recentEmojis",
-    "chatLists", "awayOn", "awayText", "clearedChats", "liveTranslate"];
+    "chatLists", "awayOn", "awayText", "clearedChats", "liveTranslate", "markedUnread", "quickReplies"];
 
   function devicePrefsOf(d) {
     const out = {};
@@ -1703,6 +1704,9 @@
     const actions = [];
     if (!archived) actions.push({ label: pinned ? "📌 Sabitlemeyi kaldır" : "📌 Sabitle", run: () => togglePin(conv.id) });
     actions.push({ label: archived ? "🗄️ Arşivden çıkar" : "🗄️ Arşivle", run: () => toggleArchive(conv.id) });
+    actions.push(conv.unread > 0 || markedUnread(conv.id)
+      ? { label: "✔️ Okundu olarak işaretle", run: () => { setMarkedUnread(conv.id, false); fbDb.collection("conversations").doc(conv.id).update({ [`unreadCount.${myUid}`]: 0 }).catch(() => {}); } }
+      : { label: "🔵 Okunmadı olarak işaretle", run: () => setMarkedUnread(conv.id, true) });
     actions.push({ label: "🗑 Sohbeti sil", danger: true, run: () => askDeleteChat(conv) });
     showActionSheet(conv.isGroup ? conv.groupName : nameCase(conv.otherNickname), actions);
   }
@@ -1994,7 +1998,7 @@
 
   function threadMatchesFilter(conv) {
     if (threadFilter.startsWith("list:")) return chatListMatches(conv);
-    if (threadFilter === "unread") return conv.unread > 0;
+    if (threadFilter === "unread") return conv.unread > 0 || markedUnread(conv.id);
     if (threadFilter === "groups") return conv.isGroup;
     return true;
   }
@@ -2118,7 +2122,7 @@
         watchProfile(conv.otherUid);
         paintAvatar(avatarEl, conv.otherUid, conv.otherNickname);
       }
-      const displayName = conv.isGroup ? `${groupIcon(conv)} ${conv.groupName} (${conv.participants.length})` : nameCase(conv.otherNickname);
+      const displayName = conv.isGroup ? groupTitle(conv, conv.groupName, conv.participants.length) : nameCase(conv.otherNickname);
       li.querySelector(".thread-name").textContent = displayName + (conv.muted ? " 🔕" : "");
       if (pins.includes(conv.id)) {
         li.classList.add("pinned");
@@ -2144,6 +2148,11 @@
       if (conv.unread > 0) {
         const badge = li.querySelector(".thread-badge");
         badge.textContent = (conv.lastMentionsMe ? "@ " : "") + (conv.unread > 99 ? "99+" : String(conv.unread));
+        badge.classList.remove("hidden");
+      } else if (markedUnread(conv.id)) {
+        const badge = li.querySelector(".thread-badge");
+        badge.textContent = "";
+        badge.classList.add("marked");
         badge.classList.remove("hidden");
       }
       attachLongPress(li, () => showThreadActions(conv));
@@ -2270,6 +2279,7 @@
     forgetSearchAndLiveData();
     closePhotoEditor(null);
     closeQrModal();
+    closeVoiceStatus();
     forgetStatusVideos();
     hideToast();
     ["event-modal", "storage-modal", "schedule-modal", "intruder-modal", "emoji-panel"].forEach(id => document.getElementById(id).classList.add("hidden"));
@@ -2351,6 +2361,7 @@
 
   document.getElementById("settings-btn").addEventListener("click", () => {
     showSettingsMenu();
+    renderQuickReplies();
     updateIntruderButton();
     updateAwayUi();
     threadListPanel.classList.add("hidden");
@@ -2883,10 +2894,11 @@
     settingsPanel.classList.add("hidden");
     const openedConv = conversations.get(convId);
     document.getElementById("thread-title").textContent = activeIsGroup
-      ? `${groupIcon(openedConv)} ${extra.groupName} (${(extra.participants || []).length})`
+      ? groupTitle(openedConv, extra.groupName, (extra.participants || []).length)
       : nameCase(otherNickname);
-    // Groups have group calls; channels have none.
-    const noCalls = !!(openedConv && openedConv.isChannel);
+    // Groups have group calls; channels and notes-to-self have none.
+    const noCalls = !!(openedConv && (openedConv.isChannel || openedConv.isSelf));
+    setMarkedUnread(convId, false);
     document.getElementById("thread-call-btn").classList.toggle("hidden", noCalls);
     document.getElementById("thread-video-call-btn").classList.toggle("hidden", noCalls);
     document.getElementById("thread-block-btn").classList.toggle("hidden", activeIsGroup);
@@ -3071,6 +3083,7 @@
       { label: "✏️ Yazı", run: addTextStatus },
       { label: "🖼️ Fotoğraf", run: () => document.getElementById("status-photo-input").click() },
       { label: "🎬 Video (en fazla 30 sn)", run: () => document.getElementById("status-video-input").click() },
+      { label: "🎤 Sesli durum (en fazla 30 sn)", run: openVoiceStatus },
       { label: "🔒 Durum gizliliği", run: showStatusPrivacyMenu },
     ]);
   }
@@ -3250,6 +3263,9 @@
         // Autoplay with sound can be refused: play muted then.
         video.play().catch(() => { video.muted = true; video.play().catch(() => {}); });
       }
+    } else if (plain.kind === "voice" && typeof plain.audio === "string" && /^data:audio\/(webm|ogg|mp4|mpeg)[;,]/.test(plain.audio)) {
+      const fill = document.querySelector("#status-progress span:nth-child(" + (statusIndex + 1) + ") i");
+      renderVoiceStatus(content, plain, () => { if (statusQueue[statusIndex] === s) showStatusAt(statusIndex + 1); }, fill);
     } else if (plain.kind === "image" && typeof plain.image === "string" && plain.image.startsWith("data:image/")) {
       const img = document.createElement("img");
       img.src = plain.image;
@@ -3281,7 +3297,7 @@
         .catch(() => {});
     }
     // A video moves on when it ends (see above).
-    if (!(plain && plain.kind === "video")) statusTimer = setTimeout(() => showStatusAt(statusIndex + 1), STATUS_SHOW_MS);
+    if (!(plain && (plain.kind === "video" || plain.kind === "voice"))) statusTimer = setTimeout(() => showStatusAt(statusIndex + 1), STATUS_SHOW_MS);
   }
 
   document.getElementById("status-close").addEventListener("click", closeStatusViewer);
@@ -3336,7 +3352,7 @@
     if (!conv) return;
     activeOtherUids = conv.participants.filter(u => u !== myUid);
     activeOtherUids.forEach(u => getPublicKeyForUid(u));
-    document.getElementById("thread-title").textContent = `${groupIcon(conv)} ${conv.groupName} (${conv.participants.length})`;
+    document.getElementById("thread-title").textContent = groupTitle(conv, conv.groupName, conv.participants.length);
     updateComposerAccess();
     updateScheduledBar();
     renderThreadHeaderProfile();
@@ -5895,7 +5911,7 @@
   // sealedExtra: more text encrypted with the same key (lpIv / lpCt), e.g.
   // a link preview, so the payload itself stays as it is.
   async function sendEncryptedTo(convId, otherUids, payloadText, type, extraFields, sealedExtra) {
-    if (!convId || !otherUids || !otherUids.length) return;
+    if (!convId || !otherUids || (!otherUids.length && !isSelfConvId(convId))) return;
     // Blocking only applies to 1:1 threads; groups don't expose a block UI.
     if (otherUids.length === 1 && myBlocked[otherUids[0]]) return;
     const key = await makeMessageKey(otherUids);
@@ -5998,7 +6014,7 @@
   }
 
   async function sendLargeFileTo(convId, otherUids, file, extraFields, onProgress) {
-    if (!convId || !otherUids || !otherUids.length) return;
+    if (!convId || !otherUids || (!otherUids.length && !isSelfConvId(convId))) return;
     if (otherUids.length === 1 && myBlocked[otherUids[0]]) return;
     const key = await makeMessageKey(otherUids);
     if (!key) return;
@@ -6388,6 +6404,7 @@
     speed.dataset.msgId = m.id;
     speed.textContent = voiceRateLabel(rate);
     row.append(audio, speed);
+    attachWaveform(row, audio, m);
     return row;
   }
 
@@ -6727,9 +6744,9 @@
     const conv = activeConv();
     if (!convId || !conv) return [];
     const actions = [];
-    if (activeIsGroup) {
+    if (activeIsGroup && !conv.isSelf) {
       actions.push({ label: "👥 Grup bilgisi", run: () => { renderGroupInfo(); groupInfoModal.classList.remove("hidden"); } });
-    } else {
+    } else if (!activeIsGroup) {
       actions.push({ label: "👤 Kişi bilgisi", run: openContactInfo });
     }
     actions.push({ label: "🌐 Anlık çeviri" + (liveTranslateLang(convId) ? " (" + LT_LANGS[liveTranslateLang(convId)] + ")" : ""), run: chooseLiveTranslate });
@@ -8406,7 +8423,7 @@
      both (mayPost). */
 
   function groupIcon(conv) {
-    return conv && conv.isCommunity ? "🏘️" : conv && conv.isChannel ? "📢" : "👥";
+    return conv && conv.isSelf ? "📝" : conv && conv.isCommunity ? "🏘️" : conv && conv.isChannel ? "📢" : "👥";
   }
 
   function maxMembersOf(conv) {
@@ -11014,6 +11031,351 @@
     }
   }
 
+  /* ---------------- Marking a chat unread ----------------
+     Kept on this device; opening the chat clears it. */
+
+  function markedUnread(convId) {
+    const l = localSessionData && localSessionData.markedUnread;
+    return Array.isArray(l) && l.includes(convId);
+  }
+
+  async function setMarkedUnread(convId, on) {
+    if (!localSessionData || markedUnread(convId) === on) return;
+    const l = (Array.isArray(localSessionData.markedUnread) ? localSessionData.markedUnread : []).filter(id => id !== convId);
+    if (on) l.push(convId);
+    localSessionData.markedUnread = l;
+    await saveLocalPrefs();
+    renderThreadList();
+  }
+
+  /* ---------------- Message yourself ----------------
+     A one-member "group" (isSelf) for notes, links and files to keep;
+     messages are encrypted for this account only. */
+
+  function selfConv() {
+    return [...conversations.values()].find(c => c.isSelf) || null;
+  }
+
+  function isSelfConvId(convId) {
+    const c = conversations.get(convId);
+    return !!(c && c.isSelf);
+  }
+
+  function groupTitle(conv, name, count) {
+    return conv && conv.isSelf ? "📝 " + (name || "Kendime notlar") : `${groupIcon(conv)} ${name} (${count})`;
+  }
+
+  async function openSelfChat() {
+    document.getElementById("new-thread-modal").classList.add("hidden");
+    let c = selfConv();
+    if (!c) {
+      try {
+        const ref = fbDb.collection("conversations").doc();
+        await ref.set({
+          participants: [myUid], participantNicknames: { [myUid]: myNickname }, unreadCount: { [myUid]: 0 },
+          isGroup: true, isSelf: true, groupName: "Kendime notlar", createdBy: myUid, admins: [myUid],
+          updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+        });
+        c = { id: ref.id, groupName: "Kendime notlar", participants: [myUid] };
+      } catch (e) {
+        alert(e && e.code === "permission-denied"
+          ? "Açılamadı: Firestore kurallarının güncellenmesi gerekiyor."
+          : "Açılamadı: " + e.message);
+        return;
+      }
+    }
+    openConversation(c.id, null, null, { isGroup: true, groupName: c.groupName, participants: c.participants });
+  }
+
+  document.getElementById("self-chat-btn").addEventListener("click", openSelfChat);
+
+  /* ---------------- Quick replies ----------------
+     Saved texts (on this device): typing "/" and part of a shortcut in
+     the box offers them, e.g. /adres. Managed in Ayarlar → Sohbetler. */
+
+  const quickPicker = document.getElementById("quick-picker");
+
+  function quickReplies() {
+    const l = localSessionData && localSessionData.quickReplies;
+    return Array.isArray(l) ? l.filter(q => q && typeof q.key === "string" && typeof q.text === "string") : [];
+  }
+
+  function normalizeQuickKey(k) {
+    return String(k || "").trim().replace(/^\//, "").toLocaleLowerCase("tr").replace(/[^a-z0-9_çğıöşü]/g, "").slice(0, 20);
+  }
+
+  // The replies whose shortcut starts with what follows a lone "/" in the box.
+  function quickMatches(value, list) {
+    const m = /^\/(\S*)$/.exec(value || "");
+    if (!m) return [];
+    const p = normalizeQuickKey(m[1]);
+    return list.filter(q => q.key.startsWith(p)).slice(0, 6);
+  }
+
+  function updateQuickPicker() {
+    const matches = quickMatches(messageInput.value, quickReplies());
+    quickPicker.classList.toggle("hidden", !matches.length);
+    quickPicker.innerHTML = "";
+    matches.forEach(q => {
+      const b = document.createElement("button");
+      const k = document.createElement("b");
+      k.textContent = "/" + q.key;
+      const t = document.createElement("span");
+      t.textContent = q.text;
+      b.append(k, t);
+      b.addEventListener("mousedown", e => e.preventDefault());
+      b.addEventListener("click", () => {
+        messageInput.value = q.text;
+        quickPicker.classList.add("hidden");
+        updateComposerMode();
+        messageInput.dispatchEvent(new Event("input"));
+        messageInput.focus();
+      });
+      quickPicker.appendChild(b);
+    });
+  }
+  messageInput.addEventListener("input", updateQuickPicker);
+
+  function renderQuickReplies() {
+    const list = document.getElementById("quick-replies-list");
+    list.innerHTML = "";
+    const all = quickReplies();
+    if (!all.length) {
+      const li = document.createElement("li");
+      li.className = "hint";
+      li.textContent = "Henüz hızlı yanıt yok.";
+      list.appendChild(li);
+    }
+    all.forEach(q => {
+      const li = document.createElement("li");
+      const k = document.createElement("b");
+      k.textContent = "/" + q.key;
+      const t = document.createElement("span");
+      t.textContent = q.text;
+      const del = document.createElement("button");
+      del.className = "ghost";
+      del.textContent = "✕";
+      del.title = "Sil";
+      del.addEventListener("click", async () => {
+        localSessionData.quickReplies = quickReplies().filter(x => x.key !== q.key);
+        await saveLocalPrefs();
+        renderQuickReplies();
+      });
+      li.append(k, t, del);
+      list.appendChild(li);
+    });
+  }
+
+  document.getElementById("quick-reply-add").addEventListener("click", async () => {
+    if (!localSessionData) return;
+    const key = normalizeQuickKey(prompt("Kısayol (ör. adres, iban, geliyorum):") || "");
+    if (!key) return;
+    const text = (prompt("/" + key + " yazınca gelecek metin:") || "").trim().slice(0, 1000);
+    if (!text) return;
+    localSessionData.quickReplies = [...quickReplies().filter(q => q.key !== key), { key, text }].slice(-50);
+    await saveLocalPrefs();
+    renderQuickReplies();
+  });
+
+  /* ---------------- Voice message waveform ----------------
+     The audio is decoded once and summed into bars; tapping the bars
+     seeks, and the played part is coloured. */
+
+  const voicePeaks = new Map(); // msgId -> number[] (0..1)
+  const WAVE_BARS = 40;
+
+  function peaksFromSamples(samples, bars) {
+    const out = [];
+    const step = Math.max(1, Math.floor(samples.length / bars));
+    for (let i = 0; i < bars; i++) {
+      let max = 0;
+      for (let j = i * step; j < Math.min(samples.length, (i + 1) * step); j++) max = Math.max(max, Math.abs(samples[j]));
+      out.push(max);
+    }
+    const top = Math.max(...out, 0.01);
+    return out.map(v => Math.max(0.08, v / top));
+  }
+
+  async function voiceWave(m) {
+    if (voicePeaks.has(m.id)) return voicePeaks.get(m.id);
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if (!Ctx) return null;
+    const ctx = new Ctx();
+    try {
+      const buf = await (await fetch(m.audio)).arrayBuffer();
+      const audio = await ctx.decodeAudioData(buf);
+      const peaks = peaksFromSamples(audio.getChannelData(0), WAVE_BARS);
+      voicePeaks.set(m.id, peaks);
+      return peaks;
+    } finally {
+      ctx.close && ctx.close().catch(() => {});
+    }
+  }
+
+  function drawWave(canvas, peaks, progress) {
+    const dpr = window.devicePixelRatio || 1;
+    const w = canvas.clientWidth || 150, h = canvas.clientHeight || 28;
+    canvas.width = w * dpr;
+    canvas.height = h * dpr;
+    const ctx = canvas.getContext("2d");
+    ctx.scale(dpr, dpr);
+    const styles = getComputedStyle(canvas);
+    const gap = 2, bw = (w - gap * (peaks.length - 1)) / peaks.length;
+    peaks.forEach((p, i) => {
+      const bh = Math.max(3, p * h);
+      ctx.fillStyle = (i + 0.5) / peaks.length <= progress ? styles.getPropertyValue("--wave-done") || "#fff" : styles.getPropertyValue("--wave-todo") || "#888";
+      ctx.fillRect(i * (bw + gap), (h - bh) / 2, bw, bh);
+    });
+  }
+
+  function formatVoiceTime(s) {
+    s = Math.max(0, Math.round(s || 0));
+    return Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0");
+  }
+
+  function attachWaveform(row, audio, m) {
+    audio.controls = false;
+    const play = document.createElement("button");
+    play.className = "voice-play";
+    play.textContent = "▶";
+    const canvas = document.createElement("canvas");
+    canvas.className = "voice-wave";
+    const time = document.createElement("span");
+    time.className = "voice-time";
+    time.textContent = "0:00";
+    row.prepend(play, canvas, time);
+    let peaks = voicePeaks.get(m.id) || Array(WAVE_BARS).fill(0.15);
+    const redraw = () => drawWave(canvas, peaks, audio.duration && isFinite(audio.duration) ? audio.currentTime / audio.duration : 0);
+    requestAnimationFrame(redraw);
+    voiceWave(m).then(p => { if (p) { peaks = p; redraw(); } }).catch(() => {});
+    play.addEventListener("click", e => {
+      e.stopPropagation();
+      if (audio.paused) {
+        document.querySelectorAll("#message-list audio").forEach(a => { if (a !== audio) a.pause(); });
+        audio.play().catch(() => {});
+      } else {
+        audio.pause();
+      }
+    });
+    audio.addEventListener("play", () => { play.textContent = "⏸"; });
+    audio.addEventListener("pause", () => { play.textContent = "▶"; });
+    audio.addEventListener("ended", () => { play.textContent = "▶"; audio.currentTime = 0; redraw(); });
+    audio.addEventListener("loadedmetadata", () => { if (isFinite(audio.duration)) time.textContent = formatVoiceTime(audio.duration); });
+    audio.addEventListener("timeupdate", () => {
+      redraw();
+      time.textContent = formatVoiceTime(audio.paused && !audio.currentTime ? audio.duration : audio.currentTime);
+    });
+    canvas.addEventListener("click", e => {
+      e.stopPropagation();
+      if (!audio.duration || !isFinite(audio.duration)) return;
+      const r = canvas.getBoundingClientRect();
+      audio.currentTime = Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)) * audio.duration;
+      redraw();
+    });
+  }
+
+  /* ---------------- Voice status ----------------
+     A short recording (up to VOICE_STATUS_MAX_S) shared as a status. */
+
+  const VOICE_STATUS_MAX_S = 30;
+  const voiceStatusModal = document.getElementById("voice-status-modal");
+  let vs = null;
+
+  function closeVoiceStatus() {
+    if (vs) {
+      clearInterval(vs.tick);
+      if (vs.rec && vs.rec.state !== "inactive") { try { vs.rec.stop(); } catch (e) {} }
+      if (vs.stream) vs.stream.getTracks().forEach(t => t.stop());
+      if (vs.url) URL.revokeObjectURL(vs.url);
+    }
+    vs = null;
+    voiceStatusModal.classList.add("hidden");
+  }
+
+  function updateVoiceStatusUi(state) {
+    voiceStatusModal.dataset.state = state;
+    document.getElementById("vs-record").textContent = state === "recording" ? "⏹ Durdur" : "⏺ Kaydet";
+    document.getElementById("vs-record").classList.toggle("hidden", state === "review");
+    document.getElementById("vs-send").classList.toggle("hidden", state !== "review");
+    document.getElementById("vs-preview").classList.toggle("hidden", state !== "review");
+  }
+
+  function openVoiceStatus() {
+    closeVoiceStatus();
+    vs = {};
+    document.getElementById("vs-timer").textContent = "0:00 / 0:" + VOICE_STATUS_MAX_S;
+    updateVoiceStatusUi("ready");
+    voiceStatusModal.classList.remove("hidden");
+  }
+
+  document.getElementById("vs-record").addEventListener("click", async () => {
+    if (!vs) return;
+    if (vs.rec && vs.rec.state === "recording") { vs.rec.stop(); return; }
+    try {
+      vs.stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch (e) {
+      alert("Mikrofon açılamadı: " + e.message);
+      return;
+    }
+    const parts = [];
+    const rec = new MediaRecorder(vs.stream, { audioBitsPerSecond: 32000 });
+    rec.ondataavailable = e => { if (e.data && e.data.size) parts.push(e.data); };
+    rec.onstop = async () => {
+      clearInterval(vs && vs.tick);
+      if (!vs) return;
+      vs.stream.getTracks().forEach(t => t.stop());
+      vs.blob = new Blob(parts, { type: (rec.mimeType || "audio/webm").split(";")[0] });
+      vs.url = URL.createObjectURL(vs.blob);
+      document.getElementById("vs-preview").src = vs.url;
+      updateVoiceStatusUi("review");
+    };
+    vs.rec = rec;
+    vs.started = Date.now();
+    rec.start(1000);
+    updateVoiceStatusUi("recording");
+    vs.tick = setInterval(() => {
+      const s = Math.floor((Date.now() - vs.started) / 1000);
+      document.getElementById("vs-timer").textContent = formatVoiceTime(s) + " / 0:" + VOICE_STATUS_MAX_S;
+      if (s >= VOICE_STATUS_MAX_S && rec.state === "recording") rec.stop();
+    }, 250);
+  });
+  document.getElementById("vs-cancel").addEventListener("click", closeVoiceStatus);
+  document.getElementById("vs-send").addEventListener("click", async () => {
+    if (!vs || !vs.blob) return;
+    const blob = vs.blob;
+    closeVoiceStatus();
+    if (blob.size > 600 * 1024) { alert("Kayıt çok uzun."); return; }
+    try {
+      await postStatus({ kind: "voice", audio: await readAsDataUrl(blob) });
+    } catch (e) {
+      alert("Paylaşılamadı: " + e.message);
+    }
+  });
+
+  function renderVoiceStatus(content, plain, onEnd, fill) {
+    const box = document.createElement("div");
+    box.className = "status-voice";
+    const mic = document.createElement("div");
+    mic.className = "status-voice-mic";
+    mic.textContent = "🎤";
+    const audio = document.createElement("audio");
+    audio.src = plain.audio;
+    audio.autoplay = true;
+    box.append(mic, audio);
+    content.appendChild(box);
+    if (fill) fill.style.transition = "none";
+    audio.addEventListener("timeupdate", () => {
+      if (fill && audio.duration && isFinite(audio.duration)) fill.style.width = (audio.currentTime / audio.duration * 100) + "%";
+    });
+    audio.addEventListener("play", () => box.classList.add("playing"));
+    audio.addEventListener("pause", () => box.classList.remove("playing"));
+    audio.addEventListener("ended", onEnd);
+    audio.play().catch(() => {
+      mic.textContent = "▶";
+      mic.addEventListener("click", e => { e.stopPropagation(); audio.play().catch(() => {}); }, { once: true });
+    });
+  }
+
   const viewOnceInput = document.getElementById("viewonce-input");
   document.getElementById("attach-viewonce-btn").addEventListener("click", () => {
     attachMenu.classList.add("hidden");
@@ -11279,6 +11641,7 @@
   // Leaving a chat (or locking) drops a pending reply and discards a recording.
   function leaveComposer() {
     stopSelecting();
+    quickPicker.classList.add("hidden");
     clearLinkDraft();
     stashDraft();
     forgetVanish();
