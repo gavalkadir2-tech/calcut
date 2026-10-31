@@ -386,3 +386,15 @@ test("vanishing and auto-reply messages are ordinary messages; the reader may de
   await assertSucceeds(setDoc(doc(as("alice"), "conversations/c1/messages/v1"), { from: "alice", type: "text", ciphertext: "x", iv: "y", wrappedKeys: {}, vanish: 30, ts: serverTimestamp() }));
   await assertSucceeds(deleteDoc(doc(as("bob"), "conversations/c1/messages/v1")));
 });
+
+test("notes to self: a one-member group of just its creator", async () => {
+  await seed();
+  const self = { isGroup: true, isSelf: true, groupName: "Kendime notlar", createdBy: "alice", admins: ["alice"], participants: ["alice"] };
+  await assertSucceeds(setDoc(doc(as("alice"), "conversations/self1"), self));
+  await assertFails(setDoc(doc(as("alice"), "conversations/self2"), { ...self, participants: ["alice", "bob"] }));
+  await assertFails(setDoc(doc(as("alice"), "conversations/self3"), { ...self, participants: ["bob"] }));
+  await assertSucceeds(addDoc(collection(as("alice"), "conversations/self1/messages"), { from: "alice", type: "text", ciphertext: "x", iv: "y", wrappedKeys: {}, ts: serverTimestamp() }));
+  await assertFails(getDoc(doc(as("bob"), "conversations/self1")));
+  // Still no one-member normal groups.
+  await assertFails(setDoc(doc(as("alice"), "conversations/g9"), { ...self, isSelf: false }));
+});
