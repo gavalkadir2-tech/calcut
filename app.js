@@ -826,7 +826,14 @@
     if (!data) throw new Error("Kullanıcı verisi bulunamadı.");
 
     const pkSalt = new Uint8Array(b64decode(data.pkSalt));
-    const pkKey = await deriveKeyFromSecret(password, pkSalt);
+    // Two-step verification: the key opens with password + PIN.
+    let secret = password;
+    if (data.twoStep) {
+      const pin = (prompt("İki adımlı doğrulama PIN'in (6 rakam):") || "").trim();
+      if (!pin) throw new Error("İki adımlı doğrulama PIN'i gerekli.");
+      secret = twoStepSecret(password, pin);
+    }
+    const pkKey = await deriveKeyFromSecret(secret, pkSalt);
     const ivBytes = new Uint8Array(b64decode(data.encPrivateKey.iv));
     let privJwkBytes;
     try {
@@ -836,8 +843,9 @@
         b64decode(data.encPrivateKey.data)
       );
     } catch (e) {
-      throw new Error("Parola yanlış.");
+      throw new Error(data.twoStep ? "Parola ya da iki adımlı doğrulama PIN'i yanlış." : "Parola yanlış.");
     }
+    myTwoStep = !!data.twoStep;
     const privJwk = JSON.parse(new TextDecoder().decode(privJwkBytes));
     const privateKey = await crypto.subtle.importKey(
       "jwk", privJwk, { name: "RSA-OAEP", hash: "SHA-256" }, true, ["decrypt"]
@@ -2004,6 +2012,7 @@
   }
 
   function renderCallsList() {
+    threadListEl.appendChild(callLinkRow());
     if (!callHistory) {
       const li = document.createElement("li");
       li.className = "empty-state";
@@ -2362,6 +2371,7 @@
   document.getElementById("settings-btn").addEventListener("click", () => {
     showSettingsMenu();
     renderQuickReplies();
+    refreshTwoStep();
     updateIntruderButton();
     updateAwayUi();
     threadListPanel.classList.add("hidden");
@@ -3801,6 +3811,7 @@
     callCameraBtn.classList.toggle("hidden", !isVideoCall);
     callFlipBtn.classList.toggle("hidden", !isVideoCall);
     updateScreenShareButtons();
+    updateBlurButton();
     if (isVideoCall && localStream) {
       callLocalVideo.srcObject = localStream;
     }
@@ -4269,6 +4280,7 @@
     callTimerInterval = null;
     stopRingtone();
     if (screenTrack) { screenTrack.stop(); screenTrack = null; }
+    if (blurPipe) { blurPipe.stop(); blurPipe = null; }
     if (peerConnection) { peerConnection.close(); peerConnection = null; }
     if (localStream) { localStream.getTracks().forEach(t => t.stop()); localStream = null; }
     if (remoteAudioEl) { remoteAudioEl.srcObject = null; }
@@ -7193,6 +7205,7 @@
 
   callFlipBtn.addEventListener("click", async () => {
     if (!localStream || !peerConnection) return;
+    if (blurPipe) await stopBackgroundBlur(); // it follows the old camera
     const next = cameraFacing === "user" ? "environment" : "user";
     let stream;
     try {
@@ -8522,6 +8535,17 @@
       return;
     }
     if (!d || d.status !== "active") { alert("Bu grup araması sona erdi."); return; }
+    // Joining by a call link: add myself first.
+    if (d.isLink && !(d.members || []).includes(myUid)) {
+      if ((d.members || []).length >= GROUP_CALL_MAX) { alert("Bu aramada en fazla " + GROUP_CALL_MAX + " kişi olabilir."); return; }
+      try {
+        await ref.update({ members: firebase.firestore.FieldValue.arrayUnion(myUid), [`names.${myUid}`]: myNickname });
+        d = (await ref.get()).data();
+      } catch (e) {
+        alert("Aramaya katılınamadı: " + e.message);
+        return;
+      }
+    }
     if (gcFresh(d.participants).filter(u => u !== myUid).length >= GROUP_CALL_MAX) {
       alert("Bu aramada en fazla " + GROUP_CALL_MAX + " kişi olabilir.");
       return;
@@ -8557,6 +8581,7 @@
   function onGcDoc(d) {
     if (!gc || !d) return;
     gc.last = d;
+    if (d.names) Object.assign(gc.names, d.names);
     if (d.status === "ended") { leaveGroupCall(); return; }
     const fresh = new Set(gcFresh(d.participants));
     fresh.delete(myUid);
@@ -9911,10 +9936,10 @@
     const t = screenTrack;
     screenTrack = null;
     t.stop();
-    const cam = localStream && localStream.getVideoTracks()[0];
+    const cam = blurPipe ? blurPipe.track : localStream && localStream.getVideoTracks()[0];
     const sender = peerConnection && peerConnection.getSenders().find(s => s.track && s.track.kind === "video");
     if (sender && cam) await sender.replaceTrack(cam).catch(() => {});
-    if (localStream) callLocalVideo.srcObject = localStream;
+    if (localStream) callLocalVideo.srcObject = blurPipe ? new MediaStream([blurPipe.track]) : localStream;
     updateScreenShareButtons();
   }
 
@@ -11375,6 +11400,303 @@
       mic.addEventListener("click", e => { e.stopPropagation(); audio.play().catch(() => {}); }, { once: true });
     });
   }
+
+  /* ---------------- Two-step verification ----------------
+     A 6-digit PIN that, with the password, unlocks the account's private
+     key (it is re-encrypted with a key from password + PIN), so signing in
+     on another device needs both, and without the PIN the messages stay
+     unreadable even with the password. users/{uid}.twoStep marks it. */
+
+  const TWO_STEP_SEP = "\u0000";
+  let myTwoStep = null;
+
+  function twoStepSecret(password, pin) {
+    return pin ? password + TWO_STEP_SEP + pin : password;
+  }
+
+  function validTwoStepPin(pin) {
+    return /^\d{6}$/.test(pin || "");
+  }
+
+  async function unlocksPrivateKey(data, secret) {
+    try {
+      const key = await deriveKeyFromSecret(secret, new Uint8Array(b64decode(data.pkSalt)));
+      await crypto.subtle.decrypt({ name: "AES-GCM", iv: new Uint8Array(b64decode(data.encPrivateKey.iv)) }, key, b64decode(data.encPrivateKey.data));
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  async function wrapPrivateKey(data, secret) {
+    const key = await deriveKeyFromSecret(secret, new Uint8Array(b64decode(data.pkSalt)));
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const jwk = await crypto.subtle.exportKey("jwk", myPrivateKey);
+    const enc = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, new TextEncoder().encode(JSON.stringify(jwk)));
+    return { iv: b64encode(iv.buffer), data: b64encode(enc) };
+  }
+
+  function updateTwoStepButton() {
+    document.getElementById("two-step-btn").textContent = myTwoStep
+      ? "🔐 İki adımlı doğrulama: Açık (kapat)" : "🔐 İki adımlı doğrulama: Kapalı (aç)";
+  }
+
+  async function refreshTwoStep() {
+    if (!myUid) return;
+    try {
+      myTwoStep = !!((await fbDb.collection("users").doc(myUid).get()).data() || {}).twoStep;
+    } catch (e) { /* keep */ }
+    updateTwoStepButton();
+  }
+
+  document.getElementById("two-step-btn").addEventListener("click", async () => {
+    const msg = document.getElementById("two-step-msg");
+    if (!myUid || !myPrivateKey) return;
+    const ref = fbDb.collection("users").doc(myUid);
+    const data = (await ref.get()).data();
+    if (!data || !data.encPrivateKey || !data.pkSalt) { msg.textContent = "Hesap bilgisi okunamadı."; return; }
+    const password = prompt("Hesap parolanı gir:");
+    if (!password) return;
+    try {
+      if (!data.twoStep) {
+        if (!(await unlocksPrivateKey(data, password))) { msg.textContent = "Parola yanlış."; return; }
+        const pin = (prompt("6 haneli bir PIN belirle (başka cihazda giriş yaparken sorulacak):") || "").trim();
+        if (!validTwoStepPin(pin)) { msg.textContent = "PIN 6 rakam olmalı."; return; }
+        if ((prompt("PIN'i tekrar gir:") || "").trim() !== pin) { msg.textContent = "PIN'ler aynı değil."; return; }
+        await ref.update({ encPrivateKey: await wrapPrivateKey(data, twoStepSecret(password, pin)), twoStep: true });
+        myTwoStep = true;
+        msg.textContent = "Açıldı. Başka bir cihazda giriş yaparken parolanın yanında bu PIN de sorulacak. PIN'i unutursan mesajlarına başka cihazdan ulaşamazsın; bir yere not et.";
+      } else {
+        const pin = (prompt("İki adımlı doğrulama PIN'in:") || "").trim();
+        if (!(await unlocksPrivateKey(data, twoStepSecret(password, pin)))) { msg.textContent = "Parola ya da PIN yanlış."; return; }
+        await ref.update({ encPrivateKey: await wrapPrivateKey(data, password), twoStep: false });
+        myTwoStep = false;
+        msg.textContent = "İki adımlı doğrulama kapatıldı.";
+      }
+    } catch (e) {
+      msg.textContent = e && e.code === "permission-denied"
+        ? "Kaydedilemedi: Firestore kurallarının güncellenmesi gerekiyor." : "Kaydedilemedi: " + e.message;
+    }
+    updateTwoStepButton();
+  });
+
+  /* ---------------- Deleting the account ----------------
+     After the password: leave every group, delete my statuses, scheduled
+     messages, auto-reply and profile, then the sign-in itself and all
+     data on this device. Messages I sent stay with the people who got
+     them, as on WhatsApp. */
+
+  document.getElementById("delete-account-btn").addEventListener("click", async () => {
+    const user = fbAuth.currentUser;
+    const msg = document.getElementById("delete-account-msg");
+    if (!user || !myUid) return;
+    if (!confirm("Hesabın kalıcı olarak silinsin mi?\n\n• Profilin, durumların, zamanlanmış mesajların ve otomatik yanıtın silinir\n• Bütün gruplardan çıkarsın\n• Bu cihazdaki tüm veriler silinir\n\nGönderdiğin mesajlar karşı tarafta kalır. Bu işlem geri alınamaz.")) return;
+    const password = prompt("Onaylamak için hesap parolanı gir:");
+    if (!password) return;
+    msg.textContent = "Siliniyor…";
+    try {
+      await user.reauthenticateWithCredential(firebase.auth.EmailAuthProvider.credential(user.email, password));
+    } catch (e) {
+      msg.textContent = e && (e.code === "auth/wrong-password" || e.code === "auth/invalid-credential") ? "Parola yanlış." : "Doğrulanamadı: " + e.message;
+      return;
+    }
+    const quietly = p => p.catch(() => {});
+    for (const c of [...conversations.values()].filter(c => c.isGroup && c.participants.includes(myUid))) {
+      const ref = fbDb.collection("conversations").doc(c.id);
+      const remaining = c.participants.filter(u => u !== myUid);
+      if (!remaining.length) { await quietly(ref.delete()); continue; }
+      const update = { participants: remaining };
+      if (c.admins.includes(myUid)) {
+        const admins = c.admins.filter(a => a !== myUid);
+        update.admins = admins.length ? admins : [remaining[0]];
+      }
+      await quietly(ref.update(update));
+    }
+    for (const col of ["statuses", "scheduled"]) {
+      const snap = await fbDb.collection(col).where("from", "==", myUid).get().catch(() => null);
+      if (snap) for (const d of snap.docs) await quietly(d.ref.delete());
+    }
+    await quietly(fbDb.collection("awayReplies").doc(myUid).delete());
+    try {
+      await fbDb.collection("users").doc(myUid).delete();
+      await user.delete();
+    } catch (e) {
+      msg.textContent = "Hesap silinemedi: " + (e && e.code === "permission-denied" ? "Firestore kurallarının güncellenmesi gerekiyor." : e.message);
+      return;
+    }
+    try { localStorage.clear(); } catch (e) {}
+    alert("Hesabın silindi.");
+    location.reload();
+  });
+
+  /* ---------------- Call links ----------------
+     A group call (see Group calls) anyone with the link can join (up to
+     GROUP_CALL_MAX): groupCalls/{id} with isLink, readable by its id, and
+     a joiner adds only themselves. The link works while the call lasts. */
+
+  const CALL_LINK_PREFIX = "calcut-arama:";
+
+  function parseCallLink(text) {
+    const m = /calcut-arama:([A-Za-z0-9]{20})/.exec(text || "");
+    return m ? m[1] : null;
+  }
+
+  async function createCallLink(media) {
+    if (gc || activeCallId) { alert("Önce mevcut aramayı bitir."); return; }
+    const ref = fbDb.collection("groupCalls").doc();
+    try {
+      await ref.set({
+        members: [myUid], names: { [myUid]: myNickname }, from: myUid, media, status: "active", isLink: true,
+        createdAt: firebase.firestore.FieldValue.serverTimestamp(), participants: {},
+      });
+    } catch (e) {
+      alert(e && e.code === "permission-denied" ? "Oluşturulamadı: Firestore kurallarının güncellenmesi gerekiyor." : "Oluşturulamadı: " + e.message);
+      return;
+    }
+    await shareInvite((media === "video" ? "📹" : "📞") + " calcut'ta aramaya katıl: Aramalar → 🔗 → Bağlantıyla katıl'a bu kodu yapıştır:\n" + CALL_LINK_PREFIX + ref.id);
+    await joinGroupCall(ref.id);
+  }
+
+  function joinCallByLink() {
+    const id = parseCallLink(prompt("Arama bağlantısını yapıştır:"));
+    if (!id) { alert("Bu bir arama bağlantısı değil."); return; }
+    joinGroupCall(id);
+  }
+
+  function showCallLinkMenu() {
+    showActionSheet("🔗 Arama bağlantısı", [
+      { label: "📞 Sesli arama bağlantısı oluştur", run: () => createCallLink("audio") },
+      { label: "📹 Görüntülü arama bağlantısı oluştur", run: () => createCallLink("video") },
+      { label: "🔗 Bağlantıyla katıl", run: joinCallByLink },
+    ]);
+  }
+
+  function callLinkRow() {
+    const li = document.createElement("li");
+    li.className = "call-link-row";
+    li.textContent = "🔗 Arama bağlantısı oluştur ya da bağlantıyla katıl";
+    li.addEventListener("click", showCallLinkMenu);
+    return li;
+  }
+
+  /* ---------------- Background blur in video calls ----------------
+     MediaPipe's selfie segmenter (loaded from the CDN on first use) finds
+     the person; the rest of the camera image is blurred before it is sent.
+     The blurred picture is a canvas stream swapped in for the camera. */
+
+  const MP_BASE = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14";
+  const MP_MODEL = "https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_segmenter/float16/latest/selfie_segmenter.tflite";
+  let mpSegmenter = null;
+  let blurPipe = null; // { track, stop }
+
+  async function loadSegmenter() {
+    if (mpSegmenter) return mpSegmenter;
+    const vision = await import(MP_BASE + "/vision_bundle.mjs");
+    const fileset = await vision.FilesetResolver.forVisionTasks(MP_BASE + "/wasm");
+    mpSegmenter = await vision.ImageSegmenter.createFromOptions(fileset, {
+      baseOptions: { modelAssetPath: MP_MODEL },
+      runningMode: "VIDEO",
+      outputCategoryMask: false,
+      outputConfidenceMasks: true,
+    });
+    return mpSegmenter;
+  }
+
+  // Person where the mask is confident, a strong blur everywhere else.
+  async function startBlurPipe(cameraTrack) {
+    const seg = await loadSegmenter();
+    const video = document.createElement("video");
+    video.muted = true;
+    video.playsInline = true;
+    video.srcObject = new MediaStream([cameraTrack]);
+    await video.play();
+    const w = video.videoWidth || 640, h = video.videoHeight || 480;
+    const mk = (cw, ch) => { const c = document.createElement("canvas"); c.width = cw; c.height = ch; return c; };
+    const out = mk(w, h), person = mk(w, h), small = mk(Math.max(1, Math.round(w / 16)), Math.max(1, Math.round(h / 16)));
+    const octx = out.getContext("2d"), pctx = person.getContext("2d"), sctx = small.getContext("2d");
+    let maskCanvas = null, mctx = null, maskImage = null;
+    let stopped = false;
+    const frame = () => {
+      if (stopped) return;
+      try {
+        const res = seg.segmentForVideo(video, performance.now());
+        const m = res.confidenceMasks && res.confidenceMasks[0];
+        if (m) {
+          if (!maskCanvas || maskCanvas.width !== m.width || maskCanvas.height !== m.height) {
+            maskCanvas = mk(m.width, m.height);
+            mctx = maskCanvas.getContext("2d");
+            maskImage = mctx.createImageData(m.width, m.height);
+          }
+          const conf = m.getAsFloat32Array();
+          for (let i = 0; i < conf.length; i++) maskImage.data[i * 4 + 3] = conf[i] * 255;
+          mctx.putImageData(maskImage, 0, 0);
+        }
+        res.close();
+        // Background: scaled down and up again = blurred, in every browser.
+        sctx.drawImage(video, 0, 0, small.width, small.height);
+        octx.imageSmoothingEnabled = true;
+        octx.drawImage(small, 0, 0, w, h);
+        if (maskCanvas) {
+          pctx.globalCompositeOperation = "copy";
+          pctx.drawImage(maskCanvas, 0, 0, w, h);
+          pctx.globalCompositeOperation = "source-in";
+          pctx.drawImage(video, 0, 0, w, h);
+          octx.drawImage(person, 0, 0);
+        }
+      } catch (e) { /* skip this frame */ }
+    };
+    const timer = setInterval(frame, 1000 / 20);
+    const track = out.captureStream(20).getVideoTracks()[0];
+    return {
+      track,
+      stop() {
+        stopped = true;
+        clearInterval(timer);
+        track.stop();
+        video.srcObject = null;
+      },
+    };
+  }
+
+  function updateBlurButton() {
+    const b = document.getElementById("call-blur-btn");
+    b.classList.toggle("hidden", !isVideoCall);
+    b.classList.toggle("active", !!blurPipe);
+    b.textContent = blurPipe ? "🌫️ Bulanık" : "🌫️ Arka Plan";
+  }
+
+  async function stopBackgroundBlur() {
+    if (!blurPipe) return;
+    const pipe = blurPipe;
+    blurPipe = null;
+    const cam = localStream && localStream.getVideoTracks()[0];
+    const sender = peerConnection && peerConnection.getSenders().find(s => s.track && s.track.kind === "video");
+    if (sender && cam && !screenTrack) await sender.replaceTrack(cam).catch(() => {});
+    if (localStream && !screenTrack) callLocalVideo.srcObject = localStream;
+    pipe.stop();
+    updateBlurButton();
+  }
+
+  document.getElementById("call-blur-btn").addEventListener("click", async () => {
+    if (blurPipe) { stopBackgroundBlur(); return; }
+    const cam = localStream && localStream.getVideoTracks()[0];
+    const sender = peerConnection && peerConnection.getSenders().find(s => s.track && s.track.kind === "video");
+    if (!cam || !sender) return;
+    const btn = document.getElementById("call-blur-btn");
+    btn.textContent = "⏳ Yükleniyor";
+    try {
+      const pipe = await startBlurPipe(cam);
+      if (!peerConnection) { pipe.stop(); return; }
+      blurPipe = pipe;
+      if (!screenTrack) {
+        await sender.replaceTrack(pipe.track);
+        callLocalVideo.srcObject = new MediaStream([pipe.track]);
+      }
+    } catch (e) {
+      alert("Arka plan bulanıklaştırma bu cihazda açılamadı (" + (e && e.message ? e.message : e) + ").");
+    }
+    updateBlurButton();
+  });
 
   const viewOnceInput = document.getElementById("viewonce-input");
   document.getElementById("attach-viewonce-btn").addEventListener("click", () => {

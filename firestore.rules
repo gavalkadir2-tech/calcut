@@ -66,17 +66,24 @@ service cloud.firestore {
       allow update: if isSignedIn() && (
         (request.auth.uid == userId &&
          request.resource.data.diff(resource.data).affectedKeys()
-           .hasOnly(['nickname', 'blocked', 'avatar', 'lastSeen', 'hidePresence', 'hideReadReceipts', 'about']) &&
-         validProfileFields(request.resource.data, request.resource.data.diff(resource.data).affectedKeys())) ||
+           .hasOnly(['nickname', 'blocked', 'avatar', 'lastSeen', 'hidePresence', 'hideReadReceipts', 'about', 'encPrivateKey', 'twoStep']) &&
+         validProfileFields(request.resource.data, request.resource.data.diff(resource.data).affectedKeys()) &&
+         // Two-step verification re-encrypts the private key (password + PIN).
+         (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['encPrivateKey']) ||
+          (request.resource.data.encPrivateKey.keys().hasOnly(['iv', 'data']) &&
+           request.resource.data.encPrivateKey.iv is string && request.resource.data.encPrivateKey.data is string &&
+           request.resource.data.encPrivateKey.data.size() < 20000)) &&
+         (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['twoStep']) || request.resource.data.twoStep is bool)) ||
         (request.auth.uid == resource.data.referredBy &&
          resource.data.status == "pending" &&
          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status']) &&
          request.resource.data.status == "approved")
       );
 
-      allow delete: if isSignedIn() &&
-        request.auth.uid == resource.data.referredBy &&
-        resource.data.status == "pending";
+      allow delete: if isSignedIn() && (
+        // Deleting my own account.
+        request.auth.uid == userId ||
+        (request.auth.uid == resource.data.referredBy && resource.data.status == "pending"));
     }
 
     // ---------------- meta/bootstrap (one-time gate, never editable) ----------------
@@ -235,15 +242,24 @@ service cloud.firestore {
     // { convId, members, from, media, status, createdAt, participants: { uid: last heartbeat } }.
     // Each pair of participants signals in peers/{a_b} (uids sorted).
     match /groupCalls/{callId} {
-      allow read: if isSignedIn() && request.auth.uid in resource.data.members;
+      // A call link (isLink) can be opened by its (random) id by anyone signed in.
+      allow get: if isSignedIn() && (request.auth.uid in resource.data.members || resource.data.get('isLink', false) == true);
+      allow list: if isSignedIn() && request.auth.uid in resource.data.members;
       allow create: if isSignedIn() &&
         request.resource.data.from == request.auth.uid &&
         request.resource.data.members is list && request.resource.data.members.size() <= 256 &&
         request.auth.uid in request.resource.data.members &&
-        request.auth.uid in get(/databases/$(database)/documents/conversations/$(request.resource.data.convId)).data.participants;
-      allow update: if isSignedIn() && request.auth.uid in resource.data.members && (
-        (changedKeys().hasOnly(['participants']) && onlyOwnEntryChanged('participants')) ||
-        (changedKeys().hasOnly(['status']) && request.resource.data.status == 'ended'));
+        ((request.resource.data.get('isLink', false) == true && request.resource.data.members == [request.auth.uid]) ||
+         request.auth.uid in get(/databases/$(database)/documents/conversations/$(request.resource.data.convId)).data.participants);
+      allow update: if isSignedIn() && (
+        (request.auth.uid in resource.data.members && (
+          (changedKeys().hasOnly(['participants']) && onlyOwnEntryChanged('participants')) ||
+          (changedKeys().hasOnly(['status']) && request.resource.data.status == 'ended'))) ||
+        // Joining by a call link: only myself, up to 4 people.
+        (resource.data.get('isLink', false) == true && !(request.auth.uid in resource.data.members) &&
+         changedKeys().hasOnly(['members', 'names']) &&
+         request.resource.data.members == resource.data.members.concat([request.auth.uid]) &&
+         request.resource.data.members.size() <= 4 && onlyOwnEntryChanged('names')));
 
       function isPairMember(pairId) {
         return isSignedIn() && request.auth.uid in pairId.split('_') &&

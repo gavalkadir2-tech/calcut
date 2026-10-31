@@ -1663,3 +1663,27 @@ body.privacy-cover #calculator-view { position: fixed; inset: 0; z-index: 10000;
 .status-voice-mic { width: 140px; height: 140px; border-radius: 50%; background: var(--accent); color: #111; font-size: 64px; display: flex; align-items: center; justify-content: center; }
 .status-voice.playing .status-voice-mic { animation: voice-pulse 1.2s ease-in-out infinite; }
 @keyframes voice-pulse { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.08); } }
+
+/* Calls: buttons wrap instead of running off the screen */
+#call-actions-incoming, #call-actions-active, #call-actions-outgoing { flex-wrap: wrap; justify-content: center; gap: 14px 18px; max-width: 340px; }
+
+/* Video calls: the picture stays clear; name, timer, security code and
+   buttons sit small at the bottom on a dark fade. */
+#call-screen.video-active { justify-content: flex-end; gap: 4px; padding: 16px 12px calc(env(safe-area-inset-bottom, 0px) + 18px); }
+#call-screen.video-active::before {
+  content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 52%;
+  background: linear-gradient(to bottom, transparent, rgba(0, 0, 0, 0.78)); z-index: 0; pointer-events: none;
+}
+#call-screen.video-active #call-nickname { font-size: 18px; }
+#call-screen.video-active #call-status, #call-screen.video-active #call-timer { font-size: 13px; margin: 0; }
+#call-screen.video-active #call-security { margin-top: 2px; }
+#call-screen.video-active .call-security-title { font-size: 11px; }
+#call-screen.video-active #call-security-code { font-size: 15px; letter-spacing: 3px; }
+#call-screen.video-active .call-security-hint { display: none; }
+#call-screen.video-active #call-actions-active { display: grid; grid-template-columns: repeat(4, 56px); gap: 10px 14px; justify-content: center; margin-top: 10px; max-width: none; }
+#call-screen.video-active .call-btn { width: 56px; height: 56px; font-size: 10px; line-height: 1.15; padding: 2px; background-color: rgba(60, 60, 64, 0.85); }
+#call-screen.video-active .call-btn.reject { background: var(--danger); }
+#call-screen.video-active .call-btn.mute.active { background: var(--accent); color: #111; }
+
+/* Call links */
+.call-link-row { padding: 14px 16px; color: var(--accent); font-weight: 600; cursor: pointer; border-bottom: 1px solid var(--divider); list-style: none; }

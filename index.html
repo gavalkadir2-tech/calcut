@@ -353,6 +353,11 @@
           <button id="clear-duress-pin-btn" class="ghost">Yanılgı PIN'ini Kaldır</button>
           <p id="duress-pin-msg"></p>
           <hr>
+          <label>İki adımlı doğrulama</label>
+          <p class="hint">Başka bir cihazda hesabına girerken parolanın yanında 6 haneli bir PIN de sorulur. PIN olmadan mesajların açılamaz.</p>
+          <button id="two-step-btn" class="ghost">🔐 İki adımlı doğrulama</button>
+          <p id="two-step-msg"></p>
+          <hr>
           <label>Biyometrik onay</label>
           <button id="enable-biometric-btn">Biyometrik onay ekle</button>
           <button id="disable-biometric-btn" class="ghost hidden">Biyometrik onayı kaldır</button>
@@ -448,7 +453,7 @@
         </section>
 
         <section class="settings-section hidden" data-section="about" data-title="Hakkında ve hesap">
-          <p class="app-version">Sürüm: 54</p>
+          <p class="app-version">Sürüm: 55</p>
           <div id="app-update-section" class="hidden">
             <label>Uygulama güncellemesi</label>
             <p id="app-update-msg" class="hint"></p>
@@ -457,6 +462,11 @@
           <hr>
           <button id="logout-btn" class="ghost">Hesaptan Çıkış Yap</button>
           <button id="wipe-vault-btn" class="danger">Tüm Yerel Verileri Sil</button>
+          <hr>
+          <label>Hesabı sil</label>
+          <p class="hint">Profilin, durumların ve bu cihazdaki tüm veriler kalıcı olarak silinir; bütün gruplardan çıkarsın. Gönderdiğin mesajlar karşı tarafta kalır.</p>
+          <button id="delete-account-btn" class="danger">🗑 Hesabımı kalıcı olarak sil</button>
+          <p id="delete-account-msg"></p>
         </section>
       </div>
     </div>
@@ -491,6 +501,7 @@
     <button id="call-speaker-btn" class="call-btn mute hidden">Hoparlör</button>
     <button id="call-camera-btn" class="call-btn mute hidden">Kamerayı Kapat</button>
     <button id="call-flip-btn" class="call-btn mute hidden">🔄 Kamerayı Çevir</button>
+    <button id="call-blur-btn" class="call-btn mute hidden">🌫️ Arka Plan</button>
     <button id="call-screen-btn" class="call-btn mute hidden">🖥️ Ekranı Paylaş</button>
     <button id="call-add-btn" class="call-btn mute hidden">➕ Kişi Ekle</button>
     <button id="call-hangup-btn" class="call-btn reject">Kapat</button>

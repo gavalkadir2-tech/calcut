@@ -398,3 +398,34 @@ test("notes to self: a one-member group of just its creator", async () => {
   // Still no one-member normal groups.
   await assertFails(setDoc(doc(as("alice"), "conversations/g9"), { ...self, isSelf: false }));
 });
+
+test("call links: anyone with the id may join themselves, up to 4; others can't list them", async () => {
+  await seed();
+  const link = { members: ["alice"], names: { alice: "alice" }, from: "alice", media: "video", status: "active", isLink: true, createdAt: serverTimestamp(), participants: {} };
+  await assertFails(setDoc(doc(as("alice"), "groupCalls/L1"), { ...link, members: ["alice", "bob"] }));
+  await assertSucceeds(setDoc(doc(as("alice"), "groupCalls/L1"), link));
+  await assertSucceeds(getDoc(doc(as("dave"), "groupCalls/L1")));
+  await assertFails(getDocs(query(collection(as("dave"), "groupCalls"), where("isLink", "==", true))));
+  await assertFails(updateDoc(doc(as("dave"), "groupCalls/L1"), { members: arrayUnion("dave", "erin") }));
+  await assertFails(updateDoc(doc(as("dave"), "groupCalls/L1"), { members: arrayUnion("dave"), status: "ended" }));
+  await assertSucceeds(updateDoc(doc(as("dave"), "groupCalls/L1"), { members: arrayUnion("dave"), "names.dave": "dave" }));
+  await assertSucceeds(updateDoc(doc(as("dave"), "groupCalls/L1"), { "participants.dave": serverTimestamp() }));
+  await assertSucceeds(updateDoc(doc(as("bob"), "groupCalls/L1"), { members: arrayUnion("bob") }));
+  await assertSucceeds(updateDoc(doc(as("carol"), "groupCalls/L1"), { members: arrayUnion("carol") }));
+  await assertFails(updateDoc(doc(as("erin"), "groupCalls/L1"), { members: arrayUnion("erin") }));
+  // An ordinary group call still can't be read from outside.
+  await assertSucceeds(setDoc(doc(as("alice"), "groupCalls/G1"), { ...link, isLink: false, convId: "g1", members: ["alice", "bob", "carol"] }));
+  await assertFails(getDoc(doc(as("dave"), "groupCalls/G1")));
+  await assertFails(updateDoc(doc(as("dave"), "groupCalls/G1"), { members: arrayUnion("dave") }));
+});
+
+test("two-step verification and deleting my own account", async () => {
+  await seed();
+  const key = { iv: "aaa", data: "bbb" };
+  await assertSucceeds(updateDoc(doc(as("alice"), "users/alice"), { encPrivateKey: key, twoStep: true }));
+  await assertFails(updateDoc(doc(as("alice"), "users/alice"), { twoStep: "yes" }));
+  await assertFails(updateDoc(doc(as("alice"), "users/alice"), { encPrivateKey: { ...key, extra: 1 } }));
+  await assertFails(updateDoc(doc(as("bob"), "users/alice"), { encPrivateKey: key }));
+  await assertFails(deleteDoc(doc(as("bob"), "users/alice")));
+  await assertSucceeds(deleteDoc(doc(as("alice"), "users/alice")));
+});
