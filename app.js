@@ -5219,6 +5219,18 @@
     }
   }
 
+  // The phone's own maps app: a geo: link on Android (the default maps
+  // app, or a choice), Apple Maps on iPhone, Google Maps on a computer.
+  function mapUrl(lat, lng, ua) {
+    if (/iPhone|iPad|iPod/.test(ua || "")) return "https://maps.apple.com/?q=" + lat + "," + lng;
+    if (/Android/.test(ua || "")) return "geo:" + lat + "," + lng + "?q=" + lat + "," + lng + "(Konum)";
+    return webMapUrl(lat, lng);
+  }
+
+  function webMapUrl(lat, lng) {
+    return "https://www.google.com/maps/search/?api=1&query=" + lat + "," + lng;
+  }
+
   function renderLocation(loc) {
     const card = document.createElement("div");
     card.className = "location-card";
@@ -5240,10 +5252,13 @@
       // A link, not an embedded map: nothing is fetched until it's tapped.
       const a = document.createElement("a");
       a.className = "msg-link";
-      a.href = "https://www.openstreetmap.org/?mlat=" + lat + "&mlon=" + lng + "#map=17/" + lat + "/" + lng;
-      a.target = "_blank";
-      a.rel = "noopener noreferrer";
-      a.textContent = "Haritada aç";
+      a.href = mapUrl(lat, lng, navigator.userAgent);
+      a.dataset.web = webMapUrl(lat, lng);
+      if (!a.href.startsWith("geo:")) {
+        a.target = "_blank";
+        a.rel = "noopener noreferrer";
+      }
+      a.textContent = "🗺️ Haritada aç";
       card.appendChild(a);
     }
     return card;
@@ -5731,7 +5746,10 @@
       const updatePlugin = appUpdatePlugin();
       if (updatePlugin) {
         e.preventDefault();
-        updatePlugin.openExternal({ url: link.href }).catch(() => {});
+        // An older app can't open geo: links: Google Maps on the web then.
+        updatePlugin.openExternal({ url: link.href })
+          .catch(() => link.dataset.web ? updatePlugin.openExternal({ url: link.dataset.web }) : null)
+          .catch(() => {});
       }
       return;
     }
