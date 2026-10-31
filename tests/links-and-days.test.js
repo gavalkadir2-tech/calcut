@@ -29,3 +29,12 @@ test("day labels: Bugün, Dün, then a date", () => {
   const old = new Date(now.getFullYear() - 1, 2, 5, 12);
   assert.match(dayLabel(old.getTime()), /5 Mart \d{4}/);
 });
+
+test("locations open in the phone's own maps app", () => {
+  const { extract } = require("./helpers");
+  const { mapUrl, webMapUrl } = new Function(extract("  function mapUrl(", "  function renderLocation(") + "; return { mapUrl, webMapUrl };")();
+  assert.strictEqual(mapUrl(41.01, 28.97, "Mozilla/5.0 (Linux; Android 14; Pixel 8) Chrome/130"), "geo:41.01,28.97?q=41.01,28.97(Konum)");
+  assert.strictEqual(mapUrl(41.01, 28.97, "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X)"), "https://maps.apple.com/?q=41.01,28.97");
+  assert.strictEqual(mapUrl(41.01, 28.97, "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"), webMapUrl(41.01, 28.97));
+  assert.strictEqual(webMapUrl(41.01, 28.97), "https://www.google.com/maps/search/?api=1&query=41.01,28.97");
+});

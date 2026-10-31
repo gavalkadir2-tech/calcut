@@ -1,5 +1,6 @@
 package com.gavalkadir.calcut;
 
+import android.content.ActivityNotFoundException;
 import android.content.Intent;
 import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
@@ -38,12 +39,18 @@ public class AppUpdatePlugin extends Plugin {
     @PluginMethod
     public void openExternal(PluginCall call) {
         String url = call.getString("url");
-        if (url == null || !(url.startsWith("https://") || url.startsWith("http://"))) {
+        // geo: opens a shared location in the phone's default maps app.
+        if (url == null || !(url.startsWith("https://") || url.startsWith("http://") || url.startsWith("geo:"))) {
             call.reject("invalid url");
             return;
         }
         Intent i = new Intent(Intent.ACTION_VIEW, Uri.parse(url)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-        getContext().startActivity(i);
+        try {
+            getContext().startActivity(i);
+        } catch (ActivityNotFoundException e) {
+            call.reject("no app for " + url);
+            return;
+        }
         call.resolve();
     }
 
