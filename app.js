@@ -3885,7 +3885,7 @@
     resetCallUi();
     callNicknameEl.textContent = nameCase(data.fromNickname || "?");
     callStatusEl.textContent = isVideoCall ? "Gelen görüntülü arama..." : "Gelen arama...";
-    enterAlarmMode(data.fromNickname || "");
+    enterAlarmMode(nameCase(data.fromNickname || ""));
     callActionsIncoming.classList.remove("hidden");
     playRingtone();
     if (navigator.vibrate) {
